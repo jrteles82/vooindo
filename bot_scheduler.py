@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -319,7 +320,8 @@ def main():
             cycle_started = time.perf_counter()
             cycle_started_iso = now_local_iso(sep='T')
             maintenance_on = is_maintenance_mode(conn)
-            users = iter_users(conn)
+            users = list(iter_users(conn))
+            random.shuffle(users)
             cycle_stats = {
                 'eligible_users': len(users),
                 'sent_users': 0,
@@ -328,6 +330,7 @@ def main():
                 'skipped_users': 0,
                 'errors': 0,
                 'reasons': {},
+                'shuffled_users': True,
             }
             for user in users:
                 try:
@@ -477,6 +480,7 @@ def main():
             'no_send_users': cycle_stats['no_send_users'],
             'skipped_users': cycle_stats['skipped_users'],
             'errors': cycle_stats['errors'],
+            'shuffled_users': cycle_stats['shuffled_users'],
             'reasons': cycle_stats['reasons'],
         }
         _append_cycle_metrics(metrics_entry)
