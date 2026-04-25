@@ -13,6 +13,17 @@ _IGNORE_NAMES = {
 _IGNORE_PREFIXES = (
     '.com.google.Chrome.',
 )
+_IGNORE_DIR_NAMES = {
+    'Cache',
+    'Cache_Data',
+    'Code Cache',
+    'GPUCache',
+    'DawnGraphiteCache',
+    'DawnWebGPUCache',
+    'GrShaderCache',
+    'GraphiteDawnCache',
+    'ShaderCache',
+}
 
 
 def is_profile_in_use(profile_dir: Path) -> bool:
@@ -77,9 +88,39 @@ def worker_profile_dirs(num_workers: int | None = None) -> list[Path]:
 def _ignore_chrome_runtime_artifacts(_src: str, names: list[str]) -> set[str]:
     ignored: set[str] = set()
     for name in names:
-        if name in _IGNORE_NAMES or any(name.startswith(prefix) for prefix in _IGNORE_PREFIXES):
+        if (
+            name in _IGNORE_NAMES
+            or name in _IGNORE_DIR_NAMES
+            or any(name.startswith(prefix) for prefix in _IGNORE_PREFIXES)
+        ):
             ignored.add(name)
     return ignored
+
+
+def _copy_profile_tree(src: Path, dst: Path) -> None:
+    """Copia best-effort de perfil, tolerando arquivos efêmeros sumindo no meio."""
+    try:
+        shutil.copytree(
+            src,
+            dst,
+            dirs_exist_ok=True,
+            ignore=_ignore_chrome_runtime_artifacts,
+            ignore_dangling_symlinks=True,
+        )
+    except shutil.Error as exc:
+        filtered_errors = []
+        for entry in exc.args[0] if exc.args else []:
+            try:
+                _src, _dst, msg = entry
+            except Exception:
+                filtered_errors.append(entry)
+                continue
+            lowered = str(msg).lower()
+            if 'no such file or directory' in lowered:
+                continue
+            filtered_errors.append(entry)
+        if filtered_errors:
+            raise shutil.Error(filtered_errors)
 
 
 def sync_base_session_to_worker_profiles(num_workers: int | None = None, force: bool = False, skip_in_use: bool = False) -> list[Path]:
@@ -96,13 +137,7 @@ def sync_base_session_to_worker_profiles(num_workers: int | None = None, force: 
         if not force and target_revision >= source_revision:
             purge_chrome_singleton_artifacts(profile_dir)
             continue
-        shutil.copytree(
-            SESSION_DIR,
-            profile_dir,
-            dirs_exist_ok=True,
-            ignore=_ignore_chrome_runtime_artifacts,
-            ignore_dangling_symlinks=True,
-        )
+        _copy_profile_tree(SESSION_DIR, profile_dir)
         purge_chrome_singleton_artifacts(profile_dir)
         copied.append(profile_dir)
     return copied
@@ -122,12 +157,6 @@ def sync_current_worker_profile_from_base() -> bool:
         purge_chrome_singleton_artifacts(current_profile)
         return False
 
-    shutil.copytree(
-        SESSION_DIR,
-        current_profile,
-        dirs_exist_ok=True,
-        ignore=_ignore_chrome_runtime_artifacts,
-        ignore_dangling_symlinks=True,
-    )
+    _copy_profile_tree(SESSION_DIR, current_profile)
     purge_chrome_singleton_artifacts(current_profile)
     return True

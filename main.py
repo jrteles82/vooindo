@@ -1232,7 +1232,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     title_w = title_bbox[2] - title_bbox[0]
     draw.text((x0 + max(0, (table_w - title_w) / 2), y), title_text, font=title_font, fill=colors["text"])
     y += title_h
-    meta_text = now_local().strftime("%Y/%m/%d %H:%M")
+    meta_text = now_local().strftime("%d/%m/%Y %H:%M")
     meta_bbox = draw.textbbox((0, 0), meta_text, font=small_font)
     meta_w = meta_bbox[2] - meta_bbox[0]
     draw.text((x0 + max(0, (table_w - meta_w) / 2), y), meta_text, font=small_font, fill=colors["muted"])

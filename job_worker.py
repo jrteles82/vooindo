@@ -616,8 +616,11 @@ def main():
                 logger.warning('[JOB_RECOVERY] startup/loop recovery | scan_jobs pendentes expirados: %s', expired_pending_ids)
                 _alert_admin(bot, loop, f"⚠️ Jobs pendentes expirados no worker: {expired_pending_ids}")
 
-            if sync_current_worker_profile_from_base():
-                logger.info('[job-worker] perfil Google sincronizado a partir de google_session antes de buscar novo job')
+            try:
+                if sync_current_worker_profile_from_base():
+                    logger.info('[job-worker] perfil Google sincronizado a partir de google_session antes de buscar novo job')
+            except Exception as exc:
+                logger.warning('[job-worker] sync do perfil Google falhou, seguindo sem abortar loop | erro=%s', exc)
 
             job = fetch_next_job(conn)
             if not job:
