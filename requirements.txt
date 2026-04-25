@@ -1,0 +1,10 @@
+flask>=3.0,<4
+requests>=2.31,<3
+playwright>=1.52,<2
+Pillow>=10,<12
+python-telegram-bot>=21,<22
+
+python-dotenv>=1.0,<2
+python-telegram-bot-calendar>=1.0,<2
+PyMySQL>=1.1,<2
+anthropic>=0.40,<1
