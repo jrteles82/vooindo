@@ -155,6 +155,20 @@ def _vendor_filter_label(filters: dict, show_result_type_filters: bool = True) -
     return '🛫 Filtro: Companhias aéreas'
 
 
+def _scan_failed_by_executor_timeout(rows: list[dict]) -> bool:
+    if not rows:
+        return False
+    timeout_rows = 0
+    priced_rows = 0
+    for row in rows:
+        if isinstance(row.get('price'), (int, float)):
+            priced_rows += 1
+        notes = str(row.get('notes') or '').lower()
+        if 'executor timeout' in notes or 'timeout na página' in notes:
+            timeout_rows += 1
+    return timeout_rows > 0 and priced_rows == 0
+
+
 def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: float, sources: dict, airline_filters_json: str | None = None) -> tuple[bool, str, int]:
     access = ensure_user_access(conn, chat_id)
     charge_now = should_charge_user(conn, chat_id, access) and not is_active_access(access)
@@ -184,6 +198,9 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
     filtered = filter_rows_by_airlines(filtered, airline_filters_json, show_result_type_filters=show_result_type_filters)
     filtered = _merge_rows_for_combined_result_view(filtered) if should_split else filtered
     if not filtered:
+        no_result_reason = 'timeout_executor' if _scan_failed_by_executor_timeout(parsed) else 'sem_resultado_filtrado'
+        if no_result_reason == 'timeout_executor':
+            logger.warning('[bot-scheduler] chat_id=%s | scan sem resultado por timeout do executor', chat_id)
         loop.run_until_complete(_send_message(bot, chat_id, '⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
@@ -191,7 +208,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
                 (chat_id,)
             )
             conn.commit()
-        return False, 'sem_resultado_filtrado', 0
+        return False, no_result_reason, 0
 
     sent_count = 0
     if should_split:
