@@ -35,6 +35,36 @@ MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "12"))
 MAX_CARDS_STEP = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_STEP", "1"))
 MIN_AIRLINE_PRICES_TO_COMPARE = int(os.getenv("GOOGLE_FLIGHTS_MIN_AIRLINE_PRICES_TO_COMPARE", "2"))
 
+
+def configure_context_routing(context) -> None:
+    def _handle_route(route):
+        try:
+            request = route.request
+            resource_type = (request.resource_type or "").lower()
+            url = (request.url or "").lower()
+            blocked_resource_types = {"image", "media", "font"}
+            blocked_url_terms = (
+                "doubleclick",
+                "google-analytics",
+                "googletagmanager",
+                "facebook",
+                "hotjar",
+                "segment",
+                "analytics",
+                "pixel",
+            )
+            if resource_type in blocked_resource_types or any(term in url for term in blocked_url_terms):
+                route.abort()
+                return
+        except Exception:
+            pass
+        route.continue_()
+
+    try:
+        context.route("**/*", _handle_route)
+    except Exception:
+        pass
+
 def build_url(origin: str, destination: str, outbound_date: str, inbound_date: str = "") -> str:
     trip = f"{origin} to {destination} {outbound_date} one way" if not inbound_date else f"{origin} to {destination} {outbound_date} return {inbound_date}"
     base = BASE_URL.rstrip("/")
@@ -828,6 +858,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             viewport={"width": 1280, "height": 900},
             args=["--disable-blink-features=AutomationControlled"],
         )
+        configure_context_routing(context)
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
         try:

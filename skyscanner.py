@@ -711,45 +711,41 @@ class GoogleFlightsScraper:
 
     def _wait_briefly_for_results(self, page) -> None:
         ready = False
-        try:
-            page.wait_for_load_state("networkidle", timeout=6000)
-            ready = True
-        except Exception:
-            pass
-        for tab_label in ["Melhor opção", "Menores preços"]:
+        for selector in [
+            "[role='main'] [role='listitem']",
+            "[role='main'] li",
+            "[role='main'] div[role='button']",
+        ]:
             try:
-                page.locator(f"text={tab_label}").first.wait_for(timeout=2500)
+                page.locator(selector).first.wait_for(timeout=2200)
                 ready = True
                 break
             except Exception:
                 pass
-        try:
-            page.locator("text=Outros voos").first.wait_for(timeout=3500)
-            ready = True
-        except Exception:
-            pass
         if not ready:
-            for selector in [
-                "[role='main'] [role='listitem']",
-                "[role='main'] li",
-                "[role='main'] div[role='button']",
-            ]:
+            for tab_label in ["Melhor opção", "Menores preços"]:
                 try:
-                    page.locator(selector).first.wait_for(timeout=2500)
+                    page.locator(f"text={tab_label}").first.wait_for(timeout=2000)
                     ready = True
                     break
                 except Exception:
                     pass
+        if not ready:
+            try:
+                page.locator("text=Outros voos").first.wait_for(timeout=2500)
+                ready = True
+            except Exception:
+                pass
 
         settle_seconds = float(CONFIG.get("settle_seconds", 2))
-        extra_wait = min(1.5, settle_seconds + 0.5) if ready else settle_seconds + 1.0
+        extra_wait = min(0.9, settle_seconds * 0.45) if ready else min(1.2, settle_seconds * 0.6)
         if extra_wait > 0:
             time.sleep(extra_wait)
         try:
-            page.mouse.wheel(0, 2200)
-            time.sleep(1.2)
-            page.mouse.wheel(0, -1200)
-            time.sleep(0.8)
+            page.mouse.wheel(0, 1800)
+            time.sleep(0.45)
+            page.mouse.wheel(0, -900)
+            time.sleep(0.25)
         except Exception:
             pass
 

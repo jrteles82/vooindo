@@ -1,8 +1,10 @@
 import asyncio
+import json
 import os
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
@@ -32,6 +34,7 @@ _DEFAULT_SEND_COOLDOWN_SECONDS = 30 * 60
 SEND_COOLDOWN_SECONDS = int(
     os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
 )
+_METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
 
 
 def get_db():
@@ -258,6 +261,15 @@ def _mark_user_blocked(conn, chat_id: str) -> None:
                  payload={"motivo": "chat_not_found"})
 
 
+def _append_cycle_metrics(entry: dict) -> None:
+    try:
+        _METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _METRICS_PATH.open('a', encoding='utf-8') as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning('[bot-scheduler] falha ao persistir métricas do ciclo | erro=%s', exc)
+
+
 async def _send_admin_alert(bot: Bot, message: str):
     admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
     if not admin_chat_id:
@@ -304,18 +316,33 @@ def main():
             if conn is None:
                 conn = get_db()
                 ensure_policy_schema(conn)
+            cycle_started = time.perf_counter()
+            cycle_started_iso = now_local_iso(sep='T')
             maintenance_on = is_maintenance_mode(conn)
             users = iter_users(conn)
+            cycle_stats = {
+                'eligible_users': len(users),
+                'sent_users': 0,
+                'sent_results': 0,
+                'no_send_users': 0,
+                'skipped_users': 0,
+                'errors': 0,
+                'reasons': {},
+            }
             for user in users:
                 try:
                     label = user_label(user)
                     if maintenance_on and not is_exempt_from_maintenance(conn, str(user['chat_id'])):
+                        cycle_stats['skipped_users'] += 1
+                        cycle_stats['reasons']['manutencao'] = cycle_stats['reasons'].get('manutencao', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | modo manutenção ativo", label)
                         audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
                                      user_id=str(user['user_id']), status="skipped",
                                      payload={"motivo": "manutencao"})
                         continue
                     if not bool(int(user['alerts_enabled'])):
+                        cycle_stats['skipped_users'] += 1
+                        cycle_stats['reasons']['alertas_desativados'] = cycle_stats['reasons'].get('alertas_desativados', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | alertas desativados", label)
                         audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
                                      user_id=str(user['user_id']), status="skipped",
@@ -328,12 +355,16 @@ def main():
                     ).fetchone()
                     running_count = int((running_row['c'] if isinstance(running_row, dict) else running_row[0]) or 0)
                     if running_count > 0:
+                        cycle_stats['skipped_users'] += 1
+                        cycle_stats['reasons']['execucao_em_andamento'] = cycle_stats['reasons'].get('execucao_em_andamento', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | execucao em andamento", label)
                         audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
                                      user_id=str(user['user_id']), status="skipped",
                                      payload={"motivo": "execucao_em_andamento"})
                         continue
                     if was_sent_recently(str(user.get('last_scheduled_sent_at') or user['last_sent_at']), window_seconds=user_cooldown_seconds):
+                        cycle_stats['skipped_users'] += 1
+                        cycle_stats['reasons']['cooldown'] = cycle_stats['reasons'].get('cooldown', 0) + 1
                         logger.info(
                             "[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s",
                             label,
@@ -358,22 +389,28 @@ def main():
                         },
                         str(user['airline_filters_json'] or ''),
                     )
+                    user_duration_ms = _t.elapsed()
                     if sent:
+                        cycle_stats['sent_users'] += 1
+                        cycle_stats['sent_results'] += int(total_results)
+                        cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
                         mark_sent(conn, int(user['user_id']))
-                        logger.info("[bot-scheduler] %s | envio concluído | qte_envios=%s", label, total_results)
+                        logger.info("[bot-scheduler] %s | envio concluído | qte_envios=%s | duracao_ms=%s", label, total_results, user_duration_ms)
                         audit.scraping("scan_agendado_enviado",
                                        chat_id=str(user['chat_id']),
                                        user_id=str(user['user_id']),
-                                       duration_ms=_t.elapsed(),
+                                       duration_ms=user_duration_ms,
                                        payload={"resultados": total_results,
                                                 "interval_s": interval_seconds})
                     else:
-                        logger.info("[bot-scheduler] %s | sem envio | %s | qte_envios=%s", label, reason, total_results)
+                        cycle_stats['no_send_users'] += 1
+                        cycle_stats['reasons'][reason] = cycle_stats['reasons'].get(reason, 0) + 1
+                        logger.info("[bot-scheduler] %s | sem envio | %s | qte_envios=%s | duracao_ms=%s", label, reason, total_results, user_duration_ms)
                         audit.scraping("scan_agendado_sem_envio",
                                        chat_id=str(user['chat_id']),
                                        user_id=str(user['user_id']),
                                        status="skipped",
-                                       duration_ms=_t.elapsed(),
+                                       duration_ms=user_duration_ms,
                                        payload={"motivo": reason, "resultados": total_results})
                 except Exception as exc:
                     if 'executor timeout' in str(exc).lower():
@@ -399,6 +436,8 @@ def main():
                                 ))
                             except Exception:
                                 pass
+                    cycle_stats['errors'] += 1
+                    cycle_stats['reasons']['erro'] = cycle_stats['reasons'].get('erro', 0) + 1
                     logger.exception('[SCHED_FAIL] [bot-scheduler] %s | erro no envio: %s', user_label(user), exc)
                     if _is_chat_not_found(exc):
                         _mark_user_blocked(conn, str(user['chat_id']))
@@ -426,9 +465,31 @@ def main():
             time.sleep(1800)
             continue
 
+        cycle_duration_ms = round((time.perf_counter() - cycle_started) * 1000)
+        cycle_finished_iso = now_local_iso(sep='T')
+        metrics_entry = {
+            'cycle_started_at': cycle_started_iso,
+            'cycle_finished_at': cycle_finished_iso,
+            'duration_ms': cycle_duration_ms,
+            'eligible_users': cycle_stats['eligible_users'],
+            'sent_users': cycle_stats['sent_users'],
+            'sent_results': cycle_stats['sent_results'],
+            'no_send_users': cycle_stats['no_send_users'],
+            'skipped_users': cycle_stats['skipped_users'],
+            'errors': cycle_stats['errors'],
+            'reasons': cycle_stats['reasons'],
+        }
+        _append_cycle_metrics(metrics_entry)
         logger.info(
-            "[bot-scheduler] ciclo concluído em %s, aguardando próximo slot de %ss",
-            now_local_iso(sep='T'),
+            "[bot-scheduler] ciclo concluído em %s | duracao_ms=%s | elegiveis=%s | enviaram=%s | sem_envio=%s | ignorados=%s | erros=%s | reasons=%s | aguardando próximo slot de %ss",
+            cycle_finished_iso,
+            cycle_duration_ms,
+            cycle_stats['eligible_users'],
+            cycle_stats['sent_users'],
+            cycle_stats['no_send_users'],
+            cycle_stats['skipped_users'],
+            cycle_stats['errors'],
+            json.dumps(cycle_stats['reasons'], ensure_ascii=False, sort_keys=True),
             interval_seconds,
         )
         sleep_until_next_slot(interval_seconds)
