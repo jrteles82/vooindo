@@ -9,19 +9,19 @@
 ### Reiniciar serviço
 
 ```bash
-sudo systemctl restart skyscanner-bot.service
+sudo systemctl restart vooindo.service
 ```
 
 ### Ver status do serviço
 
 ```bash
-systemctl status skyscanner-bot.service --no-pager -l
+systemctl status vooindo.service --no-pager -l
 ```
 
 ### Filtrar alertas e problemas relevantes no journal
 
 ```bash
-journalctl -u skyscanner-bot.service --no-pager -l | rg "ALERT_ADMIN|JOB_RECOVERY|PROCESS_EXIT|SCHED_FAIL|SCHED_DB_LIMIT"
+journalctl -u vooindo.service --no-pager -l | rg "ALERT_ADMIN|JOB_RECOVERY|PROCESS_EXIT|SCHED_FAIL|SCHED_DB_LIMIT"
 ```
 
 ## Lições recentes

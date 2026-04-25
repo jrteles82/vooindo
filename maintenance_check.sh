@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_DIR="/opt/skyscanner-bot"
-SERVICE="skyscanner-bot.service"
+PROJECT_DIR="/opt/vooindo"
+SERVICE="vooindo.service"
 
 cd "$PROJECT_DIR"
 

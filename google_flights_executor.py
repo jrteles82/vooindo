@@ -1,4 +1,4 @@
-#!/opt/skyscanner-bot/.venv/bin/python
+#!/opt/vooindo/.venv/bin/python
 from __future__ import annotations
 
 import json
@@ -591,7 +591,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         try:
             body_debug = page.evaluate("document.body.innerText")
             lines_debug = [ln.strip() for ln in (body_debug or '').splitlines() if ln.strip()]
-            dump_dir = Path('/opt/skyscanner-bot/debug_dumps')
+            dump_dir = Path('/opt/vooindo/debug_dumps')
             dump_dir.mkdir(parents=True, exist_ok=True)
             (dump_dir / f'executor_booking_card_{idx}.txt').write_text(body_debug or '', encoding='utf-8')
             enumerated = '\n'.join(f'{n+1:04d}: {ln}' for n, ln in enumerate(lines_debug))

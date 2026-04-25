@@ -1,4 +1,4 @@
-#!/opt/skyscanner-bot/.venv/bin/python
+#!/opt/vooindo/.venv/bin/python
 """
 Versão stdin/stdout do google_login.py — usada pelo bot Telegram.
 Protocolo stdout:
@@ -20,8 +20,8 @@ def print(*args, **kwargs):  # noqa: A001
     _real_print(*args, **kwargs)
 
 DISPLAY_NUM = ':99'
-SESSION_DIR = Path('/opt/skyscanner-bot/google_session')
-DUMP_DIR = Path('/opt/skyscanner-bot/debug_dumps')
+SESSION_DIR = Path('/opt/vooindo/google_session')
+DUMP_DIR = Path('/opt/vooindo/debug_dumps')
 DUMP_DIR.mkdir(exist_ok=True)
 
 print('STATUS:STEP:Iniciando display virtual...')
@@ -32,7 +32,7 @@ xvfb = subprocess.Popen(
 time.sleep(1.5)
 os.environ['DISPLAY'] = DISPLAY_NUM
 
-sys.path.insert(0, '/opt/skyscanner-bot')
+sys.path.insert(0, '/opt/vooindo')
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 

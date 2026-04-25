@@ -67,7 +67,7 @@ LEGACY_BROADCAST_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN_LEGACY', '').strip()
 _login_sessions: dict[str, dict] = {}
 
 def trigger_service_restart() -> tuple[bool, str, bool]:
-    command = PANEL_RESTART_COMMAND or 'systemctl restart skyscanner-bot.service'
+    command = PANEL_RESTART_COMMAND or 'systemctl restart vooindo.service'
     try:
         completed = subprocess.run(
             shlex.split(command),
@@ -4083,7 +4083,7 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
     import asyncio as _asyncio
 
     proc = await _asyncio.create_subprocess_exec(
-        sys.executable, '/opt/skyscanner-bot/google_login_stdin.py',
+        sys.executable, '/opt/vooindo/google_login_stdin.py',
         stdin=_asyncio.subprocess.PIPE,
         stdout=_asyncio.subprocess.PIPE,
         stderr=_asyncio.subprocess.DEVNULL,

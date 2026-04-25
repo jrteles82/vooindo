@@ -1,6 +1,6 @@
 """
 Script para autenticar o Chrome profile do bot no Google.
-Execute: sudo -u ubuntu /opt/skyscanner-bot/.venv/bin/python /opt/skyscanner-bot/google_login.py
+Execute: sudo -u ubuntu /opt/vooindo/.venv/bin/python /opt/vooindo/google_login.py
 """
 import subprocess, sys, os, time, getpass
 from pathlib import Path
@@ -13,11 +13,11 @@ xvfb = subprocess.Popen(
 time.sleep(1.5)
 os.environ['DISPLAY'] = ':98'
 
-sys.path.insert(0, '/opt/skyscanner-bot')
+sys.path.insert(0, '/opt/vooindo')
 from playwright.sync_api import sync_playwright
 
-SESSION_DIR = Path('/opt/skyscanner-bot/google_session')
-DUMP_DIR = Path('/opt/skyscanner-bot/debug_dumps')
+SESSION_DIR = Path('/opt/vooindo/google_session')
+DUMP_DIR = Path('/opt/vooindo/debug_dumps')
 DUMP_DIR.mkdir(exist_ok=True)
 
 def screenshot(page, name):

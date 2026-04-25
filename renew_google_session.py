@@ -1,4 +1,4 @@
-#!/opt/skyscanner-bot/.venv/bin/python
+#!/opt/vooindo/.venv/bin/python
 """
 Renova a sessão Google abrindo o Chrome visualmente na pasta google_session/.
 
