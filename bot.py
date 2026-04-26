@@ -2402,9 +2402,7 @@ LIMIT 15
         except Exception:
             user_out = ''
 
-        texto = '📊 *Desempenho — Vooindo*
-
-'
+        texto = '📊 *Desempenho — Vooindo*\n\n'
         if not any([db_out, resumo_out, erros_out, user_out]):
             texto += '_Dados indisponíveis no momento._'
         else:
