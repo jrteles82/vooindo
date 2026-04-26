@@ -65,10 +65,6 @@ if not password:
     sys.exit(1)
 
 print('STATUS:STEP:Abrindo Chrome...')
-if is_profile_in_use(SESSION_DIR):
-    print('STATUS:ERROR:O perfil google_session está em uso por outro processo Chrome. Aguarde as buscas encerrarem e tente novamente.')
-    xvfb.terminate()
-    sys.exit(1)
 purge_chrome_singleton_artifacts(SESSION_DIR)
 try:
     with sync_playwright() as p:

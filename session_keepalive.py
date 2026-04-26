@@ -1,4 +1,4 @@
-#!/opt/skyscanner-bot/.venv/bin/python
+#!/opt/vooindo/.venv/bin/python
 """
 Mantém a sessão Google viva visitando periodicamente google.com.
 Roda headless — chamado pelo systemd timer a cada 6h.

@@ -132,15 +132,9 @@ def main():
 
     py = str(BASE_DIR / '.venv' / 'bin' / 'python')
 
-    synced_profiles = sync_base_session_to_worker_profiles(num_workers=NUM_JOB_WORKERS)
-    if synced_profiles:
-        logger.info('Perfis Google sincronizados para workers: %s', ', '.join(str(path) for path in synced_profiles))
-
     def _worker_env(worker_index: int) -> dict:
         env = os.environ.copy()
-        profile_dir = BASE_DIR / f'google_session_{worker_index}'
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        env['GOOGLE_PERSISTENT_PROFILE_DIR'] = str(profile_dir)
+        env['GOOGLE_PERSISTENT_PROFILE_DIR'] = str(BASE_DIR / 'google_session')
         return env
 
     children = [
