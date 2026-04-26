@@ -4,8 +4,10 @@ import os
 import random
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Lock
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
@@ -27,6 +29,9 @@ from config import TOKEN, now_local, now_local_iso
 from db import connect as connect_db, now_expression, sql, DatabaseRateLimitError
 from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
+
+# Número de workers paralelos para scheduler
+_NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '3'))
 
 logger = get_logger('bot_scheduler')
 
@@ -349,6 +354,8 @@ def main():
                 'reasons': {},
                 'shuffled_users': True,
             }
+            # --- PARALELIZAÇÃO: Filtrar elegíveis e distribuir no ThreadPool ---
+            eligible_users = []
             for user in users:
                 try:
                     label = user_label(user)
@@ -356,17 +363,11 @@ def main():
                         cycle_stats['skipped_users'] += 1
                         cycle_stats['reasons']['manutencao'] = cycle_stats['reasons'].get('manutencao', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | modo manutenção ativo", label)
-                        audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
-                                     user_id=str(user['user_id']), status="skipped",
-                                     payload={"motivo": "manutencao"})
                         continue
                     if not bool(int(user['alerts_enabled'])):
                         cycle_stats['skipped_users'] += 1
                         cycle_stats['reasons']['alertas_desativados'] = cycle_stats['reasons'].get('alertas_desativados', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | alertas desativados", label)
-                        audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
-                                     user_id=str(user['user_id']), status="skipped",
-                                     payload={"motivo": "alertas_desativados"})
                         continue
                     user_cooldown_seconds = 30 * 60
                     running_row = conn.execute(
@@ -378,100 +379,107 @@ def main():
                         cycle_stats['skipped_users'] += 1
                         cycle_stats['reasons']['execucao_em_andamento'] = cycle_stats['reasons'].get('execucao_em_andamento', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | execucao em andamento", label)
-                        audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
-                                     user_id=str(user['user_id']), status="skipped",
-                                     payload={"motivo": "execucao_em_andamento"})
                         continue
                     if was_sent_recently(str(user.get('last_scheduled_sent_at') or user['last_sent_at']), window_seconds=user_cooldown_seconds):
                         cycle_stats['skipped_users'] += 1
                         cycle_stats['reasons']['cooldown'] = cycle_stats['reasons'].get('cooldown', 0) + 1
-                        logger.info(
-                            "[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s",
-                            label,
-                            user['last_sent_at'],
-                        )
-                        audit.system("scheduler_usuario_ignorado", chat_id=str(user['chat_id']),
-                                     user_id=str(user['user_id']), status="skipped",
-                                     payload={"motivo": "cooldown",
-                                              "last_sent_at": str(user['last_sent_at'])})
+                        logger.info("[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s", label, user['last_sent_at'])
                         continue
-                    _t = audit.timer()
+                    eligible_users.append(user)
+                except Exception:
+                    pass
+
+            stats_lock = Lock()
+
+            def _process_one_user(user: dict) -> None:
+                """Executa run_for_user em thread separada, com conexões próprias."""
+                nonlocal cycle_stats
+                local_conn = connect_db()
+                local_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(local_loop)
+                local_request = HTTPXRequest(connection_pool_size=10, pool_timeout=60.0, connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0)
+                local_bot = Bot(token=TOKEN, request=local_request)
+                label = user_label(user)
+                _t = audit.timer()
+                try:
                     sent, reason, total_results = run_for_user(
-                        conn,
-                        bot,
-                        loop,
-                        int(user['user_id']),
-                        str(user['chat_id']),
+                        local_conn, local_bot, local_loop,
+                        int(user['user_id']), str(user['chat_id']),
                         float(user['max_price']),
-                        {
-                            'google_flights': bool(user['enable_google_flights']),
-                            'maxmilhas': False,
-                        },
+                        {'google_flights': bool(user['enable_google_flights']), 'maxmilhas': False},
                         str(user['airline_filters_json'] or ''),
                     )
-                    user_duration_ms = _t.elapsed()
-                    if sent:
-                        cycle_stats['sent_users'] += 1
-                        cycle_stats['sent_results'] += int(total_results)
-                        cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
-                        mark_sent(conn, int(user['user_id']))
-                        logger.info("[bot-scheduler] %s | envio concluído | qte_envios=%s | duracao_ms=%s", label, total_results, user_duration_ms)
-                        audit.scraping("scan_agendado_enviado",
-                                       chat_id=str(user['chat_id']),
-                                       user_id=str(user['user_id']),
-                                       duration_ms=user_duration_ms,
-                                       payload={"resultados": total_results,
-                                                "interval_s": interval_seconds})
-                    else:
-                        cycle_stats['no_send_users'] += 1
-                        cycle_stats['reasons'][reason] = cycle_stats['reasons'].get(reason, 0) + 1
-                        logger.info("[bot-scheduler] %s | sem envio | %s | qte_envios=%s | duracao_ms=%s", label, reason, total_results, user_duration_ms)
-                        audit.scraping("scan_agendado_sem_envio",
-                                       chat_id=str(user['chat_id']),
-                                       user_id=str(user['user_id']),
-                                       status="skipped",
-                                       duration_ms=user_duration_ms,
-                                       payload={"motivo": reason, "resultados": total_results})
                 except Exception as exc:
+                    user_duration_ms = _t.elapsed()
                     if 'executor timeout' in str(exc).lower():
-                        logger.warning('[SCHED_RETRY] %s | timeout, tentando novamente', user_label(user))
+                        logger.warning('[SCHED_RETRY] %s | timeout, tentando novamente', label)
                         try:
                             sent, reason, total_results = run_for_user(
-                                conn, bot, loop,
+                                local_conn, local_bot, local_loop,
                                 int(user['user_id']), str(user['chat_id']),
                                 float(user['max_price']),
                                 {'google_flights': bool(user['enable_google_flights']), 'maxmilhas': False},
                                 str(user['airline_filters_json'] or ''),
                             )
                             if sent:
-                                mark_sent(conn, int(user['user_id']))
-                                logger.info('[SCHED_RETRY] %s | retry ok', user_label(user))
-                            continue
-                        except Exception as retry_exc:
-                            exc = retry_exc
-                            try:
-                                loop.run_until_complete(_send_admin_alert(
-                                    bot,
-                                    f"⚠️ Timeout 2x no scheduler\n\nUser ID: {user['user_id']}\nChat ID: {user['chat_id']}\nErro: {str(exc)[:400]}\n\nVerifique a sessão Google.",
-                                ))
-                            except Exception:
-                                pass
-                    cycle_stats['errors'] += 1
-                    cycle_stats['reasons']['erro'] = cycle_stats['reasons'].get('erro', 0) + 1
-                    logger.exception('[SCHED_FAIL] [bot-scheduler] %s | erro no envio: %s', user_label(user), exc)
+                                mark_sent(local_conn, int(user['user_id']))
+                                logger.info('[SCHED_RETRY] %s | retry ok', label)
+                                with stats_lock:
+                                    cycle_stats['sent_users'] += 1
+                                    cycle_stats['sent_results'] += int(total_results)
+                                    cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
+                                return
+                        except Exception:
+                            pass
+                    with stats_lock:
+                        cycle_stats['errors'] += 1
+                        cycle_stats['reasons']['erro'] = cycle_stats['reasons'].get('erro', 0) + 1
+                    logger.exception('[SCHED_FAIL] [bot-scheduler] %s | erro no envio: %s', label, exc)
                     if _is_chat_not_found(exc):
-                        _mark_user_blocked(conn, str(user['chat_id']))
+                        _mark_user_blocked(local_conn, str(user['chat_id']))
                     audit.error("scheduler_erro_envio",
-                                chat_id=str(user['chat_id']),
-                                user_id=str(user['user_id']),
+                                chat_id=str(user['chat_id']), user_id=str(user['user_id']),
                                 error_msg=str(exc)[:500])
                     try:
-                        loop.run_until_complete(_send_admin_alert(
-                            bot,
+                        local_loop.run_until_complete(_send_admin_alert(
+                            local_bot,
                             f"🚨 Erro no scheduler\n\nUser ID: {user['user_id']}\nChat ID: {user['chat_id']}\nErro: {str(exc)[:500]}",
                         ))
                     except Exception:
                         pass
+                    return
+
+                # Se chegou aqui, run_for_user retornou sem exceção
+                user_duration_ms = _t.elapsed()
+                with stats_lock:
+                    if sent:
+                        cycle_stats['sent_users'] += 1
+                        cycle_stats['sent_results'] += int(total_results)
+                        cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
+                        mark_sent(local_conn, int(user['user_id']))
+                        logger.info("[bot-scheduler] %s | envio concluído | qte_envios=%s | duracao_ms=%s", label, total_results, user_duration_ms)
+                        audit.scraping("scan_agendado_enviado",
+                                       chat_id=str(user['chat_id']), user_id=str(user['user_id']),
+                                       duration_ms=user_duration_ms,
+                                       payload={"resultados": total_results, "interval_s": interval_seconds})
+                    else:
+                        cycle_stats['no_send_users'] += 1
+                        cycle_stats['reasons'][reason] = cycle_stats['reasons'].get(reason, 0) + 1
+                        logger.info("[bot-scheduler] %s | sem envio | %s | qte_envios=%s | duracao_ms=%s", label, reason, total_results, user_duration_ms)
+                        audit.scraping("scan_agendado_sem_envio",
+                                       chat_id=str(user['chat_id']), user_id=str(user['user_id']),
+                                       status="skipped", duration_ms=user_duration_ms,
+                                       payload={"motivo": reason, "resultados": total_results})
+
+
+            logger.info('[bot-scheduler] distribuindo %s usuarios para %s workers paralelos', len(eligible_users), _NUM_SCHED_WORKERS)
+            with ThreadPoolExecutor(max_workers=_NUM_SCHED_WORKERS) as pool:
+                futures = [pool.submit(_process_one_user, user) for user in eligible_users]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        logger.error('[bot-scheduler] erro em worker paralelo: %s', exc)
         except DatabaseRateLimitError as exc:
             audit.error("scheduler_db_limit", error_msg=str(exc), status="blocked")
             logger.warning('[SCHED_DB_LIMIT] [bot-scheduler] limite de conexão MySQL por hora atingido durante ciclo: %s', exc)
