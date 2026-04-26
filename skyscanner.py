@@ -527,7 +527,15 @@ class GoogleProfileLock:
 
     def __enter__(self):
         os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
-        self.handle = open(self.lock_path, 'w')
+        try:
+            self.handle = open(self.lock_path, 'w')
+        except PermissionError:
+            # Lock com ownership incorreta (root etc) — limpa e tenta de novo
+            try:
+                os.unlink(self.lock_path)
+            except OSError:
+                pass
+            self.handle = open(self.lock_path, 'w')
         fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
         self.handle.seek(0)
         self.handle.truncate()

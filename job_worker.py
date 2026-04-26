@@ -263,7 +263,7 @@ GOOGLE_SESSION_DIR = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooin
 
 
 def _purge_stale_chrome():
-    """Mata Chrome orphans e limpa SingletonLock antes de cada job."""
+    """Mata Chrome orphans, limpa SingletonLock e locks com ownership errada antes de cada job."""
     import subprocess as _sp
     try:
         _sp.run(['pkill', '-9', '-f', r'playwright.*google_session'], capture_output=True, timeout=5)
@@ -284,9 +284,20 @@ def _purge_stale_chrome():
                         os.remove(fp)
                 except OSError:
                     pass
+        # Limpar locks com ownership incorreta (ex: root)
+        import pathlib as _pl
+        lock_file = str(_pl.Path(session_dir).parent / f'{_pl.Path(session_dir).name}.lock')
+        if os.path.exists(lock_file):
+            try:
+                # Se nao consegue ler -> ownership errada -> deleta
+                with open(lock_file, 'r'):
+                    pass
+            except PermissionError:
+                try:
+                    os.unlink(lock_file)
+                except OSError:
+                    pass
         # Limpar /tmp do Chrome
-        for d in os.listdir('/tmp'):
-            if d.startswith('com.google.Chrome.'):
                 try:
                     shutil.rmtree(os.path.join('/tmp', d), ignore_errors=True)
                 except Exception:
