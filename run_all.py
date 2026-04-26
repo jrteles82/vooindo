@@ -24,7 +24,7 @@ processes = []
 _lock_handle = None
 START_DELAY_SECONDS = float(os.getenv('RUN_ALL_START_DELAY_SECONDS', '2'))
 RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '20'))
-NUM_JOB_WORKERS = int(os.getenv('NUM_JOB_WORKERS', '2'))
+NUM_JOB_WORKERS = int(os.getenv('NUM_JOB_WORKERS', '3'))
 
 
 def _find_stale_pids(script_names: list[str]) -> list[int]:
@@ -134,7 +134,10 @@ def main():
 
     def _worker_env(worker_index: int) -> dict:
         env = os.environ.copy()
-        env['GOOGLE_PERSISTENT_PROFILE_DIR'] = str(BASE_DIR / 'google_session')
+        profile_dir = str(BASE_DIR / 'google_session')
+        if worker_index > 1:
+            profile_dir = str(BASE_DIR / f'google_session_{worker_index}')
+        env['GOOGLE_PERSISTENT_PROFILE_DIR'] = profile_dir
         return env
 
     children = [
@@ -147,6 +150,9 @@ def main():
         {'cmd': [py, str(BASE_DIR / 'payment_monitor.py')]},
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
     ]
+
+    # Sincronizar profiles escravos com o mestre
+    sync_base_session_to_worker_profiles(num_workers=NUM_JOB_WORKERS, force=False, skip_in_use=True)
 
     script_names = list({Path(child['cmd'][-1]).name for child in children})
     kill_stale_processes(script_names)
