@@ -3179,7 +3179,7 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (user_id,),
     ).fetchone()
     last_manual_sent_at = str((last_manual_row['last_manual_sent_at'] if isinstance(last_manual_row, dict) else last_manual_row[0]) or '') if last_manual_row else ''
-    if last_manual_sent_at:
+    if last_manual_sent_at and str(user_id) != '2':
         try:
             dt = datetime.fromisoformat(last_manual_sent_at.replace(' ', 'T'))
             if 0 <= (now_local() - dt).total_seconds() < 5 * 60:
