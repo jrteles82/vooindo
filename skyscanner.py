@@ -645,12 +645,12 @@ def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) 
         out_dt = datetime.strptime(route.outbound_date, '%Y-%m-%d').date()
         today = date.today()
         days_ahead = (out_dt - today).days
-        if days_ahead > 180:
-            _subprocess_timeout = min(_subprocess_timeout, 90)
-            timeout_redux = min(executor_timeout_ms, 80000)
+        if days_ahead > 240:
+            _subprocess_timeout = min(_subprocess_timeout, 120)
+            timeout_redux = min(executor_timeout_ms, 110000)
             env['GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS'] = str(timeout_redux)
             env['GOOGLE_FLIGHTS_SHORT_TIMEOUT'] = '1'
-            logger.info('[google-executor] rota distante (%dd), timeout adaptado: %ss', days_ahead, _subprocess_timeout)
+            logger.info('[google-executor] rota muito distante (%dd), timeout adaptado: %ss', days_ahead, _subprocess_timeout)
     except Exception:
         pass
     logger.info('[google-executor] rota=%s->%s ida=%s volta=%s | allow_agencies=%s | timeout_ms=%s | hard_timeout_s=%s', route.origin, route.destination, route.outbound_date, route.inbound_date or '-', allow_agencies, executor_timeout_ms, _subprocess_timeout)
