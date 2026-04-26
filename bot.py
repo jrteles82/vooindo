@@ -2318,130 +2318,121 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'desempenho':
         await query.answer()
         import subprocess  # noqa: PLC0415
-        import json  # noqa: PLC0415
 
-        # Resumo dos ultimos 7 dias
-        try:
-            db_res = subprocess.run(
-                ['mysql', '-h127.0.0.1', '-uvooindobot', '-pVooindo820412', 'vooindo', '-e', r'''
-SELECT 
-  DATE_FORMAT(j.created_at, '%%Y-%%m-%%d') as data,
-  COUNT(*) as total,
-  SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) as sucesso,
-  SUM(CASE WHEN j.status = 'error' AND j.error_message LIKE "%%filtrados%%" THEN 1 ELSE 0 END) as erro_filtro,
-  SUM(CASE WHEN j.status = 'error' AND j.error_message = 'cancelled_by_new_request' THEN 1 ELSE 0 END) as cancelados,
-  SUM(CASE WHEN j.status = 'error' AND j.error_message NOT LIKE "%%filtrados%%" AND j.error_message != 'cancelled_by_new_request' AND j.error_message != '' THEN 1 ELSE 0 END) as outros_erros,
-  ROUND(AVG(CASE WHEN j.status = 'done' AND j.started_at IS NOT NULL AND j.finished_at IS NOT NULL THEN TIME_TO_SEC(TIMEDIFF(j.finished_at, j.started_at))/60 ELSE NULL END), 1) as tempo_medio_min
-FROM scan_jobs j
-WHERE j.created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
-GROUP BY DATE_FORMAT(j.created_at, '%%Y-%%m-%%d')
-ORDER BY data
-'''
-                ], capture_output=True, text=True, timeout=15
-            )
-            db_out = db_res.stdout
-        except Exception:
-            db_out = ''
+        def db_query(query_str):
+            try:
+                r = subprocess.run(
+                    ['mysql', '-h127.0.0.1', '-uvooindobot', '-pVooindo820412', 'vooindo', '-B', '-N', '-e', query_str],
+                    capture_output=True, text=True, timeout=15
+                )
+                return r.stdout.strip()
+            except Exception:
+                return ''
 
-        # Resumo geral 7 dias
-        try:
-            resumo_res = subprocess.run(
-                ['mysql', '-h127.0.0.1', '-uvooindobot', '-pVooindo820412', 'vooindo', '-e', r'''
-SELECT 
-  COUNT(*) as total_7dias,
-  SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) as total_ok,
-  SUM(CASE WHEN status='error' AND error_message LIKE "%%filtrados%%" THEN 1 ELSE 0 END) as filtrados,
-  SUM(CASE WHEN status='error' AND error_message='cancelled_by_new_request' THEN 1 ELSE 0 END) as cancelados,
-  SUM(CASE WHEN status='error' AND error_message NOT LIKE "%%filtrados%%" AND error_message != 'cancelled_by_new_request' AND error_message != '' THEN 1 ELSE 0 END) as outros
+        # Diario
+        db_out = db_query(r'''
+SELECT CONCAT(
+  DATE_FORMAT(created_at, '%m-%d'), "|",
+  COUNT(*), "|",
+  SUM(CASE WHEN status='done' THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message LIKE "%filtrados%" THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message='cancelled_by_new_request' THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message NOT LIKE "%filtrados%" AND error_message != 'cancelled_by_new_request' AND error_message != '' THEN 1 ELSE 0 END), "|",
+  COALESCE(ROUND(AVG(CASE WHEN status='done' AND started_at IS NOT NULL AND finished_at IS NOT NULL THEN TIME_TO_SEC(TIMEDIFF(finished_at, started_at))/60 ELSE NULL END), 1), '-')
+)
+FROM scan_jobs
+WHERE created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
+GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+ORDER BY created_at
+''')
+        # Resumo geral
+        resumo_out = db_query(r'''
+SELECT CONCAT(
+  COUNT(*), "|",
+  SUM(CASE WHEN status='done' THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message LIKE "%filtrados%" THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message='cancelled_by_new_request' THEN 1 ELSE 0 END), "|",
+  SUM(CASE WHEN status='error' AND error_message NOT LIKE "%filtrados%" AND error_message != 'cancelled_by_new_request' AND error_message != '' THEN 1 ELSE 0 END)
+)
 FROM scan_jobs WHERE created_at > NOW() - INTERVAL 7 DAY
-'''
-                ], capture_output=True, text=True, timeout=15
-            )
-            resumo_out = resumo_res.stdout
-        except Exception:
-            resumo_out = ''
-
-        # Top 5 erros
-        try:
-            erros_res = subprocess.run(
-                ['mysql', '-h127.0.0.1', '-uvooindobot', '-pVooindo820412', 'vooindo', '-e', r'''
-SELECT 
-  COALESCE(NULLIF(LEFT(error_message, 45), ''), '(vazio)') as tipo_erro,
-  COUNT(*) as qtd
-FROM scan_jobs 
+''')
+        # Top erros
+        erros_out = db_query(r'''
+SELECT CONCAT(COALESCE(NULLIF(LEFT(error_message, 45), ''), '(vazio)'), "|", COUNT(*))
+FROM scan_jobs
 WHERE created_at > NOW() - INTERVAL 7 DAY AND status = 'error'
-GROUP BY tipo_erro
-ORDER BY qtd DESC
+GROUP BY LEFT(error_message, 45)
+ORDER BY COUNT(*) DESC
 LIMIT 5
-'''
-                ], capture_output=True, text=True, timeout=15
-            )
-            erros_out = erros_res.stdout
-        except Exception:
-            erros_out = ''
-
+''')
         # Por usuario
-        try:
-            user_out_res = subprocess.run(
-                ['mysql', '-h127.0.0.1', '-uvooindobot', '-pVooindo820412', 'vooindo', '-e', r'''
-SELECT 
-  b.first_name,
-  COUNT(j.id) as consultas,
-  SUM(CASE WHEN j.status='done' THEN 1 ELSE 0 END) as ok,
-  COUNT(DISTINCT ur.id) as rotas
-FROM bot_users b
+        user_out = db_query(r'''
+SELECT CONCAT(
+  COALESCE(b.first_name, '?'), "|",
+  COUNT(j.id), "|",
+  SUM(CASE WHEN j.status='done' THEN 1 ELSE 0 END), "|",
+  COALESCE(rcnt.r, 0)
+) FROM bot_users b
 LEFT JOIN scan_jobs j ON j.user_id=b.user_id AND j.created_at > NOW() - INTERVAL 7 DAY
-LEFT JOIN user_routes ur ON ur.user_id=b.user_id AND ur.active=1
+LEFT JOIN (SELECT user_id, COUNT(*) as r FROM user_routes WHERE active=1 GROUP BY user_id) rcnt ON rcnt.user_id=b.user_id
 GROUP BY b.user_id
-ORDER BY consultas DESC
+ORDER BY COUNT(j.id) DESC
 LIMIT 15
-'''
-                ], capture_output=True, text=True, timeout=15
-            )
-            user_out = user_out_res.stdout
-        except Exception:
-            user_out = ''
+''')
 
-        texto = '📊 *Desempenho — Vooindo*\n\n'
+        lines = []
+        lines.append('📊 *Desempenho — Vooindo*')
+        lines.append('')
         if not any([db_out, resumo_out, erros_out, user_out]):
-            texto += '_Dados indisponíveis no momento._'
-        else:
-            linhas = db_out.strip().split('\n')
-            if len(linhas) > 1:
-                texto += '*Últimos 7 dias:*\n'
-                for linha in linhas[1:]:
-                    cols = linha.split('\t')
-                    if len(cols) >= 5:
-                        texto += f"• {cols[0]}: {cols[1]} total, ✅{cols[2]} sucesso"
-                        if cols[5] != '0':
-                            texto += f", ❌{cols[5]} erro"
-                        if cols[7] and cols[7] != 'NULL':
-                            texto += f", ⏱{cols[7]}min"
-                        texto += '\n'
-            texto += '\n*Total (7 dias):*\n'
-            for linha in resumo_out.strip().split('\n')[1:]:
-                cols = linha.split('\t')
-                if len(cols) >= 6:
-                    taxa = round(int(cols[1]) * 100 / max(int(cols[0]), 1), 1) if int(cols[0]) else 0
-                    texto += f"• {cols[0]} consultas | ✅{cols[1]} sucesso ({taxa}%)\n"
-                    texto += f"  ❌ {cols[2]} filtro | 🔄 {cols[3]} cancel | ⚠️ {cols[4]} outros\n"
-            texto += '\n*Top erros:*\n'
-            for linha in erros_out.strip().split('\n')[1:]:
-                cols = linha.split('\t')
-                if len(cols) >= 2:
-                    texto += f"• {cols[0]}: {cols[1]}x\n"
-            texto += '\n*Por usuário:*\n'
-            for linha in user_out.strip().split('\n')[1:]:
-                cols = linha.split('\t')
-                if len(cols) >= 4:
-                    nome = (cols[0] or '—')[:12]
-                    pct = round(int(cols[2]) * 100 / max(int(cols[1]), 1), 1) if int(cols[1]) else 0
-                    texto += f"• {nome}: {cols[1]} consultas, {pct}% sucesso, {cols[3]} rotas\n"
+            lines.append('_Dados indisponíveis no momento._')
 
-        texto = texto.strip()[:4090]
+        if db_out:
+            lines.append('*Últimos 7 dias:*')
+            for row in db_out.split('\n'):
+                cols = row.split('|')
+                if len(cols) >= 7:
+                    parts = [f"{cols[0]}: {cols[1]} total, ✅{cols[2]} sucesso"]
+                    if cols[4] != '0':
+                        parts.append(f"🔄{cols[4]}")
+                    if cols[5] != '0':
+                        parts.append(f"⚠️{cols[5]}")
+                    if cols[6] != '-':
+                        parts.append(f"⏱{cols[6]}min")
+                    lines.append('\u2022 ' + ', '.join(parts))
+            lines.append('')
+
+        if resumo_out:
+            cols = resumo_out.split('|')
+            if len(cols) >= 5:
+                total = int(cols[0] or 0)
+                ok = int(cols[1] or 0)
+                taxa = round(ok * 100 / max(total, 1), 1)
+                lines.append(f'*Total (7 dias):* {total} consultas | ✅{ok} sucesso ({taxa}%)')
+                lines.append(f'  ❌{cols[2]} filtro | 🔄{cols[3]} cancel | ⚠️{cols[4]} outros')
+                lines.append('')
+
+        if erros_out:
+            lines.append('*Top erros:*')
+            for row in erros_out.split('\n'):
+                cols = row.split('|')
+                if len(cols) >= 2:
+                    lines.append(f'\u2022 {cols[0]}: {cols[1]}x')
+            lines.append('')
+
+        if user_out:
+            lines.append('*Por usuário:*')
+            for row in user_out.split('\n'):
+                cols = row.split('|')
+                if len(cols) >= 4 and cols[1] != '0':
+                    nome = (cols[0] or '\u2014')[:12]
+                    total_u = int(cols[1] or 0)
+                    ok_u = int(cols[2] or 0)
+                    pct = round(ok_u * 100 / max(total_u, 1), 1) if total_u else 0
+                    lines.append(f'\u2022 {nome}: {total_u} consultas, {pct}% sucesso, {cols[3]} rotas')
+
         await query.edit_message_text(
-            texto, parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Atualizar', callback_data='painel:desempenho'), InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]]),
+            '\n'.join(lines)[:4090], parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('\U0001f504 Atualizar', callback_data='painel:desempenho'), InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')]]),
         )
 
     elif action == 'scheduler_status':
