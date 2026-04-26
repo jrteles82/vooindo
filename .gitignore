@@ -16,3 +16,8 @@ google_session/
 .env
 *.db
 *.db.bak
+google_session_1/
+google_session_2/
+price_cache.db
+.session_watchdog_state.json
+.session_watchdog_cache.json

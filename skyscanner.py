@@ -550,7 +550,76 @@ def _clean_vendor_label(vendor: str) -> str:
     return cleaned
 
 
+CACHE_DB_PATH = Path(__file__).resolve().parent / 'price_cache.db'
+CACHE_TTL_SECONDS = 3600  # 1h
+
+
+def _price_cache_key(route: RouteQuery) -> str:
+    """Chave única para cache: origem-destino-data-ida-data-volta-tipo"""
+    parts = [route.origin.upper(), route.destination.upper(), route.outbound_date]
+    if (route.inbound_date or '').strip():
+        parts.append(route.inbound_date)
+    parts.append(route.trip_type or 'oneway')
+    return '-'.join(parts)
+
+
+def _cache_get(route: RouteQuery) -> FlightResult | None:
+    """Retorna resultado em cache se <1h."""
+    import sqlite3
+    try:
+        key = _price_cache_key(route)
+        conn = sqlite3.connect(str(CACHE_DB_PATH))
+        conn.execute('''CREATE TABLE IF NOT EXISTS price_cache (
+            cache_key TEXT PRIMARY KEY,
+            result_json TEXT,
+            cached_at INTEGER
+        )''')
+        row = conn.execute(
+            'SELECT result_json, cached_at FROM price_cache WHERE cache_key = ?',
+            (key,)
+        ).fetchone()
+        conn.close()
+        if row:
+            now_ts = int(time.time())
+            if now_ts - int(row[1]) < CACHE_TTL_SECONDS:
+                import json
+                data = json.loads(row[0])
+                if data.get('price') is not None:
+                    logger.info('[price-cache] HIT key=%s price=%s', key, data['price'])
+                    return FlightResult(**data)
+    except Exception:
+        pass
+    return None
+
+
+def _cache_set(route: RouteQuery, result: FlightResult):
+    """Salva resultado no cache."""
+    import sqlite3, json
+    try:
+        key = _price_cache_key(route)
+        data = result._asdict()
+        conn = sqlite3.connect(str(CACHE_DB_PATH))
+        conn.execute('''CREATE TABLE IF NOT EXISTS price_cache (
+            cache_key TEXT PRIMARY KEY,
+            result_json TEXT,
+            cached_at INTEGER
+        )''')
+        conn.execute(
+            'INSERT OR REPLACE INTO price_cache (cache_key, result_json, cached_at) VALUES (?, ?, ?)',
+            (key, json.dumps(data, ensure_ascii=False, default=str), int(time.time()))
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
+    # Verificar cache primeiro
+    cached = _cache_get(route)
+    if cached is not None:
+        return cached
+
     executor_path = str(CONFIG.get("google_flights_executor_path") or "").strip()
     if not executor_path:
         raise RuntimeError("GOOGLE_FLIGHTS_EXECUTOR_PATH não configurado")
@@ -569,6 +638,20 @@ def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) 
     lock_path = str(_profile_dir.parent / f'{_profile_dir.name}.lock')
     executor_timeout_ms = int(CONFIG.get("google_flights_executor_timeout_ms", 90000))
     _subprocess_timeout = max(60, min(300, int(executor_timeout_ms / 1000) + 20))
+    # Timeout adaptativo: se rota é muito distante (>6 meses), reduz timeout
+    try:
+        from datetime import datetime, date
+        out_dt = datetime.strptime(route.outbound_date, '%Y-%m-%d').date()
+        today = date.today()
+        days_ahead = (out_dt - today).days
+        if days_ahead > 180:
+            _subprocess_timeout = min(_subprocess_timeout, 90)
+            timeout_redux = min(executor_timeout_ms, 80000)
+            env['GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS'] = str(timeout_redux)
+            env['GOOGLE_FLIGHTS_SHORT_TIMEOUT'] = '1'
+            logger.info('[google-executor] rota distante (%dd), timeout adaptado: %ss', days_ahead, _subprocess_timeout)
+    except Exception:
+        pass
     logger.info('[google-executor] rota=%s->%s ida=%s volta=%s | allow_agencies=%s | timeout_ms=%s | hard_timeout_s=%s', route.origin, route.destination, route.outbound_date, route.inbound_date or '-', allow_agencies, executor_timeout_ms, _subprocess_timeout)
     with GoogleProfileLock(lock_path):
         proc = subprocess.Popen(
@@ -639,7 +722,8 @@ def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) 
     price = payload.get("price")
     booking_url = str(payload.get("booking_url") or "")
     final_url = booking_url or str(payload.get("url") or build_google_flights_url(route))
-    return FlightResult(
+    # Cache resultado p/ evitar re-scraping desnecessário
+    result = FlightResult(
         site="google_flights",
         origin=route.origin,
         destination=route.destination,
@@ -664,6 +748,8 @@ def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) 
         best_agency_url=best_agency_url,
         best_agency_visible_price=float(best_agency_visible_price) if isinstance(best_agency_visible_price, (int, float)) else None,
     )
+    _cache_set(route, result)
+    return result
 
 
 class GoogleFlightsScraper:

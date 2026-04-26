@@ -27,6 +27,10 @@ GL = os.getenv("GOOGLE_GL", "BR")
 CURR = os.getenv("GOOGLE_CURR", "BRL")
 HEADLESS = os.getenv("GOOGLE_FLIGHTS_EXECUTOR_HEADLESS", "1").strip().lower() in {"1", "true", "yes", "on"}
 TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS", os.getenv("GOOGLE_TIMEOUT_MS", "45000")))
+
+# Se recebeu timeout reduzido via env, respeitar
+if os.getenv("GOOGLE_FLIGHTS_SHORT_TIMEOUT"):
+    TIMEOUT_MS = min(TIMEOUT_MS, 60000)
 SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
 BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "3000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}

@@ -259,6 +259,42 @@ def _renovar_sessao_markup():
     ]])
 
 
+GOOGLE_SESSION_DIR = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooindo/google_session')
+
+
+def _purge_stale_chrome():
+    """Mata Chrome orphans e limpa SingletonLock antes de cada job."""
+    import subprocess as _sp
+    try:
+        _sp.run(['pkill', '-9', '-f', r'playwright.*google_session'], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    try:
+        _sp.run(['pkill', '-9', '-f', r'chrome.*google_session'], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    try:
+        import shutil
+        session_dir = GOOGLE_SESSION_DIR
+        for f in os.listdir(session_dir):
+            if 'Singleton' in f:
+                fp = os.path.join(session_dir, f)
+                try:
+                    if os.path.islink(fp) or os.path.isfile(fp):
+                        os.remove(fp)
+                except OSError:
+                    pass
+        # Limpar /tmp do Chrome
+        for d in os.listdir('/tmp'):
+            if d.startswith('com.google.Chrome.'):
+                try:
+                    shutil.rmtree(os.path.join('/tmp', d), ignore_errors=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def _notify_session_expired(bot: Bot, loop, score: int = 0) -> None:
     global _session_alert_sent_at, _GOOGLE_SESSION_INVALID
     _GOOGLE_SESSION_INVALID = True
@@ -428,6 +464,10 @@ def mark_sent(conn, user_id: int):
 
 def process_job(conn, bot: Bot, loop, job):
     global _GOOGLE_SESSION_INVALID
+
+    # Prevenir stale_running_recovered: limpar qualquer Chrome zumbi
+    _purge_stale_chrome()
+
     user_id = int(job['user_id'])
     chat_id = str(job['chat_id'])
     job_id = int(job['id'])
