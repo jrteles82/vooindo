@@ -389,97 +389,27 @@ def main():
                 except Exception:
                     pass
 
-            stats_lock = Lock()
-
-            def _process_one_user(user: dict) -> None:
-                """Executa run_for_user em thread separada, com conexões próprias."""
-                nonlocal cycle_stats
-                local_conn = connect_db()
-                local_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(local_loop)
-                local_request = HTTPXRequest(connection_pool_size=10, pool_timeout=60.0, connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0)
-                local_bot = Bot(token=TOKEN, request=local_request)
-                label = user_label(user)
-                _t = audit.timer()
+            # --- DELEGAR PARA JOB_WORKERS ---
+            # Em vez de rodar run_for_user nas threads (que competem pelo mesmo profile),
+            # cria jobs no scan_jobs para cada usuario elegivel.
+            # Os job_workers (com profiles Chrome separados) pegam e processam em paralelo.
+            for user in eligible_users:
                 try:
-                    sent, reason, total_results = run_for_user(
-                        local_conn, local_bot, local_loop,
-                        int(user['user_id']), str(user['chat_id']),
-                        float(user['max_price']),
-                        {'google_flights': bool(user['enable_google_flights']), 'maxmilhas': False},
-                        str(user['airline_filters_json'] or ''),
+                    label = user_label(user)
+                    chat_id = str(user['chat_id'])
+                    user_id = int(user['user_id'])
+                    conn.execute(
+                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (?, ?, 'scheduled', 'pending', ?)"),
+                        (user_id, chat_id, '{}'),
                     )
+                    conn.commit()
+                    logger.info("[bot-scheduler] %s | job criado para worker", label)
+                    cycle_stats['sent_users'] += 1
                 except Exception as exc:
-                    user_duration_ms = _t.elapsed()
-                    if 'executor timeout' in str(exc).lower():
-                        logger.warning('[SCHED_RETRY] %s | timeout, tentando novamente', label)
-                        try:
-                            sent, reason, total_results = run_for_user(
-                                local_conn, local_bot, local_loop,
-                                int(user['user_id']), str(user['chat_id']),
-                                float(user['max_price']),
-                                {'google_flights': bool(user['enable_google_flights']), 'maxmilhas': False},
-                                str(user['airline_filters_json'] or ''),
-                            )
-                            if sent:
-                                mark_sent(local_conn, int(user['user_id']))
-                                logger.info('[SCHED_RETRY] %s | retry ok', label)
-                                with stats_lock:
-                                    cycle_stats['sent_users'] += 1
-                                    cycle_stats['sent_results'] += int(total_results)
-                                    cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
-                                return
-                        except Exception:
-                            pass
-                    with stats_lock:
-                        cycle_stats['errors'] += 1
-                        cycle_stats['reasons']['erro'] = cycle_stats['reasons'].get('erro', 0) + 1
-                    logger.exception('[SCHED_FAIL] [bot-scheduler] %s | erro no envio: %s', label, exc)
-                    if _is_chat_not_found(exc):
-                        _mark_user_blocked(local_conn, str(user['chat_id']))
-                    audit.error("scheduler_erro_envio",
-                                chat_id=str(user['chat_id']), user_id=str(user['user_id']),
-                                error_msg=str(exc)[:500])
-                    try:
-                        local_loop.run_until_complete(_send_admin_alert(
-                            local_bot,
-                            f"🚨 Erro no scheduler\n\nUser ID: {user['user_id']}\nChat ID: {user['chat_id']}\nErro: {str(exc)[:500]}",
-                        ))
-                    except Exception:
-                        pass
-                    return
+                    logger.error("[bot-scheduler] erro ao criar job para user %s: %s", user.get('user_id'), exc)
+                    cycle_stats['errors'] += 1
 
-                # Se chegou aqui, run_for_user retornou sem exceção
-                user_duration_ms = _t.elapsed()
-                with stats_lock:
-                    if sent:
-                        cycle_stats['sent_users'] += 1
-                        cycle_stats['sent_results'] += int(total_results)
-                        cycle_stats['reasons']['enviado'] = cycle_stats['reasons'].get('enviado', 0) + 1
-                        mark_sent(local_conn, int(user['user_id']))
-                        logger.info("[bot-scheduler] %s | envio concluído | qte_envios=%s | duracao_ms=%s", label, total_results, user_duration_ms)
-                        audit.scraping("scan_agendado_enviado",
-                                       chat_id=str(user['chat_id']), user_id=str(user['user_id']),
-                                       duration_ms=user_duration_ms,
-                                       payload={"resultados": total_results, "interval_s": interval_seconds})
-                    else:
-                        cycle_stats['no_send_users'] += 1
-                        cycle_stats['reasons'][reason] = cycle_stats['reasons'].get(reason, 0) + 1
-                        logger.info("[bot-scheduler] %s | sem envio | %s | qte_envios=%s | duracao_ms=%s", label, reason, total_results, user_duration_ms)
-                        audit.scraping("scan_agendado_sem_envio",
-                                       chat_id=str(user['chat_id']), user_id=str(user['user_id']),
-                                       status="skipped", duration_ms=user_duration_ms,
-                                       payload={"motivo": reason, "resultados": total_results})
-
-
-            logger.info('[bot-scheduler] distribuindo %s usuarios para %s workers paralelos', len(eligible_users), _NUM_SCHED_WORKERS)
-            with ThreadPoolExecutor(max_workers=_NUM_SCHED_WORKERS) as pool:
-                futures = [pool.submit(_process_one_user, user) for user in eligible_users]
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        logger.error('[bot-scheduler] erro em worker paralelo: %s', exc)
+            logger.info('[bot-scheduler] %s jobs delegados para job_workers', len(eligible_users))
         except DatabaseRateLimitError as exc:
             audit.error("scheduler_db_limit", error_msg=str(exc), status="blocked")
             logger.warning('[SCHED_DB_LIMIT] [bot-scheduler] limite de conexão MySQL por hora atingido durante ciclo: %s', exc)
