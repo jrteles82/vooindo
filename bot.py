@@ -4051,6 +4051,13 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting_plan_price_edit', None)
         await update.message.reply_text(f'✅ Plano {label} atualizado para R$ {format_money_br(novo_valor)}.')
         return ConversationHandler.END
+    if context.user_data.pop('awaiting_google_password', False):
+        await update.message.reply_text(
+            '⏱ A sessão de renovação expirou ou foi redefinida.\n'
+            'Abra o painel e clique em *"Renovar Sessão Google"* novamente.',
+            parse_mode='Markdown',
+        )
+        return
     clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
     await update.message.reply_text(
@@ -4082,22 +4089,16 @@ async def post_init(app):
 async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) -> None:
     import asyncio as _asyncio
 
-    proc = await _asyncio.create_subprocess_exec(
-        sys.executable, '/opt/vooindo/google_login_stdin.py',
-        stdin=_asyncio.subprocess.PIPE,
-        stdout=_asyncio.subprocess.PIPE,
-        stderr=_asyncio.subprocess.DEVNULL,
-    )
     session = _login_sessions.setdefault(chat_id, {})
-    session['proc'] = proc
     session.setdefault('2fa_queue', _asyncio.Queue())
     session['done'] = False
 
     _last_edit = [0.0]
+    _got_final = [False]
 
     async def _safe_edit(text: str, markup=None) -> None:
         now = _asyncio.get_event_loop().time()
-        if now - _last_edit[0] < 2.5:
+        if now - _last_edit[0] < 1.0:
             return
         _last_edit[0] = now
         try:
@@ -4108,7 +4109,16 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
         except Exception:
             pass
 
+    proc = None
     try:
+        proc = await _asyncio.create_subprocess_exec(
+            sys.executable, '/opt/vooindo/google_login_stdin.py',
+            stdin=_asyncio.subprocess.PIPE,
+            stdout=_asyncio.subprocess.PIPE,
+            stderr=_asyncio.subprocess.DEVNULL,
+        )
+        session['proc'] = proc
+
         proc.stdin.write((password + '\n').encode())
         await proc.stdin.drain()
 
@@ -4140,6 +4150,7 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
                 await proc.stdin.drain()
 
             elif line.startswith('STATUS:AUTH_SCORE:'):
+                _got_final[0] = True
                 score = int(line.split(':')[2])
                 if score == 2:
                     text = '✅ *Login concluído!* auth\\_score=2/2\n\nAgências voltarão a aparecer nas próximas buscas.'
@@ -4159,6 +4170,7 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
                 break
 
             elif line.startswith('STATUS:ERROR:'):
+                _got_final[0] = True
                 err = line[len('STATUS:ERROR:'):]
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
                 await bot.edit_message_text(
@@ -4176,6 +4188,19 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
 
         await proc.wait()
 
+        if not _got_final[0]:
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg_id,
+                    text='⚠️ *Login encerrado sem resultado final.*\n\nVerifique os screenshots em debug\\_dumps/.',
+                    parse_mode='Markdown',
+                    reply_markup=markup,
+                )
+            except Exception:
+                pass
+
     except Exception as exc:
         logger.error('Erro no _run_login_task: %s', exc)
         try:
@@ -4190,10 +4215,11 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
             pass
     finally:
         session['done'] = True
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         _login_sessions.pop(chat_id, None)
 
 
@@ -4207,6 +4233,15 @@ async def renovar_sessao_callback(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     conn.close()
     await query.answer()
+    old_session = _login_sessions.pop(chat_id, None)
+    if old_session:
+        old_proc = old_session.get('proc')
+        if old_proc:
+            try:
+                old_proc.kill()
+            except Exception:
+                pass
+    context.user_data['awaiting_google_password'] = True
     await query.message.reply_text(
         '🔐 *Renovar Sessão Google*\n\n'
         'Digite a senha da conta Google.\n'
@@ -4226,6 +4261,7 @@ async def renovar_sessao_password(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     conn.close()
 
+    context.user_data.pop('awaiting_google_password', None)
     password = update.message.text or ''
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=update.message.message_id)
@@ -4236,11 +4272,17 @@ async def renovar_sessao_password(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text('❌ Senha não pode ser vazia. /cancelar para sair.')
         return ASK_GOOGLE_PASSWORD
 
-    status_msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text='⏳ *Iniciando login Google...*',
-        parse_mode='Markdown',
-    )
+    try:
+        status_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text='⏳ *Iniciando login Google...*',
+            parse_mode='Markdown',
+        )
+    except Exception as exc:
+        logger.error('Erro ao enviar mensagem de status do login: %s', exc)
+        await update.message.reply_text(f'❌ Erro ao iniciar login: {exc}')
+        return ASK_GOOGLE_PASSWORD
+
     _login_sessions[chat_id] = {'2fa_queue': _asyncio.Queue(), 'done': False}
     _asyncio.create_task(_run_login_task(context.bot, chat_id, status_msg.message_id, password.strip()))
     return ASK_GOOGLE_2FA
@@ -4360,14 +4402,17 @@ async def run_bot():
         entry_points=[CallbackQueryHandler(renovar_sessao_callback, pattern=r'^painel:renovar_sessao$')],
         states={
             ASK_GOOGLE_PASSWORD: [
+                CallbackQueryHandler(renovar_sessao_callback, pattern=r'^painel:renovar_sessao$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, renovar_sessao_password),
             ],
             ASK_GOOGLE_2FA: [
+                CallbackQueryHandler(renovar_sessao_callback, pattern=r'^painel:renovar_sessao$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, renovar_sessao_2fa),
             ],
         },
         fallbacks=[CommandHandler('cancelar', renovar_sessao_cancel)],
         conversation_timeout=300,
+        allow_reentry=True,
     )
     app.add_handler(renovar_conv)
     app.add_handler(CommandHandler('removerrota', removerrota))

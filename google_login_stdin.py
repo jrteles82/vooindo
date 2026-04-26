@@ -34,6 +34,7 @@ os.environ['DISPLAY'] = DISPLAY_NUM
 
 sys.path.insert(0, '/opt/vooindo')
 from playwright.sync_api import sync_playwright  # noqa: E402
+from google_session_sync import purge_chrome_singleton_artifacts, is_profile_in_use  # noqa: E402
 
 
 def _screenshot(page, name: str) -> None:
@@ -64,6 +65,11 @@ if not password:
     sys.exit(1)
 
 print('STATUS:STEP:Abrindo Chrome...')
+if is_profile_in_use(SESSION_DIR):
+    print('STATUS:ERROR:O perfil google_session está em uso por outro processo Chrome. Aguarde as buscas encerrarem e tente novamente.')
+    xvfb.terminate()
+    sys.exit(1)
+purge_chrome_singleton_artifacts(SESSION_DIR)
 try:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
