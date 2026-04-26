@@ -595,9 +595,10 @@ def _cache_get(route: RouteQuery) -> FlightResult | None:
 def _cache_set(route: RouteQuery, result: FlightResult):
     """Salva resultado no cache."""
     import sqlite3, json
+    from dataclasses import asdict
     try:
         key = _price_cache_key(route)
-        data = result._asdict()
+        data = asdict(result)
         conn = sqlite3.connect(str(CACHE_DB_PATH))
         conn.execute('''CREATE TABLE IF NOT EXISTS price_cache (
             cache_key TEXT PRIMARY KEY,
