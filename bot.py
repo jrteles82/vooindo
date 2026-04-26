@@ -2386,46 +2386,54 @@ ORDER BY COUNT(j.id) DESC
 LIMIT 15
 ''')
 
-        texto = '📊 *Desempenho*\n'
+        texto = ''
         if not any([db_out, resumo_out, erros_out, user_out]):
-            texto += '\n_Dados indisponiveis._'
+            texto = '📊 *Desempenho*\n\n_Dados indisponiveis._'
         else:
-            # Header compacto
+            # === HEADER ===
+            texto += '📊 *Desempenho*'
+
             if resumo_out:
                 cols = resumo_out.split('|')
                 if len(cols) >= 5:
                     total = int(cols[0] or 0)
                     ok = int(cols[1] or 0)
                     taxa = round(ok * 100 / max(total, 1), 1) if total else 0
-                    icon = ('✅', '⚠️', '❌')[
-                        0 if taxa >= 70 else (1 if taxa >= 40 else 2)
-                    ]
-                    texto += f'\n{icon} {ok}/{total} ({taxa}%) — {total} consultas'
-                    texto += f'\n   ❌{cols[2]}filtro  🔄{cols[3]}cancel  ⚠️{cols[4]}outros'
-                    texto += '\n'
+                    status_icon = '✅' if taxa >= 60 else ('\u26a0\ufe0f' if taxa >= 35 else '')
+                    texto += f'\n\n{status_icon}*Geral:* {ok}/{total} ({taxa}% ok)'
+                    items = []
+                    if cols[2] != '0':
+                        items.append(f' filtro')
+                    if cols[3] != '0':
+                        items.append(f' \u2702{cols[3]}')
+                    if cols[4] != '0':
+                        items.append(f' erro{cols[4]}')
+                    if items:
+                        texto += '  ' + '  '.join(items)
 
-            # 7 dias compacto
+            texto += f'\n{"\u2500" * 18}'
+
+            # === DIAS ===
             if db_out:
-                texto += '\n' + '\u2500' * 20 + '\n'
                 for row in db_out.split('\n'):
                     cols = row.split('|')
                     if len(cols) >= 7:
-                        data = cols[0]
+                        data = cols[0][:5]
                         total_d = int(cols[1] or 0)
                         ok_d = int(cols[2] or 0)
-                        fail_d = total_d - ok_d
                         tempo = cols[6] if cols[6] != '-' else ''
-                        bar = ''
                         if total_d > 0:
                             p = round(ok_d * 10 / total_d)
-                            bar = '🟢' * p + '🔴' * (10 - p)
-                        t = f' ⏱{tempo}min' if tempo else ''
+                            bar = '\U0001f7e2' * p + '\U0001f534' * (10 - p)
+                        else:
+                            bar = '\u26ab' * 10
+                        t = f'  \u23f1{tempo}m' if tempo else ''
                         texto += f'\n{data} {bar}{t}'
-                texto += '\n' + '\u2500' * 20
 
-            # Por usuario compacto
+            texto += f'\n{"\u2500" * 18}'
+
+            # === USUARIOS ===
             if user_out:
-                texto += '\n'
                 for row in user_out.split('\n'):
                     cols = row.split('|')
                     if len(cols) >= 4 and cols[1] != '0':
@@ -2434,16 +2442,18 @@ LIMIT 15
                         ok_u = int(cols[2] or 0)
                         pct = round(ok_u * 100 / max(total_u, 1), 1) if total_u else 0
                         rotas = int(cols[3] or 0)
-                        # barra visual
-                        bar = ''
                         if total_u > 0:
                             p = round(ok_u * 5 / total_u)
-                            bar = '🟢' * p + '🔴' * (5 - p)
-                        texto += f'\n{nome_u} {bar} {pct}% ({total_u}cons {rotas}rotas)'
+                            bar = '\U0001f7e2' * p + '\U0001f534' * (5 - p)
+                        else:
+                            bar = '\u26ab' * 5
+                        texto += f'\n{nome_u} {bar}  {pct}%  {total_u}c {rotas}r'
 
-            # Top erros compacto
+            # === LEGENDA ===
+            texto += f'\n{"\u2500" * 18}'
+            texto += '\n\U0001f7e2=sucesso  \U0001f534=falha  \u23f1=tempo m\u00e9dio'
+
             if erros_out:
-                texto += '\n\n*Erros:*'
                 for row in erros_out.split('\n'):
                     cols = row.split('|')
                     if len(cols) >= 2:
