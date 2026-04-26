@@ -155,6 +155,12 @@ def main():
     for p in list(BASE_DIR.glob('google_session*')):
         if p.is_dir() or p.suffix == '.lock':
             subprocess.run(['chown', '-R', 'ubuntu:ubuntu', str(p)], capture_output=True)
+    # Remover locks residuais que poderiam ter ownership incorreta
+    for lf in list(BASE_DIR.glob('*.lock')):
+        try:
+            lf.unlink()
+        except OSError:
+            pass
     # Sincronizar profiles escravos com o mestre
     sync_base_session_to_worker_profiles(num_workers=NUM_JOB_WORKERS, force=False, skip_in_use=True)
 
