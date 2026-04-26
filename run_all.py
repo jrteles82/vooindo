@@ -151,11 +151,10 @@ def main():
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
     ]
 
-    # Garantir que profiles escravos existam e tenham ownership correta
-    for i in range(2, NUM_JOB_WORKERS + 1):
-        p = BASE_DIR / f'google_session_{i}'
-        p.mkdir(parents=True, exist_ok=True)
-        subprocess.run(['chown', '-R', 'ubuntu:ubuntu', str(p)], capture_output=True)
+    # Garantir que todos os profiles e locks tenham ownership correta
+    for p in list(BASE_DIR.glob('google_session*')):
+        if p.is_dir() or p.suffix == '.lock':
+            subprocess.run(['chown', '-R', 'ubuntu:ubuntu', str(p)], capture_output=True)
     # Sincronizar profiles escravos com o mestre
     sync_base_session_to_worker_profiles(num_workers=NUM_JOB_WORKERS, force=False, skip_in_use=True)
 

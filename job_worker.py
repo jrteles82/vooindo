@@ -672,9 +672,14 @@ def main():
                 finish_job(conn, int(job['id']))
             except BaseException as exc:
                 error_text = str(exc)
+                should_retry = False
                 if _is_timeout_error(exc) and int(job.get('retry_count') or 0) == 0:
+                    should_retry = True
+                elif 'Permission denied' in error_text and int(job.get('retry_count') or 0) == 0:
+                    should_retry = True
+                if should_retry:
                     retry_job(conn, int(job['id']))
-                    logger.warning('[JOB_RETRY] timeout no job %s, reagendando (tentativa 1)', job['id'])
+                    logger.warning('[JOB_RETRY] %s no job %s, reagendando (tentativa 1)', 'timeout' if _is_timeout_error(exc) else 'permission_denied', job['id'])
                     continue
                 fail_job(conn, int(job['id']), error_text)
                 if _is_timeout_error(exc):
