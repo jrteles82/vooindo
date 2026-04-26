@@ -2386,58 +2386,71 @@ ORDER BY COUNT(j.id) DESC
 LIMIT 15
 ''')
 
-        lines = []
-        lines.append('📊 *Desempenho - Vooindo*')
-        lines.append('')
+        texto = '📊 *Desempenho*\n'
         if not any([db_out, resumo_out, erros_out, user_out]):
-            lines.append('_Dados indisponiveis no momento._')
+            texto += '\n_Dados indisponiveis._'
+        else:
+            # Header compacto
+            if resumo_out:
+                cols = resumo_out.split('|')
+                if len(cols) >= 5:
+                    total = int(cols[0] or 0)
+                    ok = int(cols[1] or 0)
+                    taxa = round(ok * 100 / max(total, 1), 1) if total else 0
+                    icon = ('✅', '⚠️', '❌')[
+                        0 if taxa >= 70 else (1 if taxa >= 40 else 2)
+                    ]
+                    texto += f'\n{icon} {ok}/{total} ({taxa}%) — {total} consultas'
+                    texto += f'\n   ❌{cols[2]}filtro  🔄{cols[3]}cancel  ⚠️{cols[4]}outros'
+                    texto += '\n'
 
-        if db_out:
-            lines.append('*Ultimos 7 dias:*')
-            for row in db_out.split('\n'):
-                cols = row.split('|')
-                if len(cols) >= 7:
-                    parts = [f"{cols[0]}: {cols[1]} total, ✅{cols[2]} sucesso"]
-                    if cols[4] != '0':
-                        parts.append(f"🔄{cols[4]}")
-                    if cols[5] != '0':
-                        parts.append(f"⚠️{cols[5]}")
-                    if cols[6] != '-':
-                        parts.append(f"⏱{cols[6]}min")
-                    lines.append('\u2022 ' + ', '.join(parts))
-            lines.append('')
+            # 7 dias compacto
+            if db_out:
+                texto += '\n' + '\u2500' * 20 + '\n'
+                for row in db_out.split('\n'):
+                    cols = row.split('|')
+                    if len(cols) >= 7:
+                        data = cols[0]
+                        total_d = int(cols[1] or 0)
+                        ok_d = int(cols[2] or 0)
+                        fail_d = total_d - ok_d
+                        tempo = cols[6] if cols[6] != '-' else ''
+                        bar = ''
+                        if total_d > 0:
+                            p = round(ok_d * 10 / total_d)
+                            bar = '🟢' * p + '🔴' * (10 - p)
+                        t = f' ⏱{tempo}min' if tempo else ''
+                        texto += f'\n{data} {bar}{t}'
+                texto += '\n' + '\u2500' * 20
 
-        if resumo_out:
-            cols = resumo_out.split('|')
-            if len(cols) >= 5:
-                total = int(cols[0] or 0)
-                ok = int(cols[1] or 0)
-                taxa = round(ok * 100 / max(total, 1), 1)
-                lines.append(f'*Total (7 dias):* {total} consultas | ✅{ok} sucesso ({taxa}%)')
-                lines.append(f'  ❌{cols[2]} filtro | 🔄{cols[3]} cancel | ⚠️{cols[4]} outros')
-                lines.append('')
+            # Por usuario compacto
+            if user_out:
+                texto += '\n'
+                for row in user_out.split('\n'):
+                    cols = row.split('|')
+                    if len(cols) >= 4 and cols[1] != '0':
+                        nome_u = esc(cols[0])[:10]
+                        total_u = int(cols[1] or 0)
+                        ok_u = int(cols[2] or 0)
+                        pct = round(ok_u * 100 / max(total_u, 1), 1) if total_u else 0
+                        rotas = int(cols[3] or 0)
+                        # barra visual
+                        bar = ''
+                        if total_u > 0:
+                            p = round(ok_u * 5 / total_u)
+                            bar = '🟢' * p + '🔴' * (5 - p)
+                        texto += f'\n{nome_u} {bar} {pct}% ({total_u}cons {rotas}rotas)'
 
-        if erros_out:
-            lines.append('*Top erros:*')
-            for row in erros_out.split('\n'):
-                cols = row.split('|')
-                if len(cols) >= 2:
-                    nome_erro = esc(cols[0])[:38]
-                    lines.append(f'\u2022 {nome_erro}: {cols[1]}x')
-            lines.append('')
+            # Top erros compacto
+            if erros_out:
+                texto += '\n\n*Erros:*'
+                for row in erros_out.split('\n'):
+                    cols = row.split('|')
+                    if len(cols) >= 2:
+                        nome_erro = esc(cols[0])[:30]
+                        texto += f'\n\u2022 {nome_erro}: {cols[1]}x'
 
-        if user_out:
-            lines.append('*Por usuario:*')
-            for row in user_out.split('\n'):
-                cols = row.split('|')
-                if len(cols) >= 4 and cols[1] != '0':
-                    nome_u = esc(cols[0])[:12]
-                    total_u = int(cols[1] or 0)
-                    ok_u = int(cols[2] or 0)
-                    pct = round(ok_u * 100 / max(total_u, 1), 1) if total_u else 0
-                    lines.append(f'\u2022 {nome_u}: {total_u} consultas, {pct}% sucesso, {cols[3]} rotas')
-
-        texto = '\n'.join(lines)[:4090]
+        texto = texto.strip()[:4090]
         await query.edit_message_text(
             texto, parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Atualizar', callback_data='painel:desempenho'), InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]]),
