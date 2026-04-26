@@ -2318,6 +2318,16 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'desempenho':
         await query.answer()
         import subprocess  # noqa: PLC0415
+        import re  # noqa: PLC0415
+
+        def esc(t):
+            '''Escapa caracteres especiais do Markdown do Telegram'''
+            s = str(t) if t is not None else ''
+            s = s.replace('_', '\\_')
+            s = s.replace('*', '\\*')
+            s = s.replace('[', '\\[')
+            s = s.replace('`', '\\`')
+            return s
 
         def db_query(query_str):
             try:
@@ -2329,7 +2339,6 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 return ''
 
-        # Diario
         db_out = db_query(r'''
 SELECT CONCAT(
   DATE_FORMAT(created_at, '%m-%d'), "|",
@@ -2345,7 +2354,6 @@ WHERE created_at > DATE_SUB(NOW(), INTERVAL 7 DAY)
 GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
 ORDER BY created_at
 ''')
-        # Resumo geral
         resumo_out = db_query(r'''
 SELECT CONCAT(
   COUNT(*), "|",
@@ -2356,16 +2364,14 @@ SELECT CONCAT(
 )
 FROM scan_jobs WHERE created_at > NOW() - INTERVAL 7 DAY
 ''')
-        # Top erros
         erros_out = db_query(r'''
-SELECT CONCAT(COALESCE(NULLIF(LEFT(error_message, 45), ''), '(vazio)'), "|", COUNT(*))
+SELECT CONCAT(COALESCE(NULLIF(LEFT(error_message, 40), ''), '(vazio)'), "|", COUNT(*))
 FROM scan_jobs
 WHERE created_at > NOW() - INTERVAL 7 DAY AND status = 'error'
-GROUP BY LEFT(error_message, 45)
+GROUP BY LEFT(error_message, 40)
 ORDER BY COUNT(*) DESC
 LIMIT 5
 ''')
-        # Por usuario
         user_out = db_query(r'''
 SELECT CONCAT(
   COALESCE(b.first_name, '?'), "|",
@@ -2381,13 +2387,13 @@ LIMIT 15
 ''')
 
         lines = []
-        lines.append('📊 *Desempenho — Vooindo*')
+        lines.append('📊 *Desempenho - Vooindo*')
         lines.append('')
         if not any([db_out, resumo_out, erros_out, user_out]):
-            lines.append('_Dados indisponíveis no momento._')
+            lines.append('_Dados indisponiveis no momento._')
 
         if db_out:
-            lines.append('*Últimos 7 dias:*')
+            lines.append('*Ultimos 7 dias:*')
             for row in db_out.split('\n'):
                 cols = row.split('|')
                 if len(cols) >= 7:
@@ -2416,23 +2422,25 @@ LIMIT 15
             for row in erros_out.split('\n'):
                 cols = row.split('|')
                 if len(cols) >= 2:
-                    lines.append(f'\u2022 {cols[0]}: {cols[1]}x')
+                    nome_erro = esc(cols[0])[:38]
+                    lines.append(f'\u2022 {nome_erro}: {cols[1]}x')
             lines.append('')
 
         if user_out:
-            lines.append('*Por usuário:*')
+            lines.append('*Por usuario:*')
             for row in user_out.split('\n'):
                 cols = row.split('|')
                 if len(cols) >= 4 and cols[1] != '0':
-                    nome = (cols[0] or '\u2014')[:12]
+                    nome_u = esc(cols[0])[:12]
                     total_u = int(cols[1] or 0)
                     ok_u = int(cols[2] or 0)
                     pct = round(ok_u * 100 / max(total_u, 1), 1) if total_u else 0
-                    lines.append(f'\u2022 {nome}: {total_u} consultas, {pct}% sucesso, {cols[3]} rotas')
+                    lines.append(f'\u2022 {nome_u}: {total_u} consultas, {pct}% sucesso, {cols[3]} rotas')
 
+        texto = '\n'.join(lines)[:4090]
         await query.edit_message_text(
-            '\n'.join(lines)[:4090], parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('\U0001f504 Atualizar', callback_data='painel:desempenho'), InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')]]),
+            texto, parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Atualizar', callback_data='painel:desempenho'), InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]]),
         )
 
     elif action == 'scheduler_status':
