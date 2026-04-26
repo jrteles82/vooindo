@@ -98,7 +98,7 @@ def _ignore_chrome_runtime_artifacts(_src: str, names: list[str]) -> set[str]:
 
 
 def _copy_profile_tree(src: Path, dst: Path) -> None:
-    """Copia best-effort de perfil, tolerando arquivos efêmeros sumindo no meio."""
+    """Copia best-effort de perfil, tolerando arquivos efêmeros sumindo e erros de permissão."""
     try:
         shutil.copytree(
             src,
@@ -117,6 +117,8 @@ def _copy_profile_tree(src: Path, dst: Path) -> None:
                 continue
             lowered = str(msg).lower()
             if 'no such file or directory' in lowered:
+                continue
+            if 'permission denied' in lowered or 'operation not permitted' in lowered:
                 continue
             filtered_errors.append(entry)
         if filtered_errors:
