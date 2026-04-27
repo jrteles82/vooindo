@@ -137,22 +137,29 @@ def recover_stale_jobs(conn, running_timeout_minutes: int = 12, pending_timeout_
     return recovered_running_ids, expired_pending_ids
 
 
-def fetch_next_job(conn):
+def fetch_next_job(conn, pool='scheduled'):
     recovered_running_ids, expired_pending_ids = recover_stale_jobs(conn)
     if recovered_running_ids:
         logger.warning('scan_jobs travados recuperados: %s', recovered_running_ids)
     if expired_pending_ids:
         logger.warning('scan_jobs pendentes expirados: %s', expired_pending_ids)
 
+    # Workers do pool 'scheduled' só pegam jobs agendados
+    # Workers do pool 'manual' só pegam jobs manuais (prioridade)
+    if pool == 'manual':
+        job_type_filter = "job_type IN ('manual_now', 'manual')"
+    else:
+        job_type_filter = "job_type = 'scheduled'"
+
     # Usar FOR UPDATE (lock de linha no MySQL) para evitar race condition
     # entre workers que competem pelo mesmo job
     try:
         row = conn.execute(
-            """
+            f"""
             SELECT id
             FROM scan_jobs
-            WHERE status = 'pending'
-            ORDER BY CASE WHEN job_type = 'manual_now' THEN 0 ELSE 1 END, id
+            WHERE status = 'pending' AND {job_type_filter}
+            ORDER BY id
             LIMIT 1
             FOR UPDATE
             """
@@ -160,11 +167,11 @@ def fetch_next_job(conn):
     except Exception:
         # Se FOR UPDATE falhar (ex: tabela sem transação), fallback pra lógica antiga
         row = conn.execute(
-            """
+            f"""
             SELECT id
             FROM scan_jobs
-            WHERE status = 'pending'
-            ORDER BY CASE WHEN job_type = 'manual_now' THEN 0 ELSE 1 END, id
+            WHERE status = 'pending' AND {job_type_filter}
+            ORDER BY id
             LIMIT 1
             """
         ).fetchone()
@@ -331,7 +338,10 @@ def _purge_stale_chrome():
 
 def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | None = None) -> None:
     global _session_alert_sent_at, _GOOGLE_SESSION_INVALID
-    _GOOGLE_SESSION_INVALID = True
+    # Só trava o worker se o score for ZERO (realmente deslogado)
+    if score == 0:
+        _GOOGLE_SESSION_INVALID = True
+    
     now = time.monotonic()
     if now - _session_alert_sent_at < _SESSION_ALERT_COOLDOWN:
         return
@@ -581,6 +591,8 @@ def process_job(conn, bot: Bot, loop, job):
     should_split = not show_result_type_filters or (bool(filters.get('any_airline', True)) and bool(filters.get('agencies', False)))
     allow_agencies = True if should_split else bool(filters.get('agencies', False))
     logger.info('[job-worker] job_id=%s | iniciando scan | google=%s | allow_agencies=%s', job_id, bool(settings['enable_google_flights']), allow_agencies)
+    is_manual_now = str(job.get('job_type') or '').strip().lower() == 'manual_now'
+    
     parsed = run_scan_for_routes(
         routes,
         sources={
@@ -588,6 +600,7 @@ def process_job(conn, bot: Bot, loop, job):
             'maxmilhas': False,
             'allow_agencies': allow_agencies,
         },
+        fast_mode=is_manual_now
     )
     logger.info('[job-worker] job_id=%s | scan concluído | parsed=%s', job_id, len(parsed))
     _log_raw_agency_diagnostics(job_id, parsed)
@@ -706,6 +719,14 @@ def main():
     if not TOKEN:
         raise SystemExit('Defina TELEGRAM_BOT_TOKEN no .env')
 
+    # Identificar pool: scheduled (padrão) ou manual
+    pool = 'scheduled'
+    if '--pool' in sys.argv:
+        idx = sys.argv.index('--pool')
+        if idx + 1 < len(sys.argv):
+            pool = sys.argv[idx + 1].strip().lower()
+    logger.info('[job-worker] bootstrap | pid=%s | pool=%s | argv=%s', os.getpid(), pool, sys.argv)
+
     request = HTTPXRequest(connection_pool_size=50, pool_timeout=60.0, connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0)
     bot = Bot(token=TOKEN, request=request)
     loop = asyncio.new_event_loop()
@@ -727,7 +748,7 @@ def main():
             # Sync de perfil desabilitado — workers usam sessão base diretamente (run_all.py)
             pass
 
-            job = fetch_next_job(conn)
+            job = fetch_next_job(conn, pool=pool)
             if not job:
                 conn.close()
                 time.sleep(POLL_SECONDS)

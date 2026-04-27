@@ -510,8 +510,9 @@ def build_google_flights_url(route: RouteQuery) -> str:
         base_url = "https://www.google.com/travel/flights/search"
     hl = str(CONFIG["google_hl"])
     gl = str(CONFIG["google_gl"])
-    curr = str(CONFIG["google_curr"])
-    return f"{base_url}?q={quote(q)}&hl={quote(hl)}&gl={quote(gl)}&curr={quote(curr)}"
+    # Forçar sempre BRL para evitar problemas com filtros de preço do bot
+    curr = "BRL"
+    return f"{base_url}?q={quote(q)}&hl={hl}&gl={gl}&curr={curr}"
 
 
 def describe_trip(route: RouteQuery) -> str:
@@ -584,7 +585,7 @@ def _cache_set(route: RouteQuery, result: FlightResult):
 
 
 
-def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
+def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True, profile_dir: Optional[str] = None) -> FlightResult:
     # Verificar cache primeiro
     cached = _cache_get(route)
     if cached is not None:
@@ -603,9 +604,10 @@ def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) 
     env["GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS"] = str(int(CONFIG.get("google_flights_executor_timeout_ms", 90000)))
     env["GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS"] = str(int(CONFIG.get("google_flights_executor_slow_mo_ms", 125)))
     env["GOOGLE_FLIGHTS_ALLOW_AGENCIES"] = "1" if allow_agencies else "0"
-    _profile_dir = Path(CONFIG.get("google_persistent_profile_dir")).resolve()
+    
+    _profile_dir = Path(profile_dir or CONFIG.get("google_persistent_profile_dir")).resolve()
     env["GOOGLE_PERSISTENT_PROFILE_DIR"] = str(_profile_dir)
-    lock_path = str(_profile_dir.parent / f'{_profile_dir.name}.lock')
+    lock_path = str(_profile_dir.parent / f"{_profile_dir.name}.lock")
     executor_timeout_ms = int(CONFIG.get("google_flights_executor_timeout_ms", 90000))
     _subprocess_timeout = max(60, min(300, int(executor_timeout_ms / 1000) + 20))
     # Timeout adaptativo: se rota é muito distante (>6 meses), reduz timeout
@@ -1504,9 +1506,9 @@ class GoogleFlightsScraper:
         best = sorted(pool, key=lambda x: x["price"])[0]
         return best["vendor"], best["price"], cleaned
 
-    def search(self, route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
+    def search(self, route: RouteQuery, allow_agencies: bool = True, profile_dir: Optional[str] = None) -> FlightResult:
         if CONFIG.get("google_flights_executor_enabled"):
-            return run_google_flights_executor(route, allow_agencies=allow_agencies)
+            return run_google_flights_executor(route, allow_agencies=allow_agencies, profile_dir=profile_dir)
 
         is_international = not (
             len((route.origin or '').strip()) == 3
@@ -1975,9 +1977,9 @@ class AuthenticatedGoogleFlightsWorker(GoogleFlightsScraper):
                 pass
             self._profile_lock = None
 
-    def search(self, route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
+    def search(self, route: RouteQuery, allow_agencies: bool = True, profile_dir: Optional[str] = None) -> FlightResult:
         if CONFIG.get("google_flights_executor_enabled"):
-            return run_google_flights_executor(route, allow_agencies=allow_agencies)
+            return run_google_flights_executor(route, allow_agencies=allow_agencies, profile_dir=profile_dir)
         ctx = self._get_context()
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.set_default_timeout(int(CONFIG["timeout_ms"]))

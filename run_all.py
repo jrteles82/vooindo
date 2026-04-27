@@ -143,26 +143,15 @@ def main():
     children = [
         {'cmd': [py, str(BASE_DIR / 'bot.py')]},
         {'cmd': [py, str(BASE_DIR / 'bot_scheduler.py')]},
-        *[
-            {'cmd': [py, str(BASE_DIR / 'job_worker.py')], 'env': _worker_env(i)}
-            for i in range(1, NUM_JOB_WORKERS + 1)
-        ],
+        # 3 workers para jobs agendados (automáticos)
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(1)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(2)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(3)},
+        # 1 worker exclusivo para jobs manuais
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(1)},
         {'cmd': [py, str(BASE_DIR / 'payment_monitor.py')]},
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
     ]
-
-    # Garantir que todos os profiles e locks tenham ownership correta
-    for p in list(BASE_DIR.glob('google_session*')):
-        if p.is_dir() or p.suffix == '.lock':
-            subprocess.run(['chown', '-R', 'ubuntu:ubuntu', str(p)], capture_output=True)
-    # Remover locks residuais que poderiam ter ownership incorreta
-    for lf in list(BASE_DIR.glob('*.lock')):
-        try:
-            lf.unlink()
-        except OSError:
-            pass
-    # Sincronizar profiles escravos com o mestre
-    sync_base_session_to_worker_profiles(num_workers=NUM_JOB_WORKERS, force=False, skip_in_use=True)
 
     script_names = list({Path(child['cmd'][-1]).name for child in children})
     kill_stale_processes(script_names)

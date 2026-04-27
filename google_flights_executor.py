@@ -27,7 +27,7 @@ SESSION_DIR = Path(os.getenv("GOOGLE_PERSISTENT_PROFILE_DIR", str(Path(__file__)
 BASE_URL = os.getenv("GOOGLE_FLIGHTS_BASE_URL", "https://www.google.com/travel/flights")
 HL = os.getenv("GOOGLE_HL", "pt-BR")
 GL = os.getenv("GOOGLE_GL", "BR")
-CURR = os.getenv("GOOGLE_CURR", "BRL")
+CURR = "BRL"
 HEADLESS = os.getenv("GOOGLE_FLIGHTS_EXECUTOR_HEADLESS", "1").strip().lower() in {"1", "true", "yes", "on"}
 TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS", os.getenv("GOOGLE_TIMEOUT_MS", "45000")))
 
@@ -37,7 +37,7 @@ if os.getenv("GOOGLE_FLIGHTS_SHORT_TIMEOUT"):
 SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
 BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "3000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}
-MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "8"))
+MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "5"))
 MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "12"))
 MAX_CARDS_STEP = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_STEP", "1"))
 MIN_AIRLINE_PRICES_TO_COMPARE = int(os.getenv("GOOGLE_FLIGHTS_MIN_AIRLINE_PRICES_TO_COMPARE", "2"))
@@ -79,14 +79,18 @@ def build_url(origin: str, destination: str, outbound_date: str, inbound_date: s
         base = f"{base}/search"
     elif "/travel/flights/search" not in base:
         base = "https://www.google.com/travel/flights/search"
-    return f"{base}?q={quote(trip)}&hl={quote(HL)}&gl={quote(GL)}&curr={quote(CURR)}"
+    return f"{base}?q={quote(trip)}&hl={quote(HL)}&gl={quote(GL)}&curr={CURR}"
 
 
 def parse_prices(text: str) -> list[float]:
     vals = []
-    for raw in re.findall(r"R\$\s*([\d\.]+(?:,\d{2})?)", text or ""):
+    currency_pattern = r"(?:R\$|\$|€|ARS|USD|BRL|[\w]{3})\s*"
+    price_val = r"([\d\.]+(?:,\d{2})?)"
+    for raw in re.findall(rf"{currency_pattern}{price_val}", text or ""):
         try:
-            vals.append(float(raw.replace('.', '').replace(',', '.')))
+            # Remove pontos de milhar e converte vírgula decimal para ponto
+            cleaned = raw.replace('.', '').replace(',', '.')
+            vals.append(float(cleaned))
         except Exception:
             pass
     return vals
@@ -128,11 +132,24 @@ def human_move(page) -> None:
 
 
 def check_session_health(page) -> dict:
-    """Score 0-2. Score >= 1 = sessão válida. Verifica seletores de perfil e ausência de tela de login."""
+    """Score 0-3. Score >= 1 = sessão válida. Verifica seletores de perfil, ausência de tela de login e presença de resultados."""
     score = 0
     indicators: dict = {}
 
-    # Check 1: seletores do perfil na página atual
+    # Check 1: Resultados visíveis (se tem voo, a sessão permitiu a busca)
+    result_indicators = [
+        "Melhor opção", "Menores preços", "Principais voos", "Outros voos",
+        "Best flights", "Top flights", "More flights"
+    ]
+    try:
+        body_text = page.locator("body").inner_text(timeout=2000)
+        if any(kw in body_text for kw in result_indicators):
+            score += 2  # Se tem resultado, ignoramos quase todo o resto
+            indicators["result_found"] = "ok"
+    except Exception:
+        pass
+
+    # Check 2: seletores do perfil na página atual
     profile_selectors = [
         'a[aria-label*="Conta do Google"]',
         'a[aria-label*="Google Account"]',
@@ -227,18 +244,21 @@ def expand_results(page, notes: list[str], is_international: bool = False) -> fl
 
 
 def extract_summary_price(body: str) -> float | None:
-    for pattern in [
-        r"Melhor opção\s*a partir de\s*R\$\s*([\d\.]+(?:,\d{2})?)",
-        r"Melhor opção.*?R\$\s*([\d\.]+(?:,\d{2})?)",
-        r"Menores preços\s*a partir de\s*R\$\s*([\d\.]+(?:,\d{2})?)",
-        r"Menores preços.*?R\$\s*([\d\.]+(?:,\d{2})?)",
-    ]:
-        m = re.search(pattern, body or "", flags=re.I | re.S)
-        if m:
-            try:
-                return float(m.group(1).replace('.', '').replace(',', '.'))
-            except Exception:
-                pass
+    # Suporta R$, $, €, ARS, etc. e códigos de moeda de 3 letras
+    currency_pattern = r"(?:R\$|\$|€|ARS|USD|BRL|[\w]{3})\s*"
+    price_val = r"([\d\.]+(?:,\d{2})?)"
+    for label in ["Melhor opção", "Menores preços", "Principais voos"]:
+        for pattern in [
+            rf"{label}\s*a partir de\s*{currency_pattern}{price_val}",
+            rf"{label}.*?{currency_pattern}{price_val}",
+        ]:
+            m = re.search(pattern, body or "", flags=re.I | re.S)
+            if m:
+                try:
+                    raw = m.group(1).replace('.', '').replace(',', '.')
+                    return float(raw)
+                except Exception:
+                    pass
     return None
 
 
@@ -538,6 +558,10 @@ def _vendor_from_card_text(txt: str) -> str:
     for token, canonical in _AIRLINE_TOKENS:
         if token in low:
             return canonical
+    # Fallback para keywords conhecidas se não achou token exato
+    for kw in _INTL_AIRLINE_KEYWORDS:
+        if kw in low:
+            return kw.title()
     return ''
 
 
@@ -566,7 +590,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                 txt = card.inner_text(timeout=1000).strip()
             except Exception:
                 continue
-            if "R$" not in txt:
+            # Suporta R$, $, €, ARS, etc.
+            if not any(curr in txt for curr in ["R$", "$", "€", "ARS", "BRL", "USD"]):
                 continue
             prices = [p for p in parse_prices(txt) if p >= 300]
             if not prices:
@@ -869,12 +894,22 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
     notes: list[str] = []
     url = build_url(origin, destination, outbound_date, inbound_date)
     with sync_playwright() as p:
+        proxy_settings = {}
+        proxy_url = os.getenv('GOOGLE_FLIGHTS_PROXY')
+        if proxy_url:
+            proxy_settings = {'server': proxy_url}
+            proxy_user = os.getenv('GOOGLE_FLIGHTS_PROXY_USER')
+            proxy_pass = os.getenv('GOOGLE_FLIGHTS_PROXY_PASS')
+            if proxy_user and proxy_pass:
+                proxy_settings['username'] = proxy_user
+                proxy_settings['password'] = proxy_pass
         context = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
             headless=HEADLESS,
             slow_mo=SLOW_MO,
             locale="pt-BR",
             user_agent=USER_AGENT,
+            proxy=proxy_settings if proxy_settings else None,
             viewport={"width": 1280, "height": 900},
             args=[
                 "--disable-blink-features=AutomationControlled",

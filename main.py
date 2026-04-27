@@ -394,36 +394,39 @@ def _expand_result_rows(row: dict) -> list[dict]:
     return [row]
 
 
-def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
-    metro_expansions = {
-        "SAO": ["GRU", "CGH", "VCP"],
-        "RIO": ["GIG", "SDU"],
-        "BHZ": ["CNF", "PLU"],
-        "REC": ["REC"],
-        "FOR": ["FOR"],
-        "POA": ["POA"],
-        "NAT": ["NAT"],
-        "JPA": ["JPA"],
-        "MCZ": ["MCZ"],
-        "SSA": ["SSA"],
-        "MAO": ["MAO"],
-        "CWB": ["CWB"],
-        "BSB": ["BSB"],
-        "BEL": ["BEL"],
-        "FLN": ["FLN"],
-        "VIX": ["VIX"],
-        "GYN": ["GYN"],
-        "CGB": ["CGB"],
-        "SLZ": ["SLZ"],
-        "AJU": ["AJU"],
-        "THE": ["THE"],
-        "RBR": ["RBR"],
-    }
+def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allow_agencies: bool = True, fast_mode: bool = False) -> FlightResult:
+    if fast_mode:
+        origin_opts = [route.origin]
+        destination_opts = [route.destination]
+    else:
+        metro_expansions = {
+            "SAO": ["GRU", "CGH", "VCP"],
+            "RIO": ["GIG", "SDU"],
+            "BHZ": ["CNF", "PLU"],
+            "REC": ["REC"],
+            "FOR": ["FOR"],
+            "POA": ["POA"],
+            "NAT": ["NAT"],
+            "JPA": ["JPA"],
+            "MCZ": ["MCZ"],
+            "SSA": ["SSA"],
+            "MAO": ["MAO"],
+            "CWB": ["CWB"],
+            "BSB": ["BSB"],
+            "BEL": ["BEL"],
+            "FLN": ["FLN"],
+            "VIX": ["VIX"],
+            "GYN": ["GYN"],
+            "CGB": ["CGB"],
+            "SLZ": ["SLZ"],
+            "AJU": ["AJU"],
+            "THE": ["THE"],
+            "RBR": ["RBR"],
+        }
+        origin_opts = metro_expansions.get(route.origin, [route.origin])
+        destination_opts = metro_expansions.get(route.destination, [route.destination])
 
-    origin_opts = metro_expansions.get(route.origin, [route.origin])
-    destination_opts = metro_expansions.get(route.destination, [route.destination])
-
-    variants: list[tuple[RouteQuery, FlightResult]] = []
+    variants_to_search = []
     for origin in origin_opts:
         for destination in destination_opts:
             variant = RouteQuery(
@@ -433,16 +436,73 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allo
                 inbound_date=route.inbound_date,
                 trip_type=route.trip_type,
             )
-            result = scraper.search(variant, allow_agencies=allow_agencies)
-            variants.append((variant, result))
+            variants_to_search.append(variant)
+
+    variants: list[tuple[RouteQuery, FlightResult]] = []
+    executor_enabled = CONFIG.get("google_flights_executor_enabled")
+
+    if executor_enabled and len(variants_to_search) > 1:
+        # Perfis disponíveis para paralelismo
+        base_dir = Path(__file__).resolve().parent
+        available_profiles = [str(base_dir / "google_session")]
+        for i in range(2, 6):
+            p_dir = base_dir / f"google_session_{i}"
+            if p_dir.is_dir():
+                available_profiles.append(str(p_dir))
+        
+        # Garantir que temos ao menos um perfil
+        if not available_profiles:
+             available_profiles = [str(CONFIG.get("google_persistent_profile_dir"))]
+        
+        # Limitar workers pelo número de perfis e capacidade do servidor (max 2 paralelos)
+        max_workers = min(len(variants_to_search), len(available_profiles), 2)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = []
+            for i, v in enumerate(variants_to_search):
+                # Distribui perfis round-robin
+                p_dir = available_profiles[i % len(available_profiles)]
+                futures.append(pool.submit(scraper.search, v, allow_agencies, p_dir))
+            
+            for i, future in enumerate(futures):
+                try:
+                    res = future.result()
+                    variants.append((variants_to_search[i], res))
+                except Exception as exc:
+                    logger.error(f"Erro na busca paralela do Google Flights: {exc}")
+                    # Fallback para resultado vazio com erro
+                    variants.append((variants_to_search[i], FlightResult(
+                        site="google_flights",
+                        origin=variants_to_search[i].origin,
+                        destination=variants_to_search[i].destination,
+                        outbound_date=variants_to_search[i].outbound_date,
+                        inbound_date=variants_to_search[i].inbound_date,
+                        trip_type=variants_to_search[i].trip_type,
+                        price=None,
+                        currency="BRL",
+                        url="",
+                        notes=f"error_parallel_search={exc}",
+                    )))
+    else:
+        # Serial (padrão antigo ou se apenas 1 variante)
+        for v in variants_to_search:
+            result = scraper.search(v, allow_agencies=allow_agencies)
+            variants.append((v, result))
 
     def _score(item: tuple[RouteQuery, FlightResult]) -> tuple[int, float]:
         _variant, result = item
         has_vendor = 0 if (result.best_vendor or "").strip() else 1
-        price = float(result.price) if isinstance(result.price, (int, float)) else 10**12
+        price = float(result.price) if isinstance(result.price, (int, float)) and result.price is not None else 10**12
         return (has_vendor, price)
 
-    chosen_variant, chosen = sorted(variants, key=_score)[0]
+    variants.sort(key=_score)
+    chosen_variant, chosen = variants[0]
+    
+    # Fallback: Se estiver em fast_mode e não achar preço, tenta expansão completa
+    if fast_mode and (chosen.price is None or chosen.price >= 10**11):
+        logger.info(f"Fast mode falhou para {route.origin}->{route.destination}, tentando expansão completa...")
+        return _search_google_result(scraper, route, allow_agencies=allow_agencies, fast_mode=False)
+
     notes_parts = [chosen.notes or ""]
     notes_parts.append(f"google_variant={chosen_variant.origin}->{chosen_variant.destination}")
     notes = " | ".join([p for p in notes_parts if p])
@@ -474,48 +534,49 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allo
     )
 
 
-def _search_maxmilhas_result(playwright, route: RouteQuery) -> FlightResult | None:
+def _search_maxmilhas_result(route: RouteQuery) -> FlightResult | None:
     if (route.inbound_date or "").strip():
         return None
 
-    resultado = buscar_menor_preco_maxmilhas(
-        origem=route.origin,
-        destino=route.destination,
-        data_ida_iso=route.outbound_date,
-        playwright=playwright,
-        salvar_arquivo_json=False,
-        max_tentativas=1,
-    )
+    with sync_playwright() as p:
+        resultado = buscar_menor_preco_maxmilhas(
+            origem=route.origin,
+            destino=route.destination,
+            data_ida_iso=route.outbound_date,
+            playwright=p,
+            salvar_arquivo_json=False,
+            max_tentativas=1,
+        )
 
-    ok = bool(resultado and resultado.get("ok"))
-    menor_preco = resultado.get("menor_preco") if resultado else None
-    filtered_threshold = None
-    final_threshold = None
-    if ok and resultado:
-        valores = []
-        for raw in resultado.get("precos_encontrados") or []:
-            try:
-                valores.append(float(raw))
-            except (TypeError, ValueError):
-                pass
-        valores = sorted(set(valores))
-        limiar = float(CONFIG.get("maxmilhas_min_price", 400))
-        candidatos = [valor for valor in valores if valor >= limiar]
-        total_limit = float(CONFIG.get("maxmilhas_final_price_threshold", 1000))
-        selected_price = None
-        if candidatos:
-            for price in candidatos:
-                if price >= total_limit:
-                    selected_price = price
-                    break
-            if selected_price is None:
-                selected_price = candidatos[-1]
-        if selected_price is not None:
-            menor_preco = selected_price
-            filtered_threshold = limiar
-            final_threshold = total_limit
-    vendedor = "MaxMilhas" if ok and menor_preco is not None else ""
-    notes_parts = []
+        ok = bool(resultado and resultado.get("ok"))
+        menor_preco = resultado.get("menor_preco") if resultado else None
+        filtered_threshold = None
+        final_threshold = None
+        if ok and resultado:
+            valores = []
+            for raw in resultado.get("precos_encontrados") or []:
+                try:
+                    valores.append(float(raw))
+                except (TypeError, ValueError):
+                    pass
+            valores = sorted(set(valores))
+            limiar = float(CONFIG.get("maxmilhas_min_price", 400))
+            candidatos = [valor for valor in valores if valor >= limiar]
+            total_limit = float(CONFIG.get("maxmilhas_final_price_threshold", 1000))
+            selected_price = None
+            if candidatos:
+                for price in candidatos:
+                    if price >= total_limit:
+                        selected_price = price
+                        break
+                if selected_price is None:
+                    selected_price = candidatos[-1]
+            if selected_price is not None:
+                menor_preco = selected_price
+                filtered_threshold = limiar
+                final_threshold = total_limit
+        vendedor = "MaxMilhas" if ok and menor_preco is not None else ""
+        notes_parts = []
     if resultado:
         if resultado.get("motivo"):
             notes_parts.append(f"motivo={resultado['motivo']}")
@@ -564,7 +625,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
     return [routes[i * chunk_size:(i + 1) * chunk_size] for i in range(chunks)]
 
 
-def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | None = None):
+def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | None = None, fast_mode: bool = False):
     if not routes:
         return []
 
@@ -613,7 +674,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 for route in chunk_routes:
                     if source_flags.get("google_flights", True):
                         try:
-                            google_result = _search_google_result(scraper, route, allow_agencies=source_flags.get('allow_agencies', True))
+                            google_result = _search_google_result(scraper, route, allow_agencies=source_flags.get('allow_agencies', True), fast_mode=fast_mode)
                         except Exception as exc:
                             logger.warning('[scan-chunk] rota=%s->%s ida=%s volta=%s | erro google_flights=%s', route.origin, route.destination, route.outbound_date, route.inbound_date or '-', exc)
                             google_result = FlightResult(
@@ -1388,16 +1449,16 @@ def _rows_by_result_type(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     airline_rows = []
     agency_rows = []
     for row in rows:
+        logger.info(f"[expansion] Processando linha: vendor={row.get('best_vendor')}, price={row.get('price')}, airline_vendor={row.get('best_airline_vendor')}, agency_vendor={row.get('best_agency_vendor')}")
         airline_vendor_name = _pretty_vendor_name(
             row.get('best_airline_vendor') or row.get('best_vendor') or ''
         )
+        # Garantir que temos um item base para cia aérea
+        has_airline = False
         if row.get('result_type') == 'airline':
             airline_rows.append(row)
-            continue
-        if row.get('result_type') == 'agency':
-            agency_rows.append(row)
-            continue
-        if row.get('best_airline_vendor') and isinstance(row.get('best_airline_price'), (int, float)):
+            has_airline = True
+        elif row.get('best_airline_vendor') and isinstance(row.get('best_airline_price'), (int, float)):
             airline_item = dict(row)
             airline_item['best_vendor'] = row.get('best_airline_vendor')
             airline_item['best_vendor_price'] = row.get('best_airline_price')
@@ -1405,17 +1466,23 @@ def _rows_by_result_type(rows: list[dict]) -> tuple[list[dict], list[dict]]:
             airline_item['visible_card_price'] = row.get('best_airline_visible_price')
             airline_item['price'] = row.get('best_airline_price')
             airline_rows.append(airline_item)
+            has_airline = True
         else:
             vendor = str(row.get('best_vendor') or '').strip()
-            try:
-                from bot import is_international_agency_vendor
-                if vendor and not is_international_agency_vendor(vendor):
+            if vendor:
+                try:
+                    from bot import is_international_agency_vendor
+                    if not is_international_agency_vendor(vendor):
+                        airline_rows.append(dict(row))
+                        has_airline = True
+                except Exception:
                     airline_rows.append(dict(row))
-            except Exception:
-                if vendor:
-                    airline_rows.append(dict(row))
+                    has_airline = True
 
-        if row.get('best_agency_vendor') and isinstance(row.get('best_agency_price'), (int, float)):
+        # Garantir que temos um item base para agência
+        if row.get('result_type') == 'agency':
+            agency_rows.append(row)
+        elif row.get('best_agency_vendor') and isinstance(row.get('best_agency_price'), (int, float)):
             agency_vendor_name = _pretty_vendor_name(row.get('best_agency_vendor') or '')
             if agency_vendor_name and agency_vendor_name != airline_vendor_name:
                 agency_item = dict(row)
@@ -1430,14 +1497,8 @@ def _rows_by_result_type(rows: list[dict]) -> tuple[list[dict], list[dict]]:
             if vendor and vendor.lower() in {'agências', 'agencias', 'outras', 'maxmilhas'}:
                 agency_rows.append(dict(row))
                 continue
-            try:
-                from bot import is_international_agency_vendor
-                if is_international_agency_vendor(vendor):
-                    agency_rows.append(dict(row))
-                    continue
-            except Exception:
-                pass
-
+            
+            # Se já adicionamos como airline e não temos dados explícitos de agência, tentamos extrair do booking_options
             booking_options = _load_booking_options(row)
             agency_vendor, agency_price = _pick_agency_option(booking_options)
             agency_url = row.get('best_agency_url') or row.get('booking_url') or row.get('url') or ''
@@ -1450,6 +1511,15 @@ def _rows_by_result_type(rows: list[dict]) -> tuple[list[dict], list[dict]]:
                 agency_item['price'] = agency_price
                 agency_item['visible_card_price'] = agency_price
                 agency_rows.append(agency_item)
+            else:
+                # Fallback final: se não achou nada pra agência mas o vendor original parece agência internacional
+                try:
+                    from bot import is_international_agency_vendor
+                    if vendor and is_international_agency_vendor(vendor) and not has_airline:
+                        agency_rows.append(dict(row))
+                except Exception:
+                    pass
+
     return airline_rows, agency_rows
 
 
@@ -1609,9 +1679,6 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
     airline_lines = _build_lines(_rows_for_link_type(merged_rows, 'airline'))
     if airline_lines:
         blocks.append(_prefix_for_result_type('airline') + "\n".join(airline_lines))
-    agency_lines = _build_lines(_rows_for_link_type(merged_rows, 'agency'))
-    if agency_lines:
-        blocks.append(_prefix_for_result_type('agency') + "\n".join(agency_lines))
 
     if blocks:
         return "\n".join(blocks)
@@ -1811,6 +1878,7 @@ def get_user_max_display_price(user_id: int | None) -> float | None:
 
 
 def expand_rows_by_result_type(rows: list[dict], airline_filters_json: str | None = None, show_result_type_filters: bool = True) -> list[dict]:
+    logger.info(f"[expansion] Iniciando expansão para {len(rows)} linhas. Filtros: {airline_filters_json}")
     expanded = []
     split_blocks = _should_split_result_blocks(None, airline_filters_json, show_result_type_filters)
     for row in rows:
@@ -1819,10 +1887,15 @@ def expand_rows_by_result_type(rows: list[dict], airline_filters_json: str | Non
             continue
         if split_blocks:
             airline_rows, agency_rows = _rows_by_result_type([row])
+            logger.info(f"[expansion] Rota {row.get('origin')}->{row.get('destination')} dividida em {len(airline_rows)} cia e {len(agency_rows)} agência")
             expanded.extend(airline_rows)
             expanded.extend(agency_rows)
         else:
             expanded.append(row)
+    logger.info(f"[expansion] Expansão concluída: {len(expanded)} linhas")
+    if not expanded and rows:
+        logger.warning(f"[expansion] Expansão resultou em zero linhas para rota {rows[0].get('origin')}->{rows[0].get('destination')}. Usando fallback do item original.")
+        return rows
     return expanded
 
 
@@ -2035,28 +2108,72 @@ def consulta():
         return jsonify({"error": "A MaxMilhas atualmente só está habilitada para consultas somente ida."}), 400
 
     results = []
-    with sync_playwright() as p:
-        browser = None
-        scraper = None
-        if "google_flights" in requested_sources:
-            browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
-            scraper = GoogleFlightsScraper(browser)
-
+    
+    def _fetch_source(source):
         try:
-            for source in requested_sources:
-                if source == "google_flights":
-                    result = _search_google_result(scraper, route)
+            # Check cache first (10 minutes TTL for manual queries)
+            row = db.conn.execute(
+                sql("""
+                SELECT * FROM results
+                WHERE site = ? AND origin = ? AND destination = ? 
+                  AND outbound_date = ? AND COALESCE(inbound_date, '') = COALESCE(?, '')
+                  AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+                """),
+                (source, route.origin, route.destination, route.outbound_date, route.inbound_date or ''),
+            ).fetchone()
+            
+            if row:
+                logger.info(f"Cache hit para {source} ({route.origin}->{route.destination})")
+                return FlightResult(
+                    site=row["site"],
+                    origin=row["origin"],
+                    destination=row["destination"],
+                    outbound_date=row["outbound_date"],
+                    inbound_date=row["inbound_date"],
+                    price=row["price"],
+                    currency=row["currency"],
+                    url=row["url"],
+                    notes=row["notes"],
+                    best_vendor=row["best_vendor"],
+                    best_vendor_price=row["best_vendor_price"],
+                    visible_card_price=row["visible_card_price"],
+                    booking_options_json=row["booking_options_json"],
+                    best_airline_vendor=row["best_airline_vendor"],
+                    best_airline_price=row["best_airline_price"],
+                    best_airline_url=row["best_airline_url"],
+                    best_airline_visible_price=row["best_airline_visible_price"],
+                    best_agency_vendor=row["best_agency_vendor"],
+                    best_agency_price=row["best_agency_price"],
+                    best_agency_url=row["best_agency_url"],
+                    best_agency_visible_price=row["best_agency_visible_price"],
+                )
+
+            if source == "google_flights":
+                executor_enabled = CONFIG.get("google_flights_executor_enabled")
+                if executor_enabled:
+                    scraper = GoogleFlightsScraper(None)
+                    return _search_google_result(scraper, route, fast_mode=True)
                 else:
-                    result = _search_maxmilhas_result(p, route)
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=bool(CONFIG.get("headless", True)))
+                        try:
+                            scraper = GoogleFlightsScraper(browser)
+                            return _search_google_result(scraper, route, fast_mode=True)
+                        finally:
+                            browser.close()
+            elif source == "maxmilhas":
+                return _search_maxmilhas_result(route)
+        except Exception as exc:
+            logger.error(f"Erro ao buscar fonte {source}: {exc}")
+        return None
 
-                if result is None:
-                    continue
-
-                rows = _store_result(db, route, result)
+    with ThreadPoolExecutor(max_workers=len(requested_sources)) as pool:
+        futures = {pool.submit(_fetch_source, src): src for src in requested_sources}
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                rows = _store_result(db, route, res)
                 results.extend(rows)
-        finally:
-            if browser:
-                browser.close()
 
     if not results:
         return jsonify({"error": "Nenhum resultado foi retornado para a rota consultada."}), 502
