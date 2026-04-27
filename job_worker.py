@@ -785,6 +785,12 @@ def main():
                     conn.close()
                 except Exception:
                     pass
+            # Erro 1020 (race condition) não deve derrubar o worker — só tenta de novo
+            err_msg = str(sys.exc_info()[1])
+            if 'OperationalError' in err_msg or '1020' in err_msg or "Record has changed since last read" in err_msg:
+                logger.warning('[RACE_CONDITION] erro 1020 no loop principal, re-tentando | err=%s', err_msg[:200])
+                time.sleep(2)
+                continue
             raise
 
 
