@@ -81,7 +81,9 @@ def _profile_revision(profile_dir: Path) -> float:
 
 def worker_profile_dirs(num_workers: int | None = None) -> list[Path]:
     if num_workers is not None:
-        return [BASE_DIR / f'google_session_{i}' for i in range(1, max(0, int(num_workers)) + 1)]
+        # NOTA: Worker 1 usa o profile mestre (google_session), nao google_session_1
+        # Entao escravos comecam em _2, _3, etc.
+        return [BASE_DIR / f'google_session_{i}' for i in range(2, max(0, int(num_workers)) + 2)]
     return [path for path in sorted(BASE_DIR.glob(PROFILE_GLOB)) if path.is_dir() and path.name != SESSION_DIR.name]
 
 
