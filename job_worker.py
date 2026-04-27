@@ -142,15 +142,30 @@ def fetch_next_job(conn):
     if expired_pending_ids:
         logger.warning('scan_jobs pendentes expirados: %s', expired_pending_ids)
 
-    row = conn.execute(
-        """
-        SELECT *
-        FROM scan_jobs
-        WHERE status = 'pending'
-        ORDER BY CASE WHEN job_type = 'manual_now' THEN 0 ELSE 1 END, id
-        LIMIT 1
-        """
-    ).fetchone()
+    # Usar FOR UPDATE (lock de linha no MySQL) para evitar race condition
+    # entre workers que competem pelo mesmo job
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM scan_jobs
+            WHERE status = 'pending'
+            ORDER BY CASE WHEN job_type = 'manual_now' THEN 0 ELSE 1 END, id
+            LIMIT 1
+            FOR UPDATE
+            """
+        ).fetchone()
+    except Exception:
+        # Se FOR UPDATE falhar (ex: tabela sem transação), fallback pra lógica antiga
+        row = conn.execute(
+            """
+            SELECT id
+            FROM scan_jobs
+            WHERE status = 'pending'
+            ORDER BY CASE WHEN job_type = 'manual_now' THEN 0 ELSE 1 END, id
+            LIMIT 1
+            """
+        ).fetchone()
     if not row:
         return None
 
