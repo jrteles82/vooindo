@@ -1193,13 +1193,9 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     title_h = scaled5(26)
     meta_h = scaled5(18)
     col_widths = [scaled5(102), scaled5(90), scaled5(92)]
-    if effective_result_type is None:
-        col_widths.append(scaled5(92))
     headers = ["Trecho", "Data", "Companhia"]
-    if effective_result_type is None:
-        headers.append("Agência")
 
-    split_combined = effective_result_type is None
+    split_combined = False
     height = (
         padding_y * 2
         + title_h
@@ -1332,22 +1328,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         for item_idx, row in enumerate(items):
             fill = colors["row_a"] if item_idx % 2 == 0 else colors["row_b"]
             route_color = _airport_code_color(str(row.get("origin") or '').upper(), colors["border"])
-            airline_rows, agency_rows = _rows_by_result_type([row]) if split_combined else ([], [])
-            if split_combined:
-                airline_rows = airline_rows or _rows_for_link_type([row], 'airline')
-                agency_rows = agency_rows or _rows_for_link_type([row], 'agency')
-            airline_row = airline_rows[0] if airline_rows else None
-            agency_row = agency_rows[0] if agency_rows else None
-            airline_value = _price_vendor_display(airline_row) if airline_row else ''
-            agency_value = _price_vendor_display(agency_row) if agency_row else ''
-            line_count = 0
-            if split_combined:
-                line_count = (1 if airline_value else 0) + (1 if agency_value else 0)
-                if line_count == 0:
-                    line_count = 1
-                draw_h = row_h * line_count
-            else:
-                draw_h = row_h
+            draw_h = row_h
 
             card_top = y
             card_bottom = y + draw_h
@@ -1355,22 +1336,10 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
             _draw_route_and_date(y, draw_h, row, title)
 
             company_x = x0 + col_widths[0] + col_widths[1]
-            agency_x = company_x + col_widths[2]
             draw.line([company_x, card_top + scaled5(8), company_x, card_bottom - scaled5(8)], fill=colors['border'], width=1)
-            draw.line([agency_x, card_top + scaled5(8), agency_x, card_bottom - scaled5(8)], fill=colors['border'], width=1)
 
-            if split_combined:
-                _draw_result_cell(company_x, y, col_widths[2], draw_h, airline_value, colors['price'])
-                _draw_result_cell(agency_x, y, col_widths[3], draw_h, agency_value, colors['agency'])
-                if not airline_value and not agency_value:
-                    vendor_txt = _price_vendor_display(row)
-                    _draw_result_cell(company_x, y, col_widths[2], draw_h, vendor_txt, colors['text'])
-            else:
-                vendor_txt = _price_vendor_display(row)
-                if effective_result_type == 'agency':
-                    _draw_result_cell(agency_x, y, col_widths[3], draw_h, vendor_txt, colors['agency'])
-                else:
-                    _draw_result_cell(company_x, y, col_widths[2], draw_h, vendor_txt, colors['price'])
+            vendor_txt = _price_vendor_display(row)
+            _draw_result_cell(company_x, y, col_widths[2], draw_h, vendor_txt, colors['price'])
 
             y += draw_h + scaled5(10)
 

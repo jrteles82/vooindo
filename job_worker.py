@@ -24,7 +24,7 @@ from access_policy import (
 from audit import audit
 from config import TOKEN, now_local
 from db import auto_pk_column, connect as connect_db, indexed_text_column, now_expression, sql, text_column, DatabaseRateLimitError
-from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
+from main import _build_user_routes, build_scan_results_image, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from google_session_sync import sync_current_worker_profile_from_base
 
@@ -496,22 +496,7 @@ def send_photo(bot: Bot, loop, chat_id: str, image_path: str):
     loop.run_until_complete(_send_photo(bot, chat_id, image_path))
 
 
-def _send_links_message(bot: Bot, loop, chat_id: str, links_msg: str, reply_markup) -> None:
-    try:
-        loop.run_until_complete(bot.send_message(
-            chat_id=chat_id, text=links_msg, parse_mode='HTML',
-            disable_web_page_preview=True, reply_markup=reply_markup,
-        ))
-    except TelegramError as exc:
-        if 'parse' in str(exc).lower() or 'entities' in str(exc).lower():
-            logger.warning('HTML parse error ao enviar links, fallback para texto puro | chat_id=%s | erro=%s', chat_id, exc)
-            plain = re.sub(r'<[^>]+>', '', links_msg)
-            loop.run_until_complete(bot.send_message(
-                chat_id=chat_id, text=plain,
-                disable_web_page_preview=True, reply_markup=reply_markup,
-            ))
-        else:
-            raise
+
 
 
 def mark_sent(conn, user_id: int):
@@ -631,11 +616,7 @@ def process_job(conn, bot: Bot, loop, job):
                 raise RuntimeError('cancelled_by_new_request')
             logger.info('[job-worker] job_id=%s | enviando imagem split', job_id)
             send_photo(bot, loop, chat_id, image_path)
-            links_msg = build_booking_links_message(filtered)
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-            else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
         finally:
             try:
                 os.remove(image_path)
@@ -650,11 +631,7 @@ def process_job(conn, bot: Bot, loop, job):
                 raise RuntimeError('cancelled_by_new_request')
             logger.info('[job-worker] job_id=%s | enviando imagem única', job_id)
             send_photo(bot, loop, chat_id, image_path)
-            links_msg = build_booking_links_message(filtered, result_type='agency' if bool(filters.get('agencies', False)) and not bool(filters.get('any_airline', True)) else 'airline')
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-            else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
         finally:
             try:
                 os.remove(image_path)
