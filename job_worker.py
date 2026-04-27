@@ -329,17 +329,26 @@ def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | 
         return
     _session_alert_sent_at = now
     if score == 1:
-        # Verificar se alguma rota capturou agência — se sim, alerta é falso positivo
-        has_agency = False
+        # Verificar se alguma rota com auth_score < 2 capturou agência
+        # Se sim, o problema é da rota (Google nao oferece booking), nao da sessao
+        # Regra: so alerta se TODAS as rotas com auth_score=1 tem booking_options=0 E sem agencia
+        all_routes_with_bad_auth_have_no_agency = True
         if parsed_rows:
             for r in parsed_rows:
+                notes = str(r.get('notes') or '')
+                has_bad_auth = 'auth_score=1' in notes or 'auth_score=0' in notes
                 agency_price = r.get('best_agency_price')
                 agency_vendor = r.get('best_agency_vendor') or ''
                 booking_opts = r.get('booking_options', 0) or 0
-                if (agency_price is not None and float(agency_price) > 0) or (agency_vendor.strip() and agency_vendor.strip().lower() != 'none') or booking_opts > 0:
-                    has_agency = True
+                has_agency = (agency_price is not None and float(agency_price) > 0) or (agency_vendor.strip() and agency_vendor.strip().lower() != 'none') or booking_opts > 0
+                if has_bad_auth and has_agency:
+                    all_routes_with_bad_auth_have_no_agency = False
                     break
-        if has_agency:
+                if not has_bad_auth and has_agency:
+                    # Tinha sessao boa em outra rota e ela trouxe agencia — sessao OK
+                    all_routes_with_bad_auth_have_no_agency = False
+                    break
+        if not all_routes_with_bad_auth_have_no_agency:
             return
         msg = (
             "⚠️ *Sessão Google degradada* \\(auth\\_score=1/2\\)\n\n"
