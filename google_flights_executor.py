@@ -880,18 +880,23 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     "notes": [f"auth_score={health['score']}", "auth_probe=google_home"],
                 }
             # Retry automático se auth_score < 2 (sessão degradada)
-            # Recarrega a página e verifica de novo — Google costuma
-            # reconhecer a sessão na segunda tentativa
+            # Google as vezes reconhece dispositivo mas nao da refresh token valido.
+            # Limpa cookies do contexto e recarrega para forçar reautenticacao.
             if health['score'] < 2:
                 human_pause(0.5, 1.0)
-                page.reload(wait_until="domcontentloaded")
+                context.clear_cookies()
+                time.sleep(1)
+                page.goto("https://accounts.google.com/signin", wait_until="domcontentloaded")
+                human_pause(1.0, 2.0)
+                # Apos limpar cookies, volta pro Google.com e verifica de novo
+                page.goto("https://www.google.com/", wait_until="domcontentloaded")
                 human_pause(1.0, 1.5)
                 health = check_session_health(page)
                 if not health["ok"]:
                     return {
                         "ok": False,
                         "error": "google_auth_required",
-                        "message": f"Sessão Google inválida (score={health['score']}/3) após retry",
+                        "message": f"Sessão Google inválida (score={health['score']}/3) após clear_cookies",
                         "health": health,
                         "notes": [f"auth_score={health['score']}", "auth_probe=google_home_retry"],
                     }
