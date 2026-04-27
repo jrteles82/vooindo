@@ -333,10 +333,11 @@ def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | 
         return
     _session_alert_sent_at = now
     if score == 1:
-        # Verificar se alguma rota com auth_score < 2 capturou agência
-        # Se sim, o problema é da rota (Google nao oferece booking), nao da sessao
-        # Regra: so alerta se TODAS as rotas com auth_score=1 tem booking_options=0 E sem agencia
-        all_routes_with_bad_auth_have_no_agency = True
+        # Sessao pode estar OK mesmo com auth_score=1 se:
+        # 1) Alguma rota capturou agencia (ex: maxmilhas)
+        # 2) Qualquer rota capturou preco de vendor (operacional)
+        # auth_score=1 é falso positivo frequente do check_session_health
+        suppressed = False
         if parsed_rows:
             for r in parsed_rows:
                 notes = str(r.get('notes') or '')
@@ -345,14 +346,18 @@ def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | 
                 agency_vendor = r.get('best_agency_vendor') or ''
                 booking_opts = r.get('booking_options', 0) or 0
                 has_agency = (agency_price is not None and float(agency_price) > 0) or (agency_vendor.strip() and agency_vendor.strip().lower() != 'none') or booking_opts > 0
-                if has_bad_auth and has_agency:
-                    all_routes_with_bad_auth_have_no_agency = False
+                # Se alguma rota tem agencia, sessao ta OK
+                if has_agency:
+                    suppressed = True
                     break
-                if not has_bad_auth and has_agency:
-                    # Tinha sessao boa em outra rota e ela trouxe agencia — sessao OK
-                    all_routes_with_bad_auth_have_no_agency = False
+                # Se tem preco de vendor (cia aerea), o scan funcionou
+                airline_price = r.get('best_airline_price')
+                airline_vendor = r.get('best_airline_vendor') or ''
+                has_airline_result = (airline_price is not None and float(airline_price) > 0) or (airline_vendor.strip() and airline_vendor.strip().lower() != 'none')
+                if has_airline_result:
+                    suppressed = True
                     break
-        if not all_routes_with_bad_auth_have_no_agency:
+        if suppressed:
             return
         msg = (
             "⚠️ *Sessão Google degradada* \\(auth\\_score=1/2\\)\n\n"
