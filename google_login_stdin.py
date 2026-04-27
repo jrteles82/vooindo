@@ -11,7 +11,12 @@ import subprocess
 import sys
 import os
 import time
+import argparse
 from pathlib import Path
+
+# Configura path dos browsers antes de importar playwright
+BASE_DIR = Path(__file__).resolve().parent
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BASE_DIR / ".playwright-browsers"))
 
 # Flush imediato em cada print para bot ler linha a linha
 _real_print = print
@@ -19,12 +24,20 @@ def print(*args, **kwargs):  # noqa: A001
     kwargs.setdefault('flush', True)
     _real_print(*args, **kwargs)
 
-DISPLAY_NUM = ':99'
+parser = argparse.ArgumentParser()
+parser.add_argument('--email', help='Email do Google')
+parser.add_argument('--force', action='store_true', help='Forçar login mesmo que pareça logado')
+args, unknown = parser.parse_known_args()
+
+email = args.email or 'vooindo.bot@gmail.com'
+
+DISPLAY_NUM = ":99"
 SESSION_DIR = Path('/opt/vooindo/google_session')
 DUMP_DIR = Path('/opt/vooindo/debug_dumps')
 DUMP_DIR.mkdir(exist_ok=True)
 
 print('STATUS:STEP:Iniciando display virtual...')
+subprocess.run(['pkill', '-f', f'Xvfb.*{DISPLAY_NUM}'], capture_output=True)
 xvfb = subprocess.Popen(
     ['Xvfb', DISPLAY_NUM, '-screen', '0', '1280x900x24'],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -34,8 +47,10 @@ os.environ['DISPLAY'] = DISPLAY_NUM
 
 sys.path.insert(0, '/opt/vooindo')
 from playwright.sync_api import sync_playwright  # noqa: E402
+from playwright_stealth import Stealth
 from google_session_sync import purge_chrome_singleton_artifacts, is_profile_in_use  # noqa: E402
 
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
 
 def _screenshot(page, name: str) -> None:
     p = DUMP_DIR / f'login_{name}.png'
@@ -78,17 +93,48 @@ try:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
-            channel='chrome',
             headless=False,
+            channel='chrome',
+            ignore_default_args=['--enable-automation'],
             slow_mo=80,
             locale='pt-BR',
+            timezone_id='America/Porto_Velho',
             viewport={'width': 1280, 'height': 900},
-            args=['--disable-blink-features=AutomationControlled'],
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-infobars',
+                '--window-position=0,0',
+                '--ignore-certifcate-errors',
+                '--ignore-certifcate-errors-spki-list',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-web-security',
+            ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        Stealth().apply_stealth_sync(page)
         page.set_default_timeout(30000)
 
-        page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')
+        print('STATUS:STEP:Acessando google.com...')
+        page.goto('https://www.google.com/?hl=pt-BR', wait_until='domcontentloaded')
+        time.sleep(2)
+        _screenshot(page, '00_google_home')
+
+        # Clica em "Fazer login" ou similar
+        try:
+            login_btn = page.locator('a:has-text("Fazer login"), a:has-text("Sign in"), a:has-text("Entrar")').first
+            if login_btn.count() > 0:
+                print('STATUS:STEP:Clicando em Fazer Login...')
+                login_btn.click()
+                time.sleep(2)
+            else:
+                print('STATUS:STEP:Botão de login não encontrado, indo direto para signin...')
+                page.goto('https://accounts.google.com/ServiceLogin?hl=pt-BR', wait_until='domcontentloaded')
+        except Exception:
+            page.goto('https://accounts.google.com/ServiceLogin?hl=pt-BR', wait_until='domcontentloaded')
+
         time.sleep(2)
         _screenshot(page, '01_start')
 
@@ -97,7 +143,7 @@ try:
         if 'escolha uma conta' in body or 'choose an account' in body or 'accountchooser' in page.url:
             print('STATUS:STEP:Selecionando conta existente...')
             try:
-                account = page.locator('li').filter(has_text='jrteles.moreira@gmail.com').first
+                account = page.locator('li').filter(has_text=email).first
                 if account.count() == 0:
                     account = page.locator('[data-email]').first
                 if account.count() == 0:
@@ -112,7 +158,9 @@ try:
         email_input = page.locator('input[type="email"]:visible')
         if email_input.count() > 0:
             print('STATUS:STEP:Preenchendo email...')
-            email_input.first.fill('jrteles.moreira@gmail.com')
+            email_input.first.click()
+            time.sleep(0.5)
+            page.keyboard.type(email, delay=100)
             time.sleep(0.5)
             page.keyboard.press('Enter')
             time.sleep(2.5)
@@ -122,7 +170,9 @@ try:
         pwd_input = page.locator('input[type="password"]')
         if pwd_input.count() > 0:
             print('STATUS:STEP:Preenchendo senha...')
-            pwd_input.first.fill(password)
+            pwd_input.first.click()
+            time.sleep(0.5)
+            page.keyboard.type(password, delay=110)
             time.sleep(0.5)
             page.keyboard.press('Enter')
             time.sleep(3)
@@ -140,7 +190,9 @@ try:
             email_input = page.locator('input[type="email"]:visible')
             if email_input.count() > 0:
                 print('STATUS:STEP:Preenchendo email...')
-                email_input.first.fill('jrteles.moreira@gmail.com')
+                email_input.first.click()
+                time.sleep(0.5)
+                page.keyboard.type(email, delay=120)
                 time.sleep(0.5)
                 page.keyboard.press('Enter')
                 time.sleep(2.5)
@@ -150,7 +202,9 @@ try:
             pwd_input = page.locator('input[type="password"]')
             if pwd_input.count() > 0:
                 print('STATUS:STEP:Preenchendo senha...')
-                pwd_input.first.fill(password)
+                pwd_input.first.click()
+                time.sleep(0.5)
+                page.keyboard.type(password, delay=130)
                 time.sleep(0.5)
                 page.keyboard.press('Enter')
                 time.sleep(3)

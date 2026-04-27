@@ -476,7 +476,12 @@ def run_health_check(url: str | None = None, dry_run: bool = False, approve_toke
             ctx = pw.chromium.launch_persistent_context(
                 str(session_dir),
                 headless=os.getenv("GOOGLE_HEADLESS", "1") in {"1", "true", "yes"},
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-setuid-sandbox",
+                ],
                 locale="pt-BR",
                 timezone_id="America/Sao_Paulo",
                 viewport={"width": 1280, "height": 900},

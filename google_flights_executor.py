@@ -16,9 +16,12 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).with_name("
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+    from playwright_stealth import Stealth
 except ImportError as exc:
     print(json.dumps({"ok": False, "error": "missing_dependency", "message": str(exc)}, ensure_ascii=False))
     raise SystemExit(1)
+
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
 SESSION_DIR = Path(os.getenv("GOOGLE_PERSISTENT_PROFILE_DIR", str(Path(__file__).resolve().with_name("google_session"))))
 BASE_URL = os.getenv("GOOGLE_FLIGHTS_BASE_URL", "https://www.google.com/travel/flights")
@@ -140,6 +143,9 @@ def check_session_health(page) -> dict:
         'img[class*="gb"]',        # Google header avatar class
         'a[class*="gb_A"]',        # Google account button
         '[aria-haspopup] svg[aria-label]',  # generic account icon
+        'a[href*="SignOutOptions"]',  # fallback: link de sign out = logado
+        '[jsname*="account"]',
+        'a[href*="https://myaccount.google"]',
     ]
     for sel in profile_selectors:
         try:
@@ -543,6 +549,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         "[role='main'] li",
         "[role='main'] [role='link']",
         "[role='listitem']",
+        "div[data-ved]",
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
@@ -864,15 +871,29 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
-            channel="chrome",
             headless=HEADLESS,
             slow_mo=SLOW_MO,
             locale="pt-BR",
+            user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-infobars",
+                "--ignore-certifcate-errors",
+                "--remote-debugging-port=0",
+                "--disable-extensions",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-software-rasterizer",
+                "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
+            ],
         )
         configure_context_routing(context)
         page = context.pages[0] if context.pages else context.new_page()
+        Stealth().apply_stealth_sync(page)
         page.set_default_timeout(TIMEOUT_MS)
         try:
             nav_started = time.perf_counter()
@@ -888,10 +909,10 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     "health": health,
                     "notes": [f"auth_score={health['score']}", "auth_probe=google_home"],
                 }
-            # Retry automático se auth_score < 2 (sessão degradada)
-            # Google as vezes reconhece dispositivo mas nao da refresh token valido.
-            # Limpa cookies do contexto e recarrega para forçar reautenticacao.
-            if health['score'] < 2:
+            # Retry automático se auth_score < 1 (sessão completamente inválida)
+            # NOTA: Não limpa cookies se score >= 1 (tem sessão parcial mas sem avatar visível)
+            # Limpar cookies quebra sessões válidas de navegadores headless sem avatar
+            if health['score'] < 1:
                 human_pause(0.5, 1.0)
                 context.clear_cookies()
                 time.sleep(1)
@@ -1021,3 +1042,4 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
+SystemExit(main(sys.argv))

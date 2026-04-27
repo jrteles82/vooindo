@@ -601,6 +601,12 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     headless=bool(CONFIG.get("headless", True)),
                     locale="pt-BR",
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    args=[
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                    ],
                 )
                 scraper = build_google_flights_worker(playwright=p, browser=browser)
             try:

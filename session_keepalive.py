@@ -117,11 +117,16 @@ def run_keepalive() -> bool:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
-            channel="chrome",
             headless=True,
             locale="pt-BR",
             viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+            ],
         )
         try:
             page = ctx.pages[0] if ctx.pages else ctx.new_page()

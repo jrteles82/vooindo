@@ -17,6 +17,8 @@ from access_policy import (
     ensure_user_access,
     get_free_uses_limit,
     is_active_access,
+    is_maintenance_mode,
+    is_exempt_from_maintenance,
     should_charge_user,
 )
 from audit import audit
@@ -284,43 +286,45 @@ GOOGLE_SESSION_DIR = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooin
 def _purge_stale_chrome():
     """Mata Chrome orphans, limpa SingletonLock e locks com ownership errada antes de cada job."""
     import subprocess as _sp
+    session_dir = GOOGLE_SESSION_DIR
     try:
-        _sp.run(['pkill', '-9', '-f', r'playwright.*google_session'], capture_output=True, timeout=5)
+        # Mata processos que estejam usando o diretório de sessão
+        _sp.run(['fuser', '-k', str(session_dir)], capture_output=True, timeout=5)
     except Exception:
         pass
     try:
-        _sp.run(['pkill', '-9', '-f', r'chrome.*google_session'], capture_output=True, timeout=5)
+        # Mata processos do Playwright e Chrome que usem o diretório de sessão atual
+        _sp.run(['pkill', '-9', '-f', session_dir], capture_output=True, timeout=5)
     except Exception:
         pass
     try:
-        import shutil
-        session_dir = GOOGLE_SESSION_DIR
-        for f in os.listdir(session_dir):
-            if 'Singleton' in f:
-                fp = os.path.join(session_dir, f)
-                try:
-                    if os.path.islink(fp) or os.path.isfile(fp):
-                        os.remove(fp)
-                except OSError:
-                    pass
-        # Limpar locks com ownership incorreta (ex: root)
+        # Limpeza de arquivos de lock internos do Chrome/Chromium
+        if os.path.exists(session_dir):
+            # Limpeza recursiva de Singleton* e lock files
+            for root, dirs, files in os.walk(session_dir):
+                for name in files + dirs:
+                    if any(x in name for x in ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lock', '.lock']):
+                        fp = os.path.join(root, name)
+                        try:
+                            if os.path.islink(fp) or os.path.isfile(fp):
+                                os.remove(fp)
+                            elif os.path.isdir(fp):
+                                import shutil
+                                shutil.rmtree(fp, ignore_errors=True)
+                        except Exception:
+                            pass
+                # Só limpa o topo por performance, a menos que tenhamos muitos problemas
+                break
+        
+        # Limpar locks de arquivo de nível superior (ex: google_session.lock)
         import pathlib as _pl
-        lock_file = str(_pl.Path(session_dir).parent / f'{_pl.Path(session_dir).name}.lock')
-        if os.path.exists(lock_file):
+        session_path = _pl.Path(session_dir)
+        lock_file = session_path.parent / f'{session_path.name}.lock'
+        if lock_file.exists():
             try:
-                # Se nao consegue ler -> ownership errada -> deleta
-                with open(lock_file, 'r'):
-                    pass
-            except PermissionError:
-                try:
-                    os.unlink(lock_file)
-                except OSError:
-                    pass
-        # Limpar /tmp do Chrome
-                try:
-                    shutil.rmtree(os.path.join('/tmp', d), ignore_errors=True)
-                except Exception:
-                    pass
+                os.remove(str(lock_file))
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -542,6 +546,8 @@ def process_job(conn, bot: Bot, loop, job):
     if blocked_row and int((blocked_row['blocked'] if isinstance(blocked_row, dict) else blocked_row[0]) or 0):
         raise RuntimeError('usuario_bloqueado')
 
+    if is_maintenance_mode(conn) and not is_exempt_from_maintenance(conn, chat_id):
+        raise RuntimeError('sessao_google_invalida_aguardando_renovacao')
     if _GOOGLE_SESSION_INVALID:
         raise RuntimeError('sessao_google_invalida_aguardando_renovacao')
 
@@ -744,14 +750,16 @@ def main():
                         f"⚠️ Job {job['id']} falhou por timeout 2x\n\nUser: {job['user_id']} | Chat: {job['chat_id']}\n\nVerifique a sessão Google — pode estar expirada.",
                     )
                 if error_text == 'sessao_google_invalida_aguardando_renovacao':
-                    try:
-                        loop.run_until_complete(bot.send_message(
-                            chat_id=str(job['chat_id']),
-                            text='⚠️ Sessão Google temporariamente inválida. Renove com o administrador e tente novamente em instantes.',
-                            reply_markup=main_menu_markup(),
-                        ))
-                    except Exception:
-                        pass
+                    # Admin/isento não vê mensagem de manutenção
+                    if not is_exempt_from_maintenance(conn, str(job['chat_id'])):
+                        try:
+                            loop.run_until_complete(bot.send_message(
+                                chat_id=str(job['chat_id']),
+                                text='🔧 Em manutenção, aguarde um instante.',
+                                reply_markup=main_menu_markup(),
+                            ))
+                        except Exception:
+                            pass
                 if _is_chat_not_found(exc):
                     _mark_user_blocked(conn, str(job['chat_id']))
                 audit.error("job_falhou",

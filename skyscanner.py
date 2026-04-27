@@ -1988,7 +1988,14 @@ class AuthenticatedGoogleFlightsWorker(GoogleFlightsScraper):
                     "width": int(CONFIG.get("google_auth_worker_viewport_width", 1280)),
                     "height": int(CONFIG.get("google_auth_worker_viewport_height", 851)),
                 },
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
+                ],
             )
             self._configure_context(self._context)
         return self._context
@@ -2193,7 +2200,14 @@ class Monitor:
                         headless=False,
                         slow_mo=100,
                         locale="pt-BR",
-                        args=["--disable-blink-features=AutomationControlled"],
+                        args=[
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-gpu",
+                            "--disable-dev-shm-usage",
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
+                        ],
                     )
                 else:
                     browser = p.chromium.launch(headless=bool(CONFIG["headless"]))

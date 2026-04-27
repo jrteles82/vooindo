@@ -15,10 +15,13 @@ os.environ['DISPLAY'] = ':98'
 
 sys.path.insert(0, '/opt/vooindo')
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 
 SESSION_DIR = Path('/opt/vooindo/google_session')
 DUMP_DIR = Path('/opt/vooindo/debug_dumps')
 DUMP_DIR.mkdir(exist_ok=True)
+
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
 def screenshot(page, name):
     p = DUMP_DIR / f'login_{name}.png'
@@ -40,14 +43,25 @@ print("[*] Abrindo Chrome...")
 with sync_playwright() as p:
     ctx = p.chromium.launch_persistent_context(
         str(SESSION_DIR),
-        channel='chrome',
         headless=False,
         slow_mo=80,
         locale='pt-BR',
+        user_agent=USER_AGENT,
         viewport={'width': 1280, 'height': 900},
-        args=['--disable-blink-features=AutomationControlled'],
+        args=[
+            '--disable-blink-features=AutomationControlled',
+            '--disable-gpu',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-infobars',
+            '--window-position=0,0',
+            '--ignore-certifcate-errors',
+            '--ignore-certifcate-errors-spki-list',
+        ],
     )
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    Stealth().apply_stealth_sync(page)
     page.set_default_timeout(30000)
 
     page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')

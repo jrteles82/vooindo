@@ -12,7 +12,13 @@ def main():
             headless=False,
             slow_mo=100,
             locale='pt-BR',
-            args=['--disable-blink-features=AutomationControlled'],
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+            ],
         )
         page = context.pages[0] if context.pages else context.new_page()
         page.goto('https://accounts.google.com/', wait_until='domcontentloaded')

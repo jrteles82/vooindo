@@ -19,9 +19,12 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).with_name("
 
 try:
     from playwright.sync_api import sync_playwright
+    from playwright_stealth import Stealth
 except ImportError:
-    print("Playwright não instalado. Execute: .venv/bin/pip install playwright")
+    print("Dependências faltando. Execute: .venv/bin/pip install playwright playwright-stealth")
     raise SystemExit(1)
+
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSION_DIR = BASE_DIR / "google_session"
@@ -62,14 +65,23 @@ def main() -> int:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
-            channel="chrome",
             headless=False,
             slow_mo=0,
             locale="pt-BR",
+            user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-infobars",
+                "--ignore-certifcate-errors",
+            ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        Stealth().apply_stealth_sync(page)
         page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
 
         health_before = check_health(page)

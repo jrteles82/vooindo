@@ -2598,6 +2598,10 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except DatabaseRateLimitError:
         await update.message.reply_text(db_overload_message())
         return
+    if not _check_maintenance(conn, chat_id, 'menu'):
+        conn.close()
+        await update.message.reply_text('🔧 Em manutenção, aguarde um instante.', reply_markup=main_menu_markup())
+        return
     msg = require_confirmation(conn, chat_id)
 
     if msg:
@@ -3563,6 +3567,14 @@ async def manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+_LIBERADAS_EM_MANUTENCAO = frozenset({'support', 'manual', 'back', 'pagamentos', 'fontes', 'togglealerts', 'clear_confirm', 'confirm'})
+
+
+def _check_maintenance(conn, chat_id: str, action: str) -> bool:
+    """Retorna True se o usuário NÃO está em manutenção ou está isento."""
+    return not is_maintenance_mode(conn) or is_exempt_from_maintenance(conn, chat_id) or action in _LIBERADAS_EM_MANUTENCAO
+
+
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action = query.data.split(':', 1)[1]
@@ -3572,6 +3584,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = get_db()
     except DatabaseRateLimitError:
         await query.message.reply_text(db_overload_message())
+        return ConversationHandler.END
+    if not _check_maintenance(conn, chat_id, action):
+        conn.close()
+        await query.answer('🔧 Em manutenção, aguarde um instante.', show_alert=True)
+        await query.message.reply_text('🔧 Em manutenção, aguarde um instante.', reply_markup=main_menu_markup())
         return ConversationHandler.END
     msg = require_confirmation(conn, chat_id) if action != 'manual' else None
     if msg:
@@ -4267,12 +4284,21 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
             sys.executable, '/opt/vooindo/google_login_stdin.py',
             stdin=_asyncio.subprocess.PIPE,
             stdout=_asyncio.subprocess.PIPE,
-            stderr=_asyncio.subprocess.DEVNULL,
+            stderr=_asyncio.subprocess.PIPE,
         )
         session['proc'] = proc
 
         proc.stdin.write((password + '\n').encode())
         await proc.stdin.drain()
+
+        # Task to log stderr
+        async def _log_stderr(stream):
+            while True:
+                line = await stream.readline()
+                if not line: break
+                logger.error(f"[google_login_stderr] {line.decode().strip()}")
+        
+        _asyncio.create_task(_log_stderr(proc.stderr))
 
         while True:
             try:

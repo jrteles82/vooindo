@@ -1,6 +1,7 @@
 flask>=3.0,<4
 requests>=2.31,<3
 playwright>=1.52,<2
+playwright-stealth>=2.0.3
 Pillow>=10,<12
 python-telegram-bot>=21,<22
 
