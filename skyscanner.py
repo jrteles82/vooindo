@@ -572,55 +572,16 @@ def _price_cache_key(route: RouteQuery) -> str:
 
 
 def _cache_get(route: RouteQuery) -> FlightResult | None:
-    """Retorna resultado em cache se <1h."""
-    import sqlite3
-    try:
-        key = _price_cache_key(route)
-        conn = sqlite3.connect(str(CACHE_DB_PATH))
-        conn.execute('''CREATE TABLE IF NOT EXISTS price_cache (
-            cache_key TEXT PRIMARY KEY,
-            result_json TEXT,
-            cached_at INTEGER
-        )''')
-        row = conn.execute(
-            'SELECT result_json, cached_at FROM price_cache WHERE cache_key = ?',
-            (key,)
-        ).fetchone()
-        conn.close()
-        if row:
-            now_ts = int(time.time())
-            if now_ts - int(row[1]) < CACHE_TTL_SECONDS:
-                import json
-                data = json.loads(row[0])
-                if data.get('price') is not None:
-                    logger.info('[price-cache] HIT key=%s price=%s', key, data['price'])
-                    return FlightResult(**data)
-    except Exception:
-        pass
+    """Cache desativado permanentemente por decisao de Teles."""
     return None
 
 
+
+
 def _cache_set(route: RouteQuery, result: FlightResult):
-    """Salva resultado no cache."""
-    import sqlite3, json
-    from dataclasses import asdict
-    try:
-        key = _price_cache_key(route)
-        data = asdict(result)
-        conn = sqlite3.connect(str(CACHE_DB_PATH))
-        conn.execute('''CREATE TABLE IF NOT EXISTS price_cache (
-            cache_key TEXT PRIMARY KEY,
-            result_json TEXT,
-            cached_at INTEGER
-        )''')
-        conn.execute(
-            'INSERT OR REPLACE INTO price_cache (cache_key, result_json, cached_at) VALUES (?, ?, ?)',
-            (key, json.dumps(data, ensure_ascii=False, default=str), int(time.time()))
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+    """Cache desativado permanentemente por decisao de Teles."""
+    pass
+
 
 
 def run_google_flights_executor(route: RouteQuery, allow_agencies: bool = True) -> FlightResult:
