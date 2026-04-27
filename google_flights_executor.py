@@ -384,7 +384,12 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
         )
         if m:
             vendor = re.sub(r"\s*Companhia\s*a[ée]rea\s*$", "", m.group(1).strip(), flags=re.I).strip()
-            is_airline = bool(re.search(r"Companhia\s*a[ée]rea", line, re.I)) or is_probable_airline_vendor(vendor)
+            # Verificar se a linha ATUAL ou a PROXIMA tem "Companhia aerea" — Google separou em linha distinta
+            is_airline = bool(re.search(r"Companhia\s*a[ée]rea", line, re.I))
+            if not is_airline and i + 1 < len(lines):
+                is_airline = bool(re.search(r"Companhia\s*a[ée]rea", lines[i + 1], re.I))
+            if not is_airline:
+                is_airline = is_probable_airline_vendor(vendor)
             price = _parse_price_near(i)
             if price:
                 _add(vendor, price, is_airline)
