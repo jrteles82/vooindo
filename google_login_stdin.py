@@ -90,11 +90,22 @@ if not password:
 print('STATUS:STEP:Abrindo Chrome...')
 purge_chrome_singleton_artifacts(SESSION_DIR)
 try:
+    proxy_settings = {}
+    proxy_url = os.getenv('GOOGLE_FLIGHTS_PROXY')
+    if proxy_url:
+        proxy_settings = {'server': proxy_url}
+        proxy_user = os.getenv('GOOGLE_FLIGHTS_PROXY_USER')
+        proxy_pass = os.getenv('GOOGLE_FLIGHTS_PROXY_PASS')
+        if proxy_user and proxy_pass:
+            proxy_settings['username'] = proxy_user
+            proxy_settings['password'] = proxy_pass
+
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
             headless=False,
             channel='chrome',
+            proxy=proxy_settings if proxy_settings else None,
             ignore_default_args=['--enable-automation'],
             slow_mo=80,
             locale='pt-BR',

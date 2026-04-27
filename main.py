@@ -394,7 +394,7 @@ def _expand_result_rows(row: dict) -> list[dict]:
     return [row]
 
 
-def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allow_agencies: bool = True, fast_mode: bool = False) -> FlightResult:
+def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allow_agencies: bool = True, fast_mode: bool = False, profile_dir: Optional[str] = None) -> FlightResult:
     if fast_mode:
         origin_opts = [route.origin]
         destination_opts = [route.destination]
@@ -486,7 +486,7 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allo
     else:
         # Serial (padrão antigo ou se apenas 1 variante)
         for v in variants_to_search:
-            result = scraper.search(v, allow_agencies=allow_agencies)
+            result = scraper.search(v, allow_agencies=allow_agencies, profile_dir=profile_dir)
             variants.append((v, result))
 
     def _score(item: tuple[RouteQuery, FlightResult]) -> tuple[int, float]:
@@ -501,7 +501,7 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, allo
     # Fallback: Se estiver em fast_mode e não achar preço, tenta expansão completa
     if fast_mode and (chosen.price is None or chosen.price >= 10**11):
         logger.info(f"Fast mode falhou para {route.origin}->{route.destination}, tentando expansão completa...")
-        return _search_google_result(scraper, route, allow_agencies=allow_agencies, fast_mode=False)
+        return _search_google_result(scraper, route, allow_agencies=allow_agencies, fast_mode=False, profile_dir=profile_dir)
 
     notes_parts = [chosen.notes or ""]
     notes_parts.append(f"google_variant={chosen_variant.origin}->{chosen_variant.destination}")
@@ -642,7 +642,8 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     worker_count = max(1, min(len(routes), override_workers))
     source_flags = sources or {"google_flights": True, "maxmilhas": True}
     if source_flags.get("google_flights", True) and CONFIG.get("google_auth_worker_enabled"):
-        worker_count = 1
+        # Mesmo com auth worker, permitimos 2 paralelos para agilizar consultas manuais multi-rota
+        worker_count = max(1, min(len(routes), 2))
     route_chunks = _split_routes(routes, worker_count)
     chunk_results: list[list[tuple[RouteQuery, FlightResult]] | None] = [None] * len(route_chunks)
 
@@ -671,10 +672,20 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 )
                 scraper = build_google_flights_worker(playwright=p, browser=browser)
             try:
+                # Determinar perfil para este worker
+                base_dir = Path(__file__).resolve().parent
+                p_dir = None
+                if chunk_idx == 0:
+                    p_dir = str(base_dir / "google_session")
+                else:
+                    alt_dir = base_dir / f"google_session_{chunk_idx + 1}"
+                    if alt_dir.is_dir():
+                        p_dir = str(alt_dir)
+
                 for route in chunk_routes:
                     if source_flags.get("google_flights", True):
                         try:
-                            google_result = _search_google_result(scraper, route, allow_agencies=source_flags.get('allow_agencies', True), fast_mode=fast_mode)
+                            google_result = _search_google_result(scraper, route, allow_agencies=source_flags.get('allow_agencies', True), fast_mode=fast_mode, profile_dir=p_dir)
                         except Exception as exc:
                             logger.warning('[scan-chunk] rota=%s->%s ida=%s volta=%s | erro google_flights=%s', route.origin, route.destination, route.outbound_date, route.inbound_date or '-', exc)
                             google_result = FlightResult(
