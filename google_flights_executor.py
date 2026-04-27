@@ -879,6 +879,23 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     "health": health,
                     "notes": [f"auth_score={health['score']}", "auth_probe=google_home"],
                 }
+            # Retry automático se auth_score < 2 (sessão degradada)
+            # Recarrega a página e verifica de novo — Google costuma
+            # reconhecer a sessão na segunda tentativa
+            if health['score'] < 2:
+                human_pause(0.5, 1.0)
+                page.reload(wait_until="domcontentloaded")
+                human_pause(1.0, 1.5)
+                health = check_session_health(page)
+                if not health["ok"]:
+                    return {
+                        "ok": False,
+                        "error": "google_auth_required",
+                        "message": f"Sessão Google inválida (score={health['score']}/3) após retry",
+                        "health": health,
+                        "notes": [f"auth_score={health['score']}", "auth_probe=google_home_retry"],
+                    }
+                notes.append(f"auth_score_retry={health['score']}")
             notes.append(f"auth_score={health['score']}")
             search_nav_started = time.perf_counter()
             page.goto(url, wait_until="domcontentloaded")
