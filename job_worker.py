@@ -173,7 +173,11 @@ def fetch_next_job(conn):
         sql(f"UPDATE scan_jobs SET status = 'running', started_at = {now_expression()} WHERE id = ? AND status = 'pending'"),
         (row['id'],),
     )
-    conn.commit()
+    try:
+        conn.commit()
+    except Exception as commit_err:
+        logger.warning("falha no commit do job capture: %s", commit_err)
+        return None
     if getattr(updated, 'rowcount', 0) != 1:
         logger.warning('falha ao capturar job pendente de forma atômica | job_id=%s', row['id'])
         return None
