@@ -321,7 +321,7 @@ def _purge_stale_chrome():
         pass
 
 
-def _notify_session_expired(bot: Bot, loop, score: int = 0) -> None:
+def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | None = None) -> None:
     global _session_alert_sent_at, _GOOGLE_SESSION_INVALID
     _GOOGLE_SESSION_INVALID = True
     now = time.monotonic()
@@ -329,6 +329,18 @@ def _notify_session_expired(bot: Bot, loop, score: int = 0) -> None:
         return
     _session_alert_sent_at = now
     if score == 1:
+        # Verificar se alguma rota capturou agência — se sim, alerta é falso positivo
+        has_agency = False
+        if parsed_rows:
+            for r in parsed_rows:
+                agency_price = r.get('best_agency_price')
+                agency_vendor = r.get('best_agency_vendor') or ''
+                booking_opts = r.get('booking_options', 0) or 0
+                if (agency_price is not None and float(agency_price) > 0) or (agency_vendor.strip() and agency_vendor.strip().lower() != 'none') or booking_opts > 0:
+                    has_agency = True
+                    break
+        if has_agency:
+            return
         msg = (
             "⚠️ *Sessão Google degradada* \\(auth\\_score=1/2\\)\n\n"
             "Agências não aparecem nos resultados\\. Renove a sessão:"
@@ -555,7 +567,7 @@ def process_job(conn, bot: Bot, loop, job):
     if is_job_cancelled(conn, job_id):
         raise RuntimeError('cancelled_by_new_request')
     if _rows_have_auth_error(parsed):
-        _notify_session_expired(bot, loop, score=_rows_auth_score(parsed))
+        _notify_session_expired(bot, loop, score=_rows_auth_score(parsed), parsed_rows=parsed)
         audit.auth("sessao_google_expirada", chat_id=chat_id, status="error",
                    payload={"job_id": job['id']})
     expanded = expand_rows_by_result_type(parsed, airline_filters_json, show_result_type_filters=show_result_type_filters)
