@@ -120,35 +120,35 @@ try:
             time.sleep(3)
             _screenshot(page, '04_after_password')
         else:
-            print(f'STATUS:STEP:Campo de senha não encontrado (URL: {page.url[:80]}). Forçando logout...')
+            print(f'STATUS:STEP:Campo de senha não encontrado (URL: {page.url[:80]}). Limpando cookies e tentando de novo...')
             _screenshot(page, '04_no_password_field')
-            # Força logout e recomeça o fluxo
-            page.goto('https://accounts.google.com/Logout', wait_until='domcontentloaded')
-            time.sleep(2)
+            # Limpa todos os cookies do perfil para forçar reautenticação real
+            ctx.clear_cookies()
+            time.sleep(0.5)
             page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')
             time.sleep(2)
-            _screenshot(page, '04_after_logout')
-            # Email field (agora deve aparecer)
+            _screenshot(page, '04_after_clear_cookies')
+            # Email field (agora DEVE aparecer)
             email_input = page.locator('input[type="email"]:visible')
             if email_input.count() > 0:
-                print('STATUS:STEP:Preenchendo email (após logout)...')
+                print('STATUS:STEP:Preenchendo email...')
                 email_input.first.fill('jrteles.moreira@gmail.com')
                 time.sleep(0.5)
                 page.keyboard.press('Enter')
                 time.sleep(2.5)
                 _screenshot(page, '04_after_email_retry')
             # Password field (agora DEVE aparecer)
-            time.sleep(1.5)
+            time.sleep(2)
             pwd_input = page.locator('input[type="password"]')
             if pwd_input.count() > 0:
-                print('STATUS:STEP:Preenchendo senha (após logout)...')
+                print('STATUS:STEP:Preenchendo senha...')
                 pwd_input.first.fill(password)
                 time.sleep(0.5)
                 page.keyboard.press('Enter')
                 time.sleep(3)
                 _screenshot(page, '04_after_password_retry')
             else:
-                print('STATUS:ERROR:Campo de senha não apareceu mesmo após logout forçado')
+                print('STATUS:ERROR:Campo de senha não apareceu mesmo limpando cookies')
                 _screenshot(page, '04_still_no_password')
 
         # Handle challenges
