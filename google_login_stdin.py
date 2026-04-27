@@ -52,9 +52,17 @@ def _get_body(page) -> str:
         return ''
 
 
-def _read_stdin_line() -> str:
-    line = sys.stdin.readline()
-    return line.rstrip('\n').strip()
+def _read_stdin_line(timeout: int = 60) -> str:
+    import select
+    try:
+        if timeout > 0:
+            r, _, _ = select.select([sys.stdin], [], [], timeout)
+            if not r:
+                return ''
+        line = sys.stdin.readline()
+        return line.rstrip('\n').strip()
+    except Exception:
+        return ''
 
 
 # Lê senha do stdin
@@ -165,7 +173,8 @@ try:
                 'autenticador', 'authenticator', 'código de verificação', 'totp',
             ]):
                 print('STATUS:NEED_2FA')
-                code = _read_stdin_line()
+                print('STATUS:STEP:Aguardando Google Prompt por 30s...')
+                code = _read_stdin_line(timeout=30)
                 if code:
                     try:
                         code_input = page.locator(
@@ -181,6 +190,8 @@ try:
                         time.sleep(3)
                     except Exception as ex:
                         print(f'STATUS:STEP:Erro 2FA: {ex}')
+                else:
+                    print('STATUS:STEP:Timeout 2FA, verificando se Google Prompt resolveu...')
                 continue
 
             # Continue/Next button
