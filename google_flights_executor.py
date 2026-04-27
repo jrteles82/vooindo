@@ -135,7 +135,11 @@ def check_session_health(page) -> dict:
         'a[aria-label*="Google Account"]',
         'img[alt*="Foto do perfil"]',
         'img[alt*="Profile picture"]',
+        'a[aria-label*="jr"]',     # fallback: apelido do usuario
         '[data-ogsr-up]',
+        'img[class*="gb"]',        # Google header avatar class
+        'a[class*="gb_A"]',        # Google account button
+        '[aria-haspopup] svg[aria-label]',  # generic account icon
     ]
     for sel in profile_selectors:
         try:
