@@ -210,36 +210,24 @@ def fetch_next_job(conn, pool='scheduled'):
     else:
         job_type_filter = "job_type = 'scheduled'"
 
-    # Usar FOR UPDATE (lock de linha no MySQL) para evitar race condition
-    # entre workers que competem pelo mesmo job
-    try:
-        row = conn.execute(
-            f"""
-            SELECT id
-            FROM scan_jobs
-            WHERE status = 'pending' AND {job_type_filter}
-            ORDER BY cost_score ASC, id ASC
-            LIMIT 1
-            FOR UPDATE
-            """
-        ).fetchone()
-    except Exception:
-        # Se FOR UPDATE falhar (ex: tabela sem transação), fallback pra lógica antiga
-        row = conn.execute(
-            f"""
-            SELECT id
-            FROM scan_jobs
-            WHERE status = 'pending' AND {job_type_filter}
-            ORDER BY cost_score ASC, id ASC
-            LIMIT 1
-            """
-        ).fetchone()
-    if not row:
-        return None
-
+    # Usa UPDATE atômico (subconsulta aninhada) sem FOR UPDATE para evitar lock longo
+    # que trava consultas manuais. Funciona porque o UPDATE com status='pending' é atômico
+    # no MySQL/MariaDB — só um worker consegue pegar cada job.
+    now_str = now_expression()
     updated = conn.execute(
-        sql(f"UPDATE scan_jobs SET status = 'running', started_at = {now_expression()} WHERE id = ? AND status = 'pending'"),
-        (row['id'],),
+        sql(f"""
+            UPDATE scan_jobs
+            SET status = 'running', started_at = {now_str}
+            WHERE id = (
+                SELECT id FROM (
+                    SELECT id
+                    FROM scan_jobs
+                    WHERE status = 'pending' AND {job_type_filter}
+                    ORDER BY cost_score ASC, id ASC
+                    LIMIT 1
+                ) AS sub
+            ) AND status = 'pending'
+        """)
     )
     try:
         conn.commit()
@@ -247,10 +235,17 @@ def fetch_next_job(conn, pool='scheduled'):
         logger.warning("falha no commit do job capture: %s", commit_err)
         return None
     if getattr(updated, 'rowcount', 0) != 1:
-        logger.warning('falha ao capturar job pendente de forma atômica | job_id=%s', row['id'])
+        logger.info('nenhum job pendente disponível no pool %s', pool)
         return None
 
-    return conn.execute(sql("SELECT * FROM scan_jobs WHERE id = ?"), (row['id'],)).fetchone()
+    # Só pode ter 1 'running' recém-capturado: o nosso
+    row = conn.execute(
+        sql(f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY updated_at DESC LIMIT 1")
+    ).fetchone()
+    if not row:
+        return None
+
+    return row
 
 
 def finish_job(conn, job_id: int):

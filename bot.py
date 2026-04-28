@@ -3177,8 +3177,11 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
     conn = get_db()
-    with conn.cursor() as cur:
-        cur.execute("SET SESSION lock_wait_timeout = 5")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET SESSION lock_wait_timeout = 5")
+    except Exception:
+        pass
 
     if is_maintenance_mode(conn) and not is_exempt_from_maintenance(conn, chat_id):
         conn.close()
