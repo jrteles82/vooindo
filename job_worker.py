@@ -210,9 +210,9 @@ def fetch_next_job(conn, pool='scheduled'):
     else:
         job_type_filter = "job_type = 'scheduled'"
 
-    # Usa UPDATE atômico (subconsulta aninhada) sem FOR UPDATE para evitar lock longo
-    # que trava consultas manuais. Funciona porque o UPDATE com status='pending' é atômico
-    # no MySQL/MariaDB — só um worker consegue pegar cada job.
+    # Usa UPDATE atômico sem FOR UPDATE para evitar lock longo.
+    # A subconsulta aninhada é necessária no MariaDB (não permite referenciar
+    # a mesma tabela em um subselect dentro de UPDATE).
     now_str = now_expression()
     updated = conn.execute(
         sql(f"""
@@ -238,13 +238,13 @@ def fetch_next_job(conn, pool='scheduled'):
         logger.info('nenhum job pendente disponível no pool %s', pool)
         return None
 
-    # Só pode ter 1 'running' recém-capturado: o nosso
+    # Busca o job que acabou de ser setado como running
     row = conn.execute(
-        sql(f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY updated_at DESC LIMIT 1")
+        sql("SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1".format(job_type_filter=job_type_filter))
     ).fetchone()
     if not row:
+        logger.error('fetch_next_job: UPDATE succeeded but SELECT returned no row')
         return None
-
     return row
 
 
