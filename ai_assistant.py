@@ -34,9 +34,20 @@ _CACHE_TTL = 3600
 def _resolve_airline_name(row: dict) -> str:
     """Tenta resolver o nome da companhia pelo banco de dados.
     Usa o best_vendor como fallback se não encontrar no banco."""
-    vendor = row.get('best_vendor') or row.get('vendor') or row.get('airline') or '—'
-    if vendor in ('—', '', None):
-        return vendor
+    vendor = row.get('best_vendor') or row.get('vendor') or row.get('airline') or ''
+    if not vendor or vendor in ('—', '-'):
+        # Tenta extrair vendor do booking_options_json
+        booking_json = row.get('booking_options_json') or '[]'
+        if booking_json and booking_json != '[]':
+            try:
+                import json as _json
+                opts = _json.loads(booking_json) if isinstance(booking_json, str) else booking_json
+                if opts and isinstance(opts, list) and len(opts) > 0:
+                    vendor = str(opts[0].get('vendor', ''))
+            except Exception:
+                pass
+    if not vendor or vendor in ('—', '-', ''):
+        return '—'
 
     # Limpa o sufixo "Companhia aérea" que o Google cola
     cleaned = re.sub(r'Companhia\s*a[ée]rea\s*', '', vendor, flags=re.I).strip()
@@ -77,6 +88,7 @@ def _resolve_airline_name(row: dict) -> str:
         'swiss': 'Swiss', 'ryanair': 'Ryanair',
         'easyjet': 'EasyJet', 'wizz': 'Wizz Air',
         'flybondi': 'Flybondi', 'jetsmart': 'JetSmart',
+        'maxmilhas': 'MaxMilhas',
         'arajet': 'Arajet', 'air_canada': 'Air Canada',
         'turkish': 'Turkish Airlines',
     }
