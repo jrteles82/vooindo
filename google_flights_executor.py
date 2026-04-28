@@ -405,11 +405,12 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
     for i, line in enumerate(lines):
         # Método 1: "Reserve com [a] Vendor" — agência ou companhia via painel lateral
         m = re.search(
-            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|$)",
+            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|Companhia\s*a[ée]rea|$)",
             line, re.I
         )
         if m:
             vendor = re.sub(r"\s*Companhia\s*a[ée]rea\s*$", "", m.group(1).strip(), flags=re.I).strip()
+            vendor = re.sub(r"Companhia\s*a[ée]rea\s*$", "", vendor, flags=re.I).strip()
             # Verificar se a linha ATUAL ou a PROXIMA tem "Companhia aerea" — Google separou em linha distinta
             is_airline = bool(re.search(r"Companhia\s*a[ée]rea", line, re.I))
             if not is_airline and i + 1 < len(lines):
