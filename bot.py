@@ -783,7 +783,10 @@ def force_reply_markup(placeholder: str) -> ForceReply:
 
 
 def clear_pending_input_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.clear()
+    if 'airport_stage' in context.user_data or 'origin' in context.user_data:
+        context.user_data.pop('airport_stage', None)
+        context.user_data.pop('origin', None)
+        context.user_data.pop('destination', None)
 
 
 
@@ -4270,6 +4273,8 @@ async def support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Garantir que qualquer estado residual de cadastro é limpo
+    clear_pending_input_state(context)
     if context.user_data.get('awaiting_admin_broadcast'):
         return await admin_broadcast_save(update, context)
     if context.user_data.get('awaiting_plan_price_edit'):
