@@ -32,7 +32,7 @@ from config import (
     now_local,
 )
 
-PANEL_RESTART_COMMAND = os.getenv('SKYSCANNER_RESTART_COMMAND', '').strip()
+PANEL_RESTART_COMMAND = os.getenv('RESTART_COMMAND', '').strip()
 from db import auto_pk_column, connect as connect_db, id_ref_column, indexed_text_column, insert_ignore_sql, is_missing_column_error, sql, text_column, upsert_payment_sql, DatabaseRateLimitError
 from app_logging import setup_logging
 from audit import audit
@@ -1204,7 +1204,6 @@ def sources_menu_markup(enable_google: bool) -> InlineKeyboardMarkup:
 
 AIRLINE_FILTER_OPTIONS = [
     ('any_airline', 'Companhias Aéreas'),
-    ('agencies', 'Agências de Viagens'),
 ]
 
 
@@ -1238,7 +1237,7 @@ def normalize_airline_label(name: str) -> str:
 
 
 def parse_airline_filters(raw: str | None) -> dict[str, bool]:
-    selected = {'any_airline': True, 'agencies': False}
+    selected = {'any_airline': True}
     if not raw:
         return selected
     try:
@@ -1248,7 +1247,7 @@ def parse_airline_filters(raw: str | None) -> dict[str, bool]:
     if not isinstance(data, dict):
         return selected
 
-    if 'any_airline' in data or 'agencies' in data:
+    if 'any_airline' in data:
         for key, _ in AIRLINE_FILTER_OPTIONS:
             if key in data:
                 selected[key] = bool(data[key])
@@ -1256,48 +1255,27 @@ def parse_airline_filters(raw: str | None) -> dict[str, bool]:
 
     legacy_airline_enabled = any(bool(data.get(key, True)) for key in ('gol', 'latam', 'azul', 'voepass', 'others'))
     selected['any_airline'] = legacy_airline_enabled
-    selected['agencies'] = bool(data.get('others', True))
     return selected
-
-
-def is_international_agency_vendor(vendor: str) -> bool:
-    vendor_norm = (vendor or '').strip().lower()
-    if not vendor_norm:
-        return False
-    return vendor_norm in {'agências', 'agencias', 'outras', 'maxmilhas'}
 
 
 def filter_rows_by_airlines(rows: list[dict], airline_filters_json: str | None, show_result_type_filters: bool = True) -> list[dict]:
     selected = parse_airline_filters(airline_filters_json)
     allow_any_airline = bool(selected.get('any_airline', True))
-    allow_agencies = bool(selected.get('agencies', True))
 
-    airline_rows = []
-    agency_rows = []
+    if not show_result_type_filters or allow_any_airline:
+        return rows
+
+    filtered = []
     for row in rows:
-        vendor = str(row.get('best_vendor') or '').strip()
-        is_agency = is_international_agency_vendor(vendor)
-        if is_agency:
-            agency_rows.append(row)
-        else:
-            airline_rows.append(row)
-
-    if not show_result_type_filters:
-        return airline_rows or agency_rows
-
-    if allow_any_airline and allow_agencies:
-        return airline_rows or agency_rows
-    if allow_any_airline:
-        return airline_rows
-    if allow_agencies:
-        return agency_rows
-    return []
+        airline = normalize_airline_label(str(row.get('airline') or ''))
+        if selected.get(airline, False):
+            filtered.append(row)
+    return filtered
 
 
 def serialize_airline_filters(selected: dict[str, bool]) -> str:
     payload = {
         'any_airline': bool(selected.get('any_airline', True)),
-        'agencies': bool(selected.get('agencies', False)),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -1310,7 +1288,6 @@ def should_show_result_type_filters(conn) -> bool:
 def filter_menu_markup(max_price: float | None, selected_airlines: dict[str, bool], enable_google: bool) -> InlineKeyboardMarkup:
     limit_value = 'Sem limite' if max_price is None else f'R$ {format_money_br(float(max_price))}'
     any_airline = bool(selected_airlines.get('any_airline', True))
-    agencies = bool(selected_airlines.get('agencies', False))
     conn = get_db()
     show_result_type_filters = should_show_result_type_filters(conn)
     conn.close()
@@ -1320,10 +1297,9 @@ def filter_menu_markup(max_price: float | None, selected_airlines: dict[str, boo
     ]
     if show_result_type_filters:
         keyboard.extend([
-            [InlineKeyboardButton('✈️ TIPOS DE RESULTADO', callback_data='filter:airlines_info')],
+            [InlineKeyboardButton('✈️ FILTRO DE COMPANHIAS', callback_data='filter:airlines_info')],
             [
                 InlineKeyboardButton(('✅ ' if any_airline else '⬜ ') + 'Companhias Aéreas', callback_data='filter:toggle_airline:any_airline'),
-                InlineKeyboardButton(('✅ ' if agencies else '⬜ ') + 'Agências de Viagens', callback_data='filter:toggle_airline:agencies'),
             ],
         ])
     keyboard.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
@@ -1832,7 +1808,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (user_row['user_id'],),
             )
             conn.execute(
-                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (?, ?, 'manual_now', 'pending', ? )"),
+                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'manual_now', 'pending', ?, 0)"),
                 (user_row['user_id'], target_chat_id, '{}'),
             )
             conn.commit()
@@ -2740,7 +2716,7 @@ async def fontes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     await update.message.reply_text(
-        '🔎 *Fontes de consultas*\n\nGoogle Voos é sempre obrigatório. Você pode ligar ou desligar o MaxMilhas.',
+        '🔎 *Fontes de consultas*\n\nAs consultas são realizadas no Google Voos.',
         parse_mode='Markdown',
         reply_markup=sources_menu_markup(bool(setting['enable_google_flights'])),
     )
@@ -2842,7 +2818,19 @@ async def addrota_destination(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        context.user_data['outbound_date'] = normalize_date(update.message.text)
+        dt_str = normalize_date(update.message.text)
+        dt_obj = datetime.strptime(dt_str, '%Y-%m-%d').date()
+        days_diff = (dt_obj - datetime.now().date()).days
+        
+        if days_diff > 365:
+            await update.message.reply_text(
+                f'⚠️ *Limite de 1 ano excedido.*\n\nVocê informou uma data para daqui a {days_diff} dias.\nO sistema permite o monitoramento de passagens com no máximo *365 dias* de antecedência.\n\n✍️ Por favor, informe uma data mais próxima.',
+                parse_mode='Markdown',
+                reply_markup=force_reply_markup('Ex.: 25/12/2026'),
+            )
+            return ASK_OUTBOUND
+            
+        context.user_data['outbound_date'] = dt_str
     except ValueError:
         await update.message.reply_text(
             '⚠️ Data inválida.\n\nUse um destes formatos:\n`25/12/2026`\n`25-12-2026`\n`2026-12-25`\n`25122026`\n`25 dez 2026`\n`25 dezembro 2026`\n\n✍️ Responda esta mensagem com a data de ida para tentar novamente.',
@@ -3171,12 +3159,16 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running_count = int((running_now['c'] if isinstance(running_now, dict) else running_now[0]) or 0)
     replaced_existing = False
     if running_count > 0:
-        conn.execute(
-            sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = ? AND status IN ('pending', 'running')"),
-            (user_id,),
-        )
-        conn.commit()
-        replaced_existing = True
+        try:
+            conn.execute(
+                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = ? AND status IN ('pending', 'running')"),
+                (user_id,),
+            )
+            conn.commit()
+            replaced_existing = True
+        except Exception as exc:
+            logger.warning('[agora] Erro ao cancelar jobs anteriores (concorrência): %s', exc)
+            conn.rollback()
 
     last_manual_row = conn.execute(
         sql("SELECT COALESCE(last_manual_sent_at, COALESCE(last_sent_at, '')) AS last_manual_sent_at FROM bot_settings WHERE user_id = ?"),
@@ -3194,7 +3186,7 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     conn.execute(
-        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (?, ?, 'manual_now', 'pending', ?)"),
+        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'manual_now', 'pending', ?, 0)"),
         (user_id, chat_id, '{}'),
     )
     conn.commit()
@@ -3579,193 +3571,197 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     action = query.data.split(':', 1)[1]
     chat_id = str(query.message.chat.id)
+    logger.info('[menu_callback] Ação recebida | action=%s | chat_id=%s', action, chat_id)
 
     try:
-        conn = get_db()
-    except DatabaseRateLimitError:
-        await query.message.reply_text(db_overload_message())
-        return ConversationHandler.END
-    if not _check_maintenance(conn, chat_id, action):
-        conn.close()
-        await query.answer('🔧 Em manutenção, aguarde um instante.', show_alert=True)
-        await query.message.reply_text('🔧 Em manutenção, aguarde um instante.', reply_markup=main_menu_markup())
-        return ConversationHandler.END
-    msg = require_confirmation(conn, chat_id) if action != 'manual' else None
-    if msg:
-        blocked = 'suspensa' in msg.lower()
-        if blocked:
-            if action not in {'support', 'back'}:
-                conn.close()
-                await query.answer('🚫 Conta suspensa. Use "Fale conosco" para mais informações.', show_alert=True)
-                await query.message.reply_text('🚫 Sua conta está suspensa.', reply_markup=main_menu_markup())
-                return ConversationHandler.END
-            # allow support and back through for blocked users
-        else:
-            conn.close()
-            await query.answer('Confirme seu cadastro para continuar.', show_alert=True)
-            await query.message.reply_text(msg, reply_markup=confirmation_markup_for_message(msg))
-            return ConversationHandler.END
-    if action in {'addrota', 'minhasrotas', 'removerrota', 'limite', 'fontes', 'agora'} and should_block_paid_action(conn, chat_id):
-        texto = choose_plan_text(conn, chat_id)
-        audit.access("acesso_bloqueado", chat_id=chat_id, status="blocked",
-                     payload={"acao": action})
-        conn.close()
-        await query.answer('Selecione um plano para continuar.', show_alert=True)
-        await query.message.reply_text(texto.replace('*', ''), reply_markup=user_plan_markup())
-        return ConversationHandler.END
-    conn.close()
-
-    if action == 'addrota':
-        await query.answer('Digite a origem da rota.', show_alert=True)
-        clear_pending_input_state(context)
-        context.user_data['airport_stage'] = 'origem'
-        await query.message.reply_text(
-            '\n➕ Nova rota\n────────────────────────\n\n🔎 Buscar aeroporto de origem\nResponda esta mensagem com a origem por código, cidade ou aeroporto.\n\nExemplos: PVH, Miami, Guarulhos, Lisboa.\n\nPara sair, cancele o cadastro.',
-            reply_markup=force_reply_markup('Ex.: PVH, Miami, Guarulhos, Lisboa'),
-        )
-        await query.message.reply_text(
-            'Se o campo fechar, toque em cancelar e comece novamente.',
-            reply_markup=cancel_markup('addrota:cancel', '❌ Cancelar cadastro de rota'),
-        )
-        return ASK_ORIGIN
-    if action == 'minhasrotas':
-        await query.answer()
-        fake_update = Update(update.update_id, message=query.message)
-        await minhas_rotas(fake_update, context)
-    elif action == 'removerrota':
-        await query.answer()
-        fake_update = Update(update.update_id, message=query.message)
-        await removerrota(fake_update, context)
-    elif action == 'limite':
-        conn = get_db()
-        user_id = get_user_id_by_chat(conn, chat_id)
-        setting = get_user_settings(conn, user_id)
-        selected_airlines = parse_airline_filters(setting['airline_filters_json'])
-        conn.close()
-        await query.answer()
-        clear_pending_input_state(context)
-        await query.message.reply_text(
-            build_filter_menu_text(setting['max_price'], selected_airlines, bool(setting['enable_google_flights'])).replace('*', ''),
-            reply_markup=filter_menu_markup(setting['max_price'], selected_airlines, bool(setting['enable_google_flights'])),
-        )
-        return ConversationHandler.END
-    elif action == 'fontes':
-        await query.answer()
-        fake_update = Update(update.update_id, message=query.message)
-        await fontes(fake_update, context)
-    elif action == 'agora':
-        await query.answer()
-        clear_pending_input_state(context)
-        fake_update = Update(update.update_id, message=query.message)
-        await agora(fake_update, context)
-    elif action == 'manual':
-        await query.answer()
-        fake_update = Update(update.update_id, message=query.message)
-        await manual(fake_update, context)
-    elif action == 'pagamentos':
-        await query.answer()
-        conn = get_db()
-        rows = conn.execute(
-            sql('''
-            SELECT mp_payment_id, plan_name, amount, status, created_at
-            FROM payments
-            WHERE chat_id = ?
-              AND NOT (status = 'pending' AND datetime(created_at) < datetime('now', '-24 hours'))
-            ORDER BY created_at DESC
-            LIMIT 15
-            '''),
-            (chat_id,)
-        ).fetchall()
-        conn.close()
-        if rows:
-            texto = '\n💳 Meus pagamentos\n────────────────────────\n\nSelecione um pagamento para ver detalhes ou atualizar.'
-            await query.message.reply_text(texto, reply_markup=user_payments_markup(rows))
-        else:
-            await query.message.reply_text('\n💳 Meus pagamentos\n────────────────────────\n\nVocê ainda não tem pagamentos registrados.', reply_markup=full_menu_markup(chat_id))
-    elif action == 'support':
-        await query.answer()
-        conn = get_db()
-        row = get_bot_user_by_chat(conn, chat_id)
-        blocked_user = bool(row and int(row['blocked'] or 0) == 1)
-        conn.close()
-        await query.message.reply_text('💬 Escolha o tipo de mensagem que deseja enviar:', reply_markup=support_subjects_markup(blocked_user=blocked_user))
-    elif action == 'adminsupport':
-        conn = get_db()
-        admin = is_admin_chat(conn, chat_id)
-        if not admin:
-            conn.close()
-            await query.answer('Não autorizado', show_alert=True)
-            return ConversationHandler.END
-        rows = conn.execute(
-            sql("SELECT st.id, st.subject, st.blocked, bu.first_name, (SELECT COUNT(*) FROM support_messages sm WHERE sm.thread_id = st.id AND sm.sender_role = 'user' AND sm.is_read = 0) AS unread FROM support_threads st LEFT JOIN bot_users bu ON bu.user_id = st.user_id WHERE st.status = 'open' ORDER BY st.updated_at DESC LIMIT 20")
-        ).fetchall()
-        conn.close()
-        await query.answer()
-        await query.message.reply_text('📥 *Caixa de entrada do atendimento*', parse_mode='Markdown', reply_markup=list_support_conversations_markup(rows, admin=True))
-    elif action == 'adminpainel':
-        conn = get_db()
-        admin = is_admin_chat(conn, chat_id)
-        conn.close()
-        if not admin:
-            await query.answer('Não autorizado', show_alert=True)
-            await query.message.reply_text('🚫 Comando restrito a administradores.')
-            await query.answer()
-        fake_update = Update(update.update_id, message=query.message)
-        await cmd_painel(fake_update, context)
-    elif action == 'broadcast':
-        conn = get_db()
-        admin = is_admin_chat(conn, chat_id)
-        conn.close()
-        if not admin:
-            await query.answer('Não autorizado', show_alert=True)
-            return ConversationHandler.END
-        await query.answer()
-        context.user_data['awaiting_admin_broadcast'] = True
-        context.user_data.pop('admin_broadcast_text', None)
-        await query.message.reply_text(
-            '📣 Envio em massa iniciado.\n\nAgora digite a mensagem que deseja disparar para todos os usuários cadastrados.',
-            reply_markup=cancel_markup('painel:back', '❌ Cancelar envio em massa'),
-        )
-        return ConversationHandler.END
-    elif action == 'clear_confirm':
-        await query.answer()
-        await query.message.reply_text(
-            '🧹 Confirmar limpeza das mensagens anteriores do bot?',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton('✅ Confirmar limpeza', callback_data='menu:clear_do')],
-                [InlineKeyboardButton('❌ Cancelar', callback_data='menu:back')],
-            ])
-        )
-
-    elif action == 'clear_do':
-        await query.answer()
-        clear_pending_input_state(context)
         try:
-            await query.message.delete()
+            conn = get_db()
+        except DatabaseRateLimitError:
+            await query.answer('\u26a0\ufe0f Banco sobrecarregado, tente novamente.', show_alert=True)
+            await query.message.reply_text(db_overload_message())
+            return ConversationHandler.END
+        if not _check_maintenance(conn, chat_id, action):
+            conn.close()
+            await query.answer('\U0001f527 Em manuten\u00e7\u00e3o, aguarde um instante.', show_alert=True)
+            await query.message.reply_text('\U0001f527 Em manuten\u00e7\u00e3o, aguarde um instante.', reply_markup=main_menu_markup())
+            return ConversationHandler.END
+        msg = require_confirmation(conn, chat_id) if action != 'manual' else None
+        if msg:
+            blocked = 'suspensa' in msg.lower()
+            if blocked:
+                if action not in {'support', 'back'}:
+                    conn.close()
+                    await query.answer('\U0001f6ab Conta suspensa. Use "Fale conosco" para mais informa\u00e7\u00f5es.', show_alert=True)
+                    await query.message.reply_text('\U0001f6ab Sua conta est\u00e1 suspensa.', reply_markup=main_menu_markup())
+                    return ConversationHandler.END
+            else:
+                conn.close()
+                await query.answer('Confirme seu cadastro para continuar.', show_alert=True)
+                await query.message.reply_text(msg, reply_markup=confirmation_markup_for_message(msg))
+                return ConversationHandler.END
+        if action in {'addrota', 'minhasrotas', 'removerrota', 'limite', 'fontes', 'agora'} and should_block_paid_action(conn, chat_id):
+            texto = choose_plan_text(conn, chat_id)
+            audit.access("acesso_bloqueado", chat_id=chat_id, status="blocked",
+                         payload={"acao": action})
+            conn.close()
+            await query.answer('Selecione um plano para continuar.', show_alert=True)
+            await query.message.reply_text(texto.replace('*', ''), reply_markup=user_plan_markup())
+            return ConversationHandler.END
+        conn.close()
+
+        if action == 'addrota':
+            await query.answer('Digite a origem da rota.', show_alert=True)
+            clear_pending_input_state(context)
+            context.user_data['airport_stage'] = 'origem'
+            await query.message.reply_text(
+                '\n\U0001f449 Nova rota\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\U0001f50e Buscar aeroporto de origem\nResponda esta mensagem com a origem por c\u00f3digo, cidade ou aeroporto.\n\nExemplos: PVH, Miami, Guarulhos, Lisboa.\n\nPara sair, cancele o cadastro.',
+                reply_markup=force_reply_markup('Ex.: PVH, Miami, Guarulhos, Lisboa'),
+            )
+            await query.message.reply_text(
+                'Se o campo fechar, toque em cancelar e comece novamente.',
+                reply_markup=cancel_markup('addrota:cancel', '\u274c Cancelar cadastro de rota'),
+            )
+            return ASK_ORIGIN
+        if action == 'minhasrotas':
+            await query.answer()
+            fake_update = Update(update.update_id, message=query.message)
+            await minhas_rotas(fake_update, context)
+        elif action == 'removerrota':
+            await query.answer()
+            fake_update = Update(update.update_id, message=query.message)
+            await removerrota(fake_update, context)
+        elif action == 'limite':
+            conn = get_db()
+            user_id = get_user_id_by_chat(conn, chat_id)
+            setting = get_user_settings(conn, user_id)
+            selected_airlines = parse_airline_filters(setting['airline_filters_json'])
+            conn.close()
+            await query.answer()
+            clear_pending_input_state(context)
+            await query.message.reply_text(
+                build_filter_menu_text(setting['max_price'], selected_airlines, bool(setting['enable_google_flights'])).replace('*', ''),
+                reply_markup=filter_menu_markup(setting['max_price'], selected_airlines, bool(setting['enable_google_flights'])),
+            )
+            return ConversationHandler.END
+        elif action == 'fontes':
+            await query.answer()
+            fake_update = Update(update.update_id, message=query.message)
+            await fontes(fake_update, context)
+        elif action == 'agora':
+            await query.answer()
+            clear_pending_input_state(context)
+            fake_update = Update(update.update_id, message=query.message)
+            await agora(fake_update, context)
+        elif action == 'manual':
+            await query.answer()
+            fake_update = Update(update.update_id, message=query.message)
+            await manual(fake_update, context)
+        elif action == 'pagamentos':
+            await query.answer()
+            conn = get_db()
+            rows = conn.execute(
+                sql('SELECT mp_payment_id, plan_name, amount, status, created_at FROM payments WHERE chat_id = ? AND NOT (status = %s AND datetime(created_at) < datetime(%s, %s)) ORDER BY created_at DESC LIMIT 15' % ("'pending'", "'now'", "'-24 hours'")),
+                (chat_id,)
+            ).fetchall()
+            conn.close()
+            if rows:
+                texto = '\n\U0001f4b3 Meus pagamentos\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nSelecione um pagamento para ver detalhes ou atualizar.'
+                await query.message.reply_text(texto, reply_markup=user_payments_markup(rows))
+            else:
+                await query.message.reply_text('\n\U0001f4b3 Meus pagamentos\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nVoc\u00ea ainda n\u00e3o tem pagamentos registrados.', reply_markup=full_menu_markup(chat_id))
+        elif action == 'support':
+            await query.answer()
+            conn = get_db()
+            row = get_bot_user_by_chat(conn, chat_id)
+            blocked_user = bool(row and int(row['blocked'] or 0) == 1)
+            conn.close()
+            await query.message.reply_text('\U0001f4ac Escolha o tipo de mensagem que deseja enviar:', reply_markup=support_subjects_markup(blocked_user=blocked_user))
+        elif action == 'adminsupport':
+            conn = get_db()
+            admin = is_admin_chat(conn, chat_id)
+            if not admin:
+                conn.close()
+                await query.answer('N\u00e3o autorizado', show_alert=True)
+                return ConversationHandler.END
+            rows = conn.execute(
+                sql("SELECT st.id, st.subject, st.blocked, bu.first_name, (SELECT COUNT(*) FROM support_messages sm WHERE sm.thread_id = st.id AND sm.sender_role = 'user' AND sm.is_read = 0) AS unread FROM support_threads st LEFT JOIN bot_users bu ON bu.user_id = st.user_id WHERE st.status = 'open' ORDER BY st.updated_at DESC LIMIT 20")
+            ).fetchall()
+            conn.close()
+            await query.answer()
+            await query.message.reply_text('\U0001f4e5 *Caixa de entrada do atendimento*', parse_mode='Markdown', reply_markup=list_support_conversations_markup(rows, admin=True))
+        elif action == 'adminpainel':
+            conn = get_db()
+            admin = is_admin_chat(conn, chat_id)
+            conn.close()
+            if not admin:
+                await query.answer('N\u00e3o autorizado', show_alert=True)
+                await query.message.reply_text('\U0001f6ab Comando restrito a administradores.')
+                await query.answer()
+            fake_update = Update(update.update_id, message=query.message)
+            await cmd_painel(fake_update, context)
+        elif action == 'broadcast':
+            conn = get_db()
+            admin = is_admin_chat(conn, chat_id)
+            conn.close()
+            if not admin:
+                await query.answer('N\u00e3o autorizado', show_alert=True)
+                return ConversationHandler.END
+            await query.answer()
+            context.user_data['awaiting_admin_broadcast'] = True
+            context.user_data.pop('admin_broadcast_text', None)
+            await query.message.reply_text(
+                '\U0001f4e3 Envio em massa iniciado.\n\nAgora digite a mensagem que deseja disparar para todos os usu\u00e1rios cadastrados.',
+                reply_markup=cancel_markup('painel:back', '\u274c Cancelar envio em massa'),
+            )
+            return ConversationHandler.END
+        elif action == 'clear_confirm':
+            await query.answer()
+            await query.message.reply_text(
+                '\U0001f9f9 Confirmar limpeza das mensagens anteriores do bot?',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton('\u2705 Confirmar limpeza', callback_data='menu:clear_do')],
+                    [InlineKeyboardButton('\u274c Cancelar', callback_data='menu:back')],
+                ])
+            )
+        elif action == 'clear_do':
+            await query.answer()
+            clear_pending_input_state(context)
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            panel_text = get_panel_text(chat_id)
+            await query.message.reply_text(
+                panel_text,
+                parse_mode='Markdown',
+                reply_markup=full_menu_markup(chat_id),
+            )
+        elif action == 'back':
+            await query.answer()
+            context.user_data.pop('awaiting_admin_broadcast', None)
+            context.user_data.pop('admin_broadcast_text', None)
+            clear_pending_input_state(context)
+            panel_text = get_panel_text(chat_id)
+            await query.message.reply_text(
+                panel_text,
+                parse_mode='Markdown',
+                reply_markup=full_menu_markup(chat_id),
+            )
+        else:
+            await query.answer('A\u00e7\u00e3o n\u00e3o reconhecida.', show_alert=True)
+
+    except Exception as exc:
+        logger.error('[menu_callback] Erro ao processar a\u00e7\u00e3o do menu | action=%s | chat_id=%s | erro=%s', action, chat_id, exc)
+        try:
+            await query.answer('\u274c Erro ao processar. Tente novamente.', show_alert=True)
         except Exception:
             pass
-        panel_text = get_panel_text(chat_id)
-        await query.message.reply_text(
-            panel_text,
-            parse_mode='Markdown',
-            reply_markup=full_menu_markup(chat_id),
-        )
-
-    elif action == 'back':
-        await query.answer()
-        context.user_data.pop('awaiting_admin_broadcast', None)
-        context.user_data.pop('admin_broadcast_text', None)
-        clear_pending_input_state(context)
-        panel_text = get_panel_text(chat_id)
-        await query.message.reply_text(
-            panel_text,
-            parse_mode='Markdown',
-            reply_markup=full_menu_markup(chat_id),
-        )
+        try:
+            await query.message.reply_text('\u274c Ocorreu um erro ao processar sua solicita\u00e7\u00e3o. Tente novamente.', reply_markup=main_menu_markup())
+        except Exception:
+            pass
 
     return ConversationHandler.END
-
-
 async def admin_broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -4241,6 +4237,15 @@ async def post_init(app):
         await app.bot.delete_webhook(drop_pending_updates=False)
     except Exception as exc:
         logger.warning('Não foi possível limpar webhook antes do polling: %s', exc)
+    # Garantir que todos os tipos de update sejam recebidos (incluindo callback_query)
+    try:
+        await app.bot.set_webhook(
+            url='',
+            allowed_updates=['message', 'callback_query', 'inline_query', 'chosen_inline_result'],
+        )
+        await app.bot.delete_webhook(drop_pending_updates=False)
+    except Exception as exc:
+        logger.warning('Não foi possível reconfigurar webhook: %s', exc)
     await app.bot.set_my_commands([
         BotCommand('start', 'Iniciar e confirmar cadastro'),
         BotCommand('menu', 'Abrir o menu principal'),

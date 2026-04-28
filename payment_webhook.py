@@ -1,17 +1,61 @@
 import os
+import json
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify, Response, stream_with_context
 from telegram import Bot
 from telegram.request import HTTPXRequest
 
 from config import MP_ACCESS_TOKEN, TOKEN, MERCADOPAGO_API_BASE_URL, now_local
 from db import connect as connect_db, insert_ignore_sql, now_expression, sql
 from notif import push_admin_notif
+from main import (
+    run_scan_for_routes,
+    _result_to_row,
+    _expand_result_rows,
+    format_brl,
+    format_date_display,
+    extract_final_price_source,
+    filter_rows_by_max_price,
+    normalize_rows_for_airline_priority,
+    filter_rows_with_vendor,
+    _merge_rows_for_combined_result_view,
+)
+from models import RouteQuery
+
+
+def build_db_queries():
+    """Busca todas as rotas ativas do banco para realizar a consulta completa."""
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            sql('''
+            SELECT origin, destination, outbound_date, inbound_date
+            FROM user_routes
+            WHERE active = 1
+            ORDER BY user_id, id ASC
+            ''')
+        ).fetchall()
+        routes = []
+        for r in rows:
+            inbound = (r['inbound_date'] or '').strip()
+            routes.append(RouteQuery(
+                origin=(r['origin'] or '').upper(),
+                destination=(r['destination'] or '').upper(),
+                outbound_date=r['outbound_date'],
+                inbound_date=inbound,
+                trip_type='roundtrip' if inbound else 'oneway',
+            ))
+        return routes
+    finally:
+        conn.close()
 
 PORT = int(os.getenv('PAYMENT_WEBHOOK_PORT', '8787'))
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent
+app = Flask(__name__, static_folder=str(BASE_DIR / 'static'), static_url_path='/static')
 _request = HTTPXRequest(connection_pool_size=20, pool_timeout=60.0, connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0)
 bot = Bot(token=TOKEN, request=_request) if TOKEN else None
 
@@ -113,6 +157,166 @@ def apply_approved_payment(conn, payment_id: str):
     )
     conn.commit()
     return True, expires_at, chat_id
+
+
+@app.route('/')
+def index():
+    return app.send_static_file('index.html')
+
+
+@app.route('/consulta')
+def consulta():
+    origin = request.args.get('origin', '').upper().strip()
+    destination = request.args.get('destination', '').upper().strip()
+    outbound_date = request.args.get('outbound_date', '').strip()
+    inbound_date = request.args.get('inbound_date', '').strip()
+
+    if not origin or not destination or not outbound_date:
+        return jsonify({'error': 'Parâmetros obrigatórios: origin, destination, outbound_date'}), 400
+
+    from models import RouteQuery
+    route = RouteQuery(
+        origin=origin,
+        destination=destination,
+        outbound_date=outbound_date,
+        inbound_date=inbound_date,
+        trip_type='roundtrip' if inbound_date else 'oneway',
+    )
+
+    try:
+        parsed = run_scan_for_routes([route], fast_mode=True)
+        if parsed:
+            row = parsed[0]
+            return jsonify({
+                'rota': {
+                    'origin': row.get('origin'),
+                    'destination': row.get('destination'),
+                    'outbound_date': row.get('outbound_date'),
+                    'inbound_date': row.get('inbound_date'),
+                },
+                'resultado': {
+                    'price': row.get('price'),
+                    'price_fmt': row.get('price_fmt'),
+                    'site': row.get('site'),
+                    'best_vendor': row.get('best_vendor'),
+                    'best_vendor_price': row.get('best_vendor_price'),
+                    'final_price_source': extract_final_price_source(row.get('notes')),
+                },
+                'resultados': parsed,
+            })
+        return jsonify({'error': 'Nenhum resultado encontrado'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/rotas')
+def rotas():
+    try:
+        routes = build_db_queries()
+        rotas_list = []
+        for r in routes:
+            rotas_list.append({
+                'origin': r.origin,
+                'destination': r.destination,
+                'outbound_date': r.outbound_date,
+                'inbound_date': r.inbound_date or '',
+                'trip_type': r.trip_type,
+            })
+        return jsonify({'rotas': rotas_list})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/historico')
+def historico():
+    limit = request.args.get('limit', '20')
+    try:
+        limit = max(1, min(200, int(limit)))
+    except (ValueError, TypeError):
+        limit = 20
+
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            sql(f'''
+            SELECT origin, destination, outbound_date, inbound_date,
+                   price, site, best_vendor, best_vendor_price, notes, created_at
+            FROM results
+            ORDER BY created_at DESC
+            LIMIT ?
+            '''),
+            (limit,)
+        ).fetchall()
+        conn.close()
+
+        items = []
+        for r in rows:
+            items.append({
+                'origin': r['origin'],
+                'destination': r['destination'],
+                'outbound_date': r['outbound_date'],
+                'inbound_date': r['inbound_date'] or '',
+                'price': r['price'],
+                'site': r['site'],
+                'best_vendor': r['best_vendor'],
+                'best_vendor_price': r['best_vendor_price'],
+                'final_price_source': extract_final_price_source(r['notes']),
+                'created_at': str(r['created_at'] or ''),
+            })
+        return jsonify({'items': items})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/historico/limpar', methods=['POST'])
+def limpar_historico():
+    try:
+        conn = get_db()
+        conn.execute(sql('DELETE FROM results'))
+        conn.commit()
+        conn.close()
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/cron-stream')
+def cron_stream():
+    def generate():
+        try:
+            routes = build_db_queries()
+            total = len(routes)
+            yield f'data: {json.dumps({"type": "start", "total": total})}\n\n'
+
+            parsed = run_scan_for_routes(routes, on_row=lambda idx, total, row: None)
+
+            for idx, row in enumerate(parsed, start=1):
+                item = {
+                    'origin': row.get('origin'),
+                    'destination': row.get('destination'),
+                    'outbound_date': row.get('outbound_date'),
+                    'inbound_date': row.get('inbound_date'),
+                    'price': row.get('price'),
+                    'price_fmt': row.get('price_fmt'),
+                    'site': row.get('site'),
+                    'best_vendor': row.get('best_vendor'),
+                    'best_vendor_price': row.get('best_vendor_price'),
+                    'final_price_source': extract_final_price_source(row.get('notes')),
+                }
+                yield f'data: {json.dumps({"type": "row", "index": idx, "total": total, "item": item})}\n\n'
+
+            yield f'data: {json.dumps({"type": "done"})}\n\n'
+        except Exception as e:
+            yield f'data: {json.dumps({"type": "error", "message": str(e)})}\n\n'
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        },
+    )
 
 
 @app.post('/webhook')
