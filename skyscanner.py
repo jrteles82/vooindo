@@ -130,60 +130,62 @@ class GoogleFlightsScraper:
         return best["vendor"], best["price"], options
 
     def search(self, route: RouteQuery, profile_dir: Optional[str] = None) -> FlightResult:
-        page = self.browser.new_page()
-        page.set_default_timeout(CONFIG["timeout_ms"])
-        url = build_google_flights_url(route)
-        notes = []
-        try:
-            page.goto(url, wait_until="domcontentloaded")
-            self._accept_cookies_if_present(page)
-            time.sleep(CONFIG["settle_seconds"])
-            summary_price = self._extract_summary_price(page)
-            if summary_price: notes.append(f"summary={format_brl(summary_price)}")
-            self._click_lowest_prices_tab(page)
-            cards = self._extract_visible_flight_cards(page)
-            best_vendor, best_vendor_price, booking_options = "", None, []
-            final_price = summary_price
-            if cards:
-                cheapest = sorted(cards, key=lambda x: x["price"])[0]
-                final_price = cheapest["price"]
-                best_vendor, best_vendor_price, booking_options = self._open_card_and_extract_vendor(page, cheapest["loc"])
+        from google_flights_executor import run as run_executor
+        import os
+        
+        # Override profile_dir if provided
+        if profile_dir:
+            os.environ["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile_dir
             
-            return FlightResult(
-                site="google_flights",
-                origin=route.origin,
-                destination=route.destination,
-                outbound_date=route.outbound_date,
-                inbound_date=route.inbound_date,
-                price=final_price,
-                url=page.url,
-                notes=" | ".join(notes),
-                best_vendor=best_vendor,
-                best_vendor_price=best_vendor_price,
-                booking_options_json=json.dumps(booking_options)
-            )
+        try:
+            res = run_executor(route.origin, route.destination, route.outbound_date, route.inbound_date or "")
+            
+            if res.get("ok"):
+                return FlightResult(
+                    site="google_flights",
+                    origin=route.origin,
+                    destination=route.destination,
+                    outbound_date=route.outbound_date,
+                    inbound_date=route.inbound_date,
+                    trip_type=route.trip_type,
+                    price=res.get("price"),
+                    currency="BRL",
+                    url=res.get("url", ""),
+                    booking_url=res.get("booking_url", ""),
+                    notes=" | ".join(res.get("notes", [])),
+                    best_vendor=res.get("best_vendor", ""),
+                    best_vendor_price=res.get("best_vendor_price"),
+                    booking_options_json=json.dumps(res.get("booking_options", []), ensure_ascii=False),
+                    price_insight=res.get("price_insight", ""),
+                    best_airline_vendor=res.get("best_airline_vendor"),
+                    best_airline_price=res.get("best_airline_price"),
+                    best_airline_url=res.get("best_airline_url"),
+                    best_airline_visible_price=res.get("best_airline_visible_price"),
+                    best_agency_vendor=res.get("best_agency_vendor"),
+                    best_agency_price=res.get("best_agency_price"),
+                    best_agency_url=res.get("best_agency_url"),
+                    best_agency_visible_price=res.get("best_agency_visible_price")
+                )
+            else:
+                return FlightResult(
+                    site="google_flights", 
+                    origin=route.origin, 
+                    destination=route.destination, 
+                    outbound_date=route.outbound_date, 
+                    inbound_date=route.inbound_date, 
+                    price=None, 
+                    notes=res.get("error", "unknown_executor_error")
+                )
         except Exception as e:
-            return FlightResult(site="google_flights", origin=route.origin, destination=route.destination, outbound_date=route.outbound_date, inbound_date=route.inbound_date, price=None, notes=str(e))
-        finally:
-            page.close()
-
-def build_google_flights_worker(playwright, browser=None):
-    if not browser:
-        browser = playwright.chromium.launch(headless=CONFIG["headless"])
-    return GoogleFlightsScraper(browser)
-
-def classify_price(price, min_p, avg_p):
-    if not min_p: return "⚪️"
-    if price <= min_p: return "🟢"
-    if price <= avg_p: return "🟡"
-    return "🔴"
-
-def parse_price_brl(txt):
-    try: return float(txt.replace("R$", "").replace(".", "").replace(",", ".").strip())
-    except: return 0.0
-
-def sync_playwright():
-    from playwright.sync_api import sync_playwright
-    return sync_playwright()
+            import traceback
+            return FlightResult(
+                site="google_flights", 
+                origin=route.origin, 
+                destination=route.destination, 
+                outbound_date=route.outbound_date, 
+                inbound_date=route.inbound_date, 
+                price=None, 
+                notes=f"executor_exception: {str(e)}"
+            )
 
 def build_db_queries(conn): return None

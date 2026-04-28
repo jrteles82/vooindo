@@ -2891,7 +2891,15 @@ async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Só processa se realmente houver um cadastro de rota em andamento
     if 'airport_stage' not in context.user_data and 'origin' not in context.user_data:
         logger.info('[addrota_outbound] ignorando mensagem sem conversa ativa | chat_id=%s', update.effective_chat.id)
+        clear_pending_input_state(context)
         return ConversationHandler.END
+    text_lower = update.message.text.strip().lower()
+    
+    # Pular etapa de data
+    if text_lower in ('pular', 'pule', 'nao', 'não', 'skip', '0', 'qualquer', 'qualquer data'):
+        context.user_data['outbound_date'] = ''
+        return await _save_route_with_inbound(update, context, '')
+    
     try:
         dt_str = normalize_date(update.message.text)
         dt_obj = datetime.strptime(dt_str, '%Y-%m-%d').date()
@@ -2908,9 +2916,9 @@ async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['outbound_date'] = dt_str
     except ValueError:
         await update.message.reply_text(
-            '⚠️ Data inválida.\n\nUse um destes formatos:\n`25/12/2026`\n`25-12-2026`\n`2026-12-25`\n`25122026`\n`25 dez 2026`\n`25 dezembro 2026`\n\n✍️ Responda esta mensagem com a data de ida para tentar novamente.',
+            '⚠️ Data inválida.\n\nDigite uma data ou responda "pular" para ignorar.\n\nFormatos aceitos:\n`25/12/2026` `25-12-2026` `2026-12-25`\n`25122026` `25 dez 2026` `25 dezembro 2026`',
             parse_mode='Markdown',
-            reply_markup=force_reply_markup('Ex.: 25/12/2026'),
+            reply_markup=force_reply_markup('Ex.: 25/12/2026 ou "pular"'),
         )
         return ASK_OUTBOUND
     return await _save_route_with_inbound(update, context, '')
@@ -2921,6 +2929,7 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
     chat_id = str(update.effective_chat.id)
     msg_target = update.message or (update.callback_query.message if update.callback_query else None)
     if msg_target is None:
+        clear_pending_input_state(context)
         return ConversationHandler.END
     conn = get_db()
 
@@ -3640,6 +3649,7 @@ async def alerts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == 'menu:back':
         logger.info('menu:back callback recebido | chat_id=%s | message_id=%s', chat_id, getattr(query.message, 'message_id', None))
+        clear_pending_input_state(context)
         await query.answer('Voltando ao menu...')
         try:
             await query.edit_message_reply_markup(reply_markup=None)
@@ -4671,7 +4681,7 @@ async def run_bot():
             ],
         },
         fallbacks=[CommandHandler('cancelar', cancel)],
-        conversation_timeout=600,
+        conversation_timeout=120,
     )
     limite_conv = ConversationHandler(
         entry_points=[

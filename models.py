@@ -37,6 +37,15 @@ class FlightResult:
     best_vendor: str = ""
     best_vendor_price: Optional[float] = None
     booking_options_json: str = ""
+    price_insight: str = ""
+    best_airline_vendor: Optional[str] = None
+    best_airline_price: Optional[float] = None
+    best_airline_url: Optional[str] = None
+    best_airline_visible_price: Optional[float] = None
+    best_agency_vendor: Optional[str] = None
+    best_agency_price: Optional[float] = None
+    best_agency_url: Optional[str] = None
+    best_agency_visible_price: Optional[float] = None
 
     def to_dict(self):
         return {
@@ -53,7 +62,8 @@ class FlightResult:
             "vendor": self.vendor,
             "notes": self.notes,
             "best_vendor": self.best_vendor,
-            "best_vendor_price": self.best_vendor_price
+            "best_vendor_price": self.best_vendor_price,
+            "price_insight": self.price_insight
         }
 
 class Database:
@@ -101,17 +111,26 @@ class Database:
                     INSERT INTO results (
                         created_at, site, origin, destination, outbound_date, inbound_date,
                         price, currency, url, notes, price_band,
-                        best_vendor, best_vendor_price, visible_card_price, booking_options_json
+                        best_vendor, best_vendor_price, visible_card_price, booking_options_json,
+                        best_airline_vendor, best_airline_price, best_airline_url, best_airline_visible_price,
+                        best_agency_vendor, best_agency_price, best_agency_url, best_agency_visible_price,
+                        price_insight
                     ) VALUES (
                         {now_expression()}, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s
                     )
                 """),
                 (
                     res.site, res.origin, res.destination, res.outbound_date, res.inbound_date or "",
                     res.price, res.currency, res.url, res.notes, band,
-                    res.best_vendor, res.best_vendor_price, getattr(res, 'visible_card_price', res.price), res.booking_options_json
+                    res.best_vendor, res.best_vendor_price, getattr(res, 'visible_card_price', res.price), res.booking_options_json,
+                    getattr(res, 'best_airline_vendor', None), getattr(res, 'best_airline_price', None), getattr(res, 'best_airline_url', None), getattr(res, 'best_airline_visible_price', None),
+                    getattr(res, 'best_agency_vendor', None), getattr(res, 'best_agency_price', None), getattr(res, 'best_agency_url', None), getattr(res, 'best_agency_visible_price', None),
+                    getattr(res, 'price_insight', '')
                 )
             )
             self.conn.commit()

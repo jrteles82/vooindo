@@ -24,7 +24,7 @@ from db import auto_pk_column, connect as connect_db, id_ref_column, is_integrit
 from app_logging import get_logger
 
 from models import FlightResult, RouteQuery, Database
-from skyscanner import GoogleFlightsScraper, build_google_flights_worker, sync_playwright
+from skyscanner import format_brl
 
 def format_brl(value: float) -> str:
     if not isinstance(value, (int, float)):
@@ -399,6 +399,10 @@ def _result_to_row(result: FlightResult, price_band: str) -> dict:
         "best_vendor_price": getattr(result, "best_vendor_price", None),
         "visible_card_price": getattr(result, "visible_card_price", None),
         "final_price_source": extract_final_price_source(result.notes),
+        "price_insight": getattr(result, "price_insight", ""),
+        "best_airline_vendor": getattr(result, "best_airline_vendor", None),
+        "best_airline_price": getattr(result, "best_airline_price", None),
+        "best_airline_url": getattr(result, "best_airline_url", None),
     }
 
 
@@ -453,7 +457,7 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
     variants: list[tuple[RouteQuery, FlightResult]] = []
     executor_enabled = CONFIG.get("google_flights_executor_enabled")
 
-    if executor_enabled and len(variants_to_search) > 1:
+    if executor_enabled:
         # Perfis disponíveis para paralelismo
         base_dir = Path(__file__).resolve().parent
         available_profiles = [str(base_dir / "google_session")]
@@ -467,13 +471,15 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
              available_profiles = [str(CONFIG.get("google_persistent_profile_dir"))]
         
         # Limitar workers pelo número de perfis e capacidade do servidor (max 2 paralelos)
-        max_workers = min(len(variants_to_search), len(available_profiles), 2)
+        # IMPORTANTE: Sempre usamos ao menos 1 worker no Pool para rodar Playwright fora do loop asyncio do worker
+        max_workers = max(1, min(len(variants_to_search), len(available_profiles), 2))
         
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = []
             for i, v in enumerate(variants_to_search):
                 # Distribui perfis round-robin
                 p_dir = available_profiles[i % len(available_profiles)]
+                # Chama .search SEMPRE via pool para desacoplar do loop asyncio
                 futures.append(pool.submit(scraper.search, v, p_dir))
             
             for i, future in enumerate(futures):
@@ -481,7 +487,7 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
                     res = future.result()
                     variants.append((variants_to_search[i], res))
                 except Exception as exc:
-                    logger.error(f"Erro na busca paralela do Google Flights: {exc}")
+                    logger.error(f"Erro na busca do Google Flights (thread): {exc}")
                     # Fallback para resultado vazio com erro
                     variants.append((variants_to_search[i], FlightResult(
                         site="google_flights",
@@ -493,10 +499,10 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
                         price=None,
                         currency="BRL",
                         url="",
-                        notes=f"error_parallel_search={exc}",
+                        notes=f"error_thread_search={exc}",
                     )))
     else:
-        # Serial (padrão antigo ou se apenas 1 variante)
+        # Serial fallback (não recomendado para o worker asyncio)
         for v in variants_to_search:
             result = scraper.search(v, profile_dir=profile_dir)
             variants.append((v, result))
@@ -534,6 +540,11 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
         best_vendor=chosen.best_vendor,
         best_vendor_price=chosen.best_vendor_price,
         booking_options_json=getattr(chosen, 'booking_options_json', ''),
+        price_insight=getattr(chosen, 'price_insight', ''),
+        best_airline_vendor=getattr(chosen, 'best_airline_vendor', None),
+        best_airline_price=getattr(chosen, 'best_airline_price', None),
+        best_airline_url=getattr(chosen, 'best_airline_url', None),
+        best_airline_visible_price=getattr(chosen, 'best_airline_visible_price', None),
     )
 
 
@@ -558,112 +569,108 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
         return []
 
     total = sum(2 if not (route.inbound_date or "").strip() else 1 for route in routes)
+    
+    # Determinamos o número de workers paralelos
     requested_workers = CONFIG.get("scan_workers", 2)
     try:
         requested_workers = int(requested_workers)
     except (TypeError, ValueError):
         requested_workers = 2
-    try:
-        override_workers = int(os.getenv("_SCAN_WORKERS", requested_workers))
-    except ValueError:
-        override_workers = requested_workers
-    worker_count = max(1, min(len(routes), override_workers))
+    
+    worker_count = max(1, min(len(routes), requested_workers, 2)) # Limite de 2 paralelos para evitar sobrecarga
+    
     source_flags = sources or {"google_flights": True}
-    if CONFIG.get("google_auth_worker_enabled"):
-        # Mesmo com auth worker, permitimos 2 paralelos para agilizar consultas manuais multi-rota
-        worker_count = max(1, min(len(routes), 2))
-    route_chunks = _split_routes(routes, worker_count)
-    chunk_results: list[list[tuple[RouteQuery, FlightResult]] | None] = [None] * len(route_chunks)
-
-    def _scan_chunk(chunk_idx: int, chunk_routes: list[RouteQuery]) -> list[tuple[RouteQuery, FlightResult]]:
-        if not chunk_routes:
-            return []
-        worker_results: list[tuple[RouteQuery, FlightResult]] = []
-        user_data_dir = os.getenv("_USER_DATA_DIR", "/tmp/-profile")
-        chunk_user_dir = f"{user_data_dir}-worker-{chunk_idx}"
-        with sync_playwright() as p:
-            browser = None
-            if CONFIG.get("google_auth_worker_enabled"):
-                scraper = build_google_flights_worker(playwright=p)
-            else:
-                browser = p.chromium.launch_persistent_context(
-                    user_data_dir=chunk_user_dir,
-                    headless=bool(CONFIG.get("headless", True)),
-                    locale="pt-BR",
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                    args=[
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                    ],
-                )
-                scraper = build_google_flights_worker(playwright=p, browser=browser)
-            try:
-                # Determinar perfil para este worker
-                base_dir = Path(__file__).resolve().parent
-                p_dir = None
-                if chunk_idx == 0:
-                    p_dir = str(base_dir / "google_session")
-                else:
-                    alt_dir = base_dir / f"google_session_{chunk_idx + 1}"
-                    if alt_dir.is_dir():
-                        p_dir = str(alt_dir)
-
-                for route in chunk_routes:
-                    if source_flags.get("google_flights", True):
-                        try:
-                            google_result = _search_google_result(scraper, route, fast_mode=fast_mode, profile_dir=p_dir)
-                        except Exception as exc:
-                            logger.warning('[scan-chunk] rota=%s->%s ida=%s volta=%s | erro google_flights=%s', route.origin, route.destination, route.outbound_date, route.inbound_date or '-', exc)
-                            google_result = FlightResult(
-                                site='google_flights',
-                                origin=route.origin,
-                                destination=route.destination,
-                                outbound_date=route.outbound_date,
-                                inbound_date=route.inbound_date,
-                                trip_type=route.trip_type,
-                                price=None,
-                                currency='BRL',
-                                url='',
-                                booking_url='',
-                                notes=f'google_flights_error={str(exc)[:240]}',
-                            )
-                        worker_results.append((route, google_result))
-            finally:
-                try:
-                    scraper.close()
-                except Exception:
-                    pass
-                if browser is not None:
-                    browser.close()
-        return worker_results
-
-    with _scan_lock:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(_scan_chunk, idx, chunk): idx
-                for idx, chunk in enumerate(route_chunks)
-            }
-            for future in as_completed(futures):
-                chunk_idx = futures[future]
-                chunk_results[chunk_idx] = future.result()
-
+    
+    results_all: list[dict] = []
     db = Database()
-    parsed: list[dict] = []
-    idx = 0
+    
     try:
-        for chunk in chunk_results:
-            if not chunk:
-                continue
-            for route, result in chunk:
-                rows = _store_result(db, route, result)
-                for row in rows:
-                    parsed.append(row)
-                    idx += 1
-                    if on_row:
-                        on_row(idx, total, row)
-        return parsed
+        # Para evitar QUALQUER conflito de Playwright com Asyncio, 
+        # vamos rodar cada busca como um processo SEPARADO via subprocess.
+        # Isso garante isolamento total e usa o google_flights_executor de forma nativa.
+        
+        executor_path = os.getenv("GOOGLE_FLIGHTS_EXECUTOR_PATH", "/opt/vooindo/google_flights_executor.py")
+        python_path = sys.executable or "/opt/vooindo/.venv/bin/python"
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = []
+            
+            # Perfis disponíveis
+            base_dir = Path(__file__).resolve().parent
+            available_profiles = [str(base_dir / "google_session")]
+            for i in range(2, 6):
+                p_dir = base_dir / f"google_session_{i}"
+                if p_dir.is_dir():
+                    available_profiles.append(str(p_dir))
+
+            def _run_external_search(idx: int, r: RouteQuery) -> FlightResult:
+                profile = available_profiles[idx % len(available_profiles)]
+                env = os.environ.copy()
+                env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
+                env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
+                
+                cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
+                if r.inbound_date:
+                    cmd.append(r.inbound_date)
+                
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+                    if proc.returncode == 0:
+                        try:
+                            data = json.loads(proc.stdout)
+                            if data.get("ok"):
+                                return FlightResult(
+                                    site="google_flights",
+                                    origin=r.origin,
+                                    destination=r.destination,
+                                    outbound_date=r.outbound_date,
+                                    inbound_date=r.inbound_date,
+                                    trip_type=r.trip_type,
+                                    price=data.get("price"),
+                                    currency="BRL",
+                                    url=data.get("url", ""),
+                                    booking_url=data.get("booking_url", ""),
+                                    notes=" | ".join(data.get("notes", [])),
+                                    best_vendor=data.get("best_vendor", ""),
+                                    best_vendor_price=data.get("best_vendor_price"),
+                                    booking_options_json=json.dumps(data.get("booking_options", []), ensure_ascii=False),
+                                    price_insight=data.get("price_insight", ""),
+                                    best_airline_vendor=data.get("best_airline_vendor"),
+                                    best_airline_price=data.get("best_airline_price"),
+                                    best_airline_url=data.get("best_airline_url"),
+                                    best_airline_visible_price=data.get("best_airline_visible_price")
+                                )
+                            else:
+                                err_from_json = data.get("message") or data.get("error") or "unknown_executor_error"
+                                return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"executor_error: {err_from_json}")
+                        except Exception as e:
+                            return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"json_decode_error: {str(e)} | raw={proc.stdout[:100]}")
+                    
+                    err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
+                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
+                except subprocess.TimeoutExpired:
+                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes="timeout_expired")
+                except Exception as e:
+                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"exception: {str(e)}")
+
+            if source_flags.get("google_flights", True):
+                for i, route in enumerate(routes):
+                    f = pool.submit(_run_external_search, i, route)
+                    futures.append((f, route))
+
+            for future, route in futures:
+                try:
+                    res = future.result()
+                    # Salva no banco e converte pra dict
+                    rows = _store_result(db, route, res)
+                    for row in rows:
+                        results_all.append(row)
+                        if on_row:
+                            on_row(len(results_all), total, row)
+                except Exception as e:
+                    logger.error(f"Erro crítico ao processar futuro de busca: {e}")
+                        
+        return results_all
     finally:
         db.conn.close()
 

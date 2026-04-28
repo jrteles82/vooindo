@@ -369,7 +369,7 @@ def extract_continuar_link(page, vendor: str) -> str:
         return ""
 
 
-def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, float | None, list[dict]]:
+def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, float | None, list[dict], str]:
     try:
         body = page.evaluate("document.body.innerText")
     except Exception:
@@ -380,6 +380,31 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
 
     options: list[dict] = []
     lines = [ln.strip() for ln in (body or '').splitlines() if ln.strip()]
+
+    # Extração de insights de preço (ex: "O preço normal para a Econômica é...")
+    price_insight = ""
+    # Remove quebras de linha para facilitar o regex
+    body_clean = body.replace('\n', ' ')
+    
+    # Procura pela frase completa de comparação de preços, pegando até o ponto final apos a faixa de valores
+    # Ex: "Os voos mais baratos para viagens semelhantes ... geralmente custam R$ 1.900 a 6.100."
+    m_range = re.search(r"(Os voos mais baratos para viagens semelhantes.*?custam R\$\s*[\d\.]+\s*a\s*[\d\.]+\.)", body_clean, flags=re.I)
+    
+    m_normal = re.search(r"(O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?)", body_clean, flags=re.I)
+    
+    parts = []
+    if m_normal:
+        parts.append(m_normal.group(1).strip())
+    if m_range:
+        parts.append(m_range.group(1).strip())
+        
+    if parts:
+        price_insight = " ".join(parts)
+    else:
+        # Fallback genérico se os padrões específicos falharem
+        m_fallback = re.search(r"(O preço normal para[\s\S]+?custam R\$[\s\S]+?[\d\.]+)", body_clean, flags=re.I)
+        if m_fallback:
+            price_insight = m_fallback.group(1).strip()
 
     def _parse_price_near(start_i: int, window: int = 12) -> float | None:
         reserve_pattern = re.compile(r"(?:Reserve com|Reservar com|Comprar com|Vendido por)", re.I)
@@ -398,7 +423,8 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
     seen: set[tuple] = set()
 
     def _add(vendor: str, price: float, is_airline: bool) -> None:
-        vendor = vendor.strip(" :-\n")
+        # Limpeza agressiva do nome do vendor
+        vendor = re.sub(r"Companhia\s*a[ée]rea", "", vendor, flags=re.I).strip(" :-\n")
         if not vendor or price <= 0:
             return
         key = (vendor.lower()[:40], round(price), is_airline)
@@ -407,15 +433,13 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
             options.append({"vendor": vendor, "price": price, "is_airline": is_airline})
 
     for i, line in enumerate(lines):
-        # Método 1: "Reserve com [a] Vendor" — agência ou companhia via painel lateral
+        # Método 1: "Reserve com [a] Vendor"
         m = re.search(
             r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|$)",
             line, re.I
         )
         if m:
-            vendor = re.sub(r"\s*Companhia\s*a[ée]rea\s*$", "", m.group(1).strip(), flags=re.I).strip()
-            vendor = re.sub(r"Companhia\s*a[ée]rea\s*$", "", vendor, flags=re.I).strip()
-            # Verificar se a linha ATUAL ou a PROXIMA tem "Companhia aerea" — Google separou em linha distinta
+            vendor = re.sub(r"Companhia\s*a[ée]rea\s*$", "", m.group(1).strip(), flags=re.I).strip()
             is_airline = bool(re.search(r"Companhia\s*a[ée]rea", line, re.I))
             if not is_airline and i + 1 < len(lines):
                 is_airline = bool(re.search(r"Companhia\s*a[ée]rea", lines[i + 1], re.I))
@@ -426,30 +450,23 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
                 _add(vendor, price, is_airline)
             continue
 
-        # Método 2: "Companhia aérea" presente na linha (concatenada ou não)
-        # Ex: "Aerolineas ArgentinasCompanhia aérea" ou "Companhia aérea" sozinha
         if re.search(r"Companhia\s*a[ée]rea", line, re.I):
-            # O que vem antes de "Companhia" é o nome da airline
             m2 = re.search(r"^(.+?)Companhia\s*a[ée]rea", line, re.I)
-            if m2:
-                vendor = m2.group(1).strip()
-            else:
-                # "Companhia aérea" sozinha na linha — vendor está na linha anterior
-                vendor = lines[i - 1] if i > 0 else ""
+            vendor = m2.group(1).strip() if m2 else (lines[i - 1] if i > 0 else "")
             if vendor:
                 price = _parse_price_near(i)
                 if price:
                     _add(vendor, price, True)
 
     if not options:
-        return "", parse_price(body), []
+        return "", parse_price(body), [], price_insight
 
     airline_opts = [o for o in options if o["is_airline"]]
     pool = options if allow_agencies else airline_opts
     if not pool:
-        return "", None, options
+        return "", None, options, price_insight
     best = min(pool, key=lambda o: o["price"])
-    return best["vendor"], best["price"], options
+    return best["vendor"], best["price"], options, price_insight
 
 
 def load_active_airlines() -> list[tuple[str, str]]:
@@ -623,7 +640,7 @@ def _vendor_from_card_text(txt: str) -> str:
     return ''
 
 
-def maybe_open_booking(page, summary_price: float | None, notes: list[str], allow_agencies: bool = False, is_international: bool = False) -> tuple[bool, str, float | None, float | None, list[dict], str, tuple[str, float, float | None, list[dict], str] | None, tuple[str, float, float | None, list[dict], str] | None]:
+def maybe_open_booking(page, summary_price: float | None, notes: list[str], allow_agencies: bool = False, is_international: bool = False) -> tuple[bool, str, float | None, float | None, list[dict], str, tuple[str, float, float | None, list[dict], str] | None, tuple[str, float, float | None, list[dict], str] | None, str]:
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     candidate_locators = [
@@ -687,6 +704,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     best_agency: tuple[str, float, float | None, list[dict], str] | None = None
     first_agency_fallback: tuple[str, float, str] | None = None
     found_airline_prices: dict[tuple[str, float], tuple[str, float, float | None, list[dict], str]] = {}
+    final_price_insight = ""
 
     def _try_go_back() -> float:
         started = time.perf_counter()
@@ -720,26 +738,26 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     def _extract_booking_with_two_step(idx: int, card_price: float, page_booking_url: str = "") -> bool:
         """Extrai opções de booking, lidando com fluxo em 2 etapas (detalhes → booking).
         Continua varrendo todos os cards para garantir prioridade absoluta a qualquer companhia aérea encontrada."""
-        nonlocal best_airline, best_agency, first_agency_fallback
-        try:
-            body_debug = page.evaluate("document.body.innerText")
-            lines_debug = [ln.strip() for ln in (body_debug or '').splitlines() if ln.strip()]
-            dump_dir = Path('/opt/vooindo/debug_dumps')
-            dump_dir.mkdir(parents=True, exist_ok=True)
-            (dump_dir / f'executor_booking_card_{idx}.txt').write_text(body_debug or '', encoding='utf-8')
-            enumerated = '\n'.join(f'{n+1:04d}: {ln}' for n, ln in enumerate(lines_debug))
-            (dump_dir / f'executor_booking_card_{idx}_lines.txt').write_text(enumerated, encoding='utf-8')
-            page.screenshot(path=str(dump_dir / f'executor_booking_card_{idx}.png'), full_page=True)
-        except Exception:
-            body_debug = ''
-            lines_debug = []
+        nonlocal best_airline, best_agency, first_agency_fallback, final_price_insight
+        
+        # Espera o texto de insights de preço se não tiver capturado
+        if not final_price_insight:
+            try:
+                page.wait_for_selector("text=O preço normal para", timeout=4500)
+            except Exception:
+                pass
 
-        vendor, vendor_price, options = extract_booking_options(page, allow_agencies=True)
+        vendor, vendor_price, options, insight = extract_booking_options(page, allow_agencies=True)
+        if insight:
+            final_price_insight = insight
+            
         if not vendor:
             # Possivelmente na etapa intermediária de detalhes — tenta clicar "Selecionar voo"
             if _try_click_selecionar_voo():
                 notes.append(f"clicked_selecionar_voo_card_{idx}")
-                vendor, vendor_price, options = extract_booking_options(page, allow_agencies=True)
+                vendor, vendor_price, options, insight = extract_booking_options(page, allow_agencies=True)
+                if insight: final_price_insight = insight
+                
         booking_price = _valid_price(vendor_price) or _valid_price(card_price)
         _n_airline = sum(1 for o in options if o.get('is_airline'))
         _n_agency = sum(1 for o in options if not o.get('is_airline'))
@@ -772,7 +790,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                     vendor_link,
                 )
 
-        # Atualiza melhor agência (menor preço entre todas as agências do card)
+        # Atualiza melhor agência
         for ao in [o for o in options if not o.get('is_airline')]:
             vendor_link = extract_continuar_link(page, ao['vendor']) or current_booking_url
             if first_agency_fallback is None:
@@ -781,19 +799,10 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                 notes.append(f"booking_agency_found_card_{idx}={ao['vendor']} booking={ao['price']} card={card_price}")
                 best_agency = (ao['vendor'], ao['price'], card_price, options, vendor_link)
 
-        if not options:
-            try:
-                reserve_lines = [ln for ln in lines_debug if any(k in ln for k in ["Reserve", "Reservar", "Comprar", "Opções", "Companhia aérea", "Companhia aerea"])]
-                snippet = ' | '.join(reserve_lines[:12]) if reserve_lines else (body_debug or '')[:500].replace('\n', ' ')
-                notes.append(f"booking_no_vendor_card_{idx} url={page.url[:80]} reserve_lines={snippet}")
-            except Exception:
-                notes.append(f"booking_no_vendor_card_{idx}")
         go_back_s = _try_go_back()
-        notes.append(f"card_{idx}_go_back_s={go_back_s}")
         return False  # sempre continua — varre todos os cards
 
     def _effective_max() -> int:
-        # Rota internacional sem airline encontrada ainda: começa no teto padrão, mas continua expandindo até o fim se necessário
         if is_international and not found_airline_prices:
             return len(airline_candidates)
         return max_cards_limit
@@ -802,150 +811,72 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     current_limit = min(len(airline_candidates), start_cards)
     while processed_cards < min(len(airline_candidates), _effective_max()):
         window_end = min(len(airline_candidates), current_limit)
-        notes.append(f"booking_window={processed_cards + 1}-{window_end}")
         for idx in range(processed_cards + 1, window_end + 1):
-            card_started = time.perf_counter()
             price, card, txt, selector_used = airline_candidates[idx - 1]
             try:
                 card.scroll_into_view_if_needed(timeout=1500)
-            except Exception:
-                pass
-            human_pause(0.1, 0.2)
-
+            except Exception: pass
+            
             click_targets = [(card, selector_used)]
             for sel in ["div.JMc5Xc[role='link']", "[jsaction*='click:O1htCb']"]:
                 try:
                     loc = card.locator(sel)
                     if loc.count() > 0 and sel != selector_used:
                         click_targets.append((loc.first, sel))
-                except Exception:
-                    pass
+                except Exception: pass
 
-            booking_opened_this_card = False
             for target, target_name in click_targets:
                 try:
                     target.dispatch_event('click')
                     human_pause(0.2, 0.4)
-
                     current_url = page.url or ""
-
                     if "/travel/flights/booking" in current_url:
-                        wait_started = time.perf_counter()
                         if wait_for_booking_content(page, timeout_ms=BOOKING_CONTENT_TIMEOUT_MS):
-                            wait_s = round(time.perf_counter() - wait_started, 3)
                             wait_for_booking_options_stable(page)
-                            notes.append(f"booking_card_index={idx}")
-                            notes.append(f"booking_click_target={target_name}")
-                            notes.append(f"card_{idx}_situation=booking_url")
-                            notes.append(f"card_{idx}_wait_booking_s={wait_s}")
-                            booking_opened_this_card = True
-                            done = _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
-                            notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
-                            if done:
-                                break
+                            _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
                             break
                         else:
-                            wait_s = round(time.perf_counter() - wait_started, 3)
-                            notes.append(f"booking_url_no_content_card_{idx}")
-                            notes.append(f"card_{idx}_situation=booking_url_no_content")
-                            notes.append(f"card_{idx}_wait_booking_s={wait_s}")
-                            go_back_s = _try_go_back()
-                            notes.append(f"card_{idx}_go_back_s={go_back_s}")
-                            notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
-                            booking_opened_this_card = True
+                            _try_go_back()
                             break
-
                     elif wait_for_booking(page):
-                        human_pause(0.125, 0.125)
-                        panel_booking_url = ""
-                        try:
-                            panel_booking_url = page.evaluate("""() => {
-                                const a = document.querySelector('a[href*="/travel/flights/booking"]');
-                                return a ? a.href : '';
-                            }""") or ""
-                        except Exception:
-                            pass
-                        notes.append(f"booking_card_index={idx}")
-                        notes.append(f"booking_click_target={target_name}")
-                        notes.append(f"card_{idx}_situation=side_panel")
-                        booking_opened_this_card = True
-                        done = _extract_booking_with_two_step(idx, price, page_booking_url=panel_booking_url)
-                        notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
-                        if done:
-                            break
+                        _extract_booking_with_two_step(idx, price)
                         break
-
                     elif is_details_panel_open(page):
-                        notes.append(f"details_panel_card_{idx}")
-                        notes.append(f"card_{idx}_situation=details_panel")
                         if _try_click_selecionar_voo():
-                            human_pause(0.125, 0.125)
                             if wait_for_booking(page):
-                                booking_url_step2 = page.url or ""
-                                notes.append(f"booking_card_index={idx}")
-                                notes.append(f"booking_click_target={target_name}_via_selecionar")
-                                booking_opened_this_card = True
-                                done = _extract_booking_with_two_step(idx, price, page_booking_url=booking_url_step2)
-                                notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
-                                if done:
-                                    break
+                                _extract_booking_with_two_step(idx, price)
                                 break
-                        go_back_s = _try_go_back()
-                        notes.append(f"card_{idx}_go_back_s={go_back_s}")
-                        notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
-                        booking_opened_this_card = True
+                        _try_go_back()
                         break
-                except Exception:
-                    pass
-
-            if not booking_opened_this_card:
-                notes.append(f"booking_no_open_card_{idx}")
-                notes.append(f"card_{idx}_situation=no_open")
-                go_back_s = _try_go_back()
-                notes.append(f"card_{idx}_go_back_s={go_back_s}")
-                notes.append(f"card_{idx}_total_s={round(time.perf_counter() - card_started, 3)}")
+                except Exception: pass
 
         processed_cards = window_end
         if is_international and not found_airline_prices and processed_cards < len(airline_candidates):
             current_limit = min(len(airline_candidates), processed_cards + step_cards)
-            notes.append(f"expand_booking_window_to={current_limit}")
             continue
         if len(found_airline_prices) >= max(1, MIN_AIRLINE_PRICES_TO_COMPARE):
-            notes.append(f"enough_airline_prices={len(found_airline_prices)} processed={processed_cards}")
             break
         if processed_cards >= min(len(airline_candidates), _effective_max()):
             break
         current_limit = min(len(airline_candidates), min(_effective_max(), processed_cards + step_cards))
-        notes.append(f"expand_booking_window_to={current_limit}")
 
+    res_best = None
     if allow_agencies:
-        best = None
         if is_international:
-            if best_airline:
-                best, source = best_airline, "airline_cheapest"
-            elif best_agency:
-                best, source = best_agency, "agency_cheapest"
+            res_best = best_airline if best_airline else best_agency
         else:
             if best_airline and best_agency:
-                best = best_airline if best_airline[1] <= best_agency[1] else best_agency
-                source = "airline_cheapest" if best is best_airline else "agency_cheapest"
-            elif best_airline:
-                best, source = best_airline, "airline_cheapest"
-            elif best_agency:
-                best, source = best_agency, "agency_cheapest"
-        if best is not None:
-            vendor, booking_price, visible_price, options, booking_url = best
-            notes.append(f"result_source={source}")
-            notes.append(f"booking_total_s={round(time.perf_counter() - booking_started, 3)}")
-            return True, vendor, booking_price, visible_price, options, booking_url, best_airline, best_agency
+                res_best = best_airline if best_airline[1] <= best_agency[1] else best_agency
+            else:
+                res_best = best_airline or best_agency
     else:
-        if best_airline is not None:
-            vendor, booking_price, visible_price, options, booking_url = best_airline
-            notes.append("result_source=airline_cheapest")
-            notes.append(f"booking_total_s={round(time.perf_counter() - booking_started, 3)}")
-            return True, vendor, booking_price, visible_price, options, booking_url, best_airline, best_agency
-    notes.append(f"booking_total_s={round(time.perf_counter() - booking_started, 3)}")
-    return False, "", None, None, [], "", best_airline, best_agency
+        res_best = best_airline
+
+    if res_best:
+        v, p, vp, opts, url = res_best
+        return True, v, p, vp, opts, url, best_airline, best_agency, final_price_insight
+    
+    return False, "", None, None, [], "", best_airline, best_agency, final_price_insight
 
 
 def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "") -> dict:
@@ -1094,11 +1025,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             booking_url = ""
             best_airline = None
             best_agency = None
+            price_insight = ""
             if overall_min is not None:
-                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency = maybe_open_booking(page, overall_min, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, overall_min, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
                 booking_followed = followed
             elif summary_price is not None:
-                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency = maybe_open_booking(page, summary_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, summary_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
                 booking_followed = followed
 
             best_vendor_price = _valid_price(best_vendor_price)
@@ -1168,6 +1100,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 "best_agency_visible_price": best_agency_visible_price,
                 "booking_options": booking_options,
                 "booking_followed": booking_followed,
+                "price_insight": price_insight,
                 "notes": notes,
             }
         finally:
@@ -1175,11 +1108,15 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) not in {4, 5}:
+    if len(argv) < 4:
         print(json.dumps({"ok": False, "error": "usage", "message": "expected origin destination outbound_date [inbound_date]"}, ensure_ascii=False))
         return 2
-    origin, destination, outbound_date = argv[1], argv[2], argv[3]
-    inbound_date = argv[4] if len(argv) == 5 else ""
+    
+    origin = argv[1].upper()
+    destination = argv[2].upper()
+    outbound_date = argv[3]
+    inbound_date = argv[4] if len(argv) > 4 else ""
+    
     try:
         result = run(origin, destination, outbound_date, inbound_date)
         print(json.dumps(result, ensure_ascii=False))
@@ -1193,5 +1130,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
-SystemExit(main(sys.argv))
+    sys.exit(main(sys.argv))

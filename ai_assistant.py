@@ -264,6 +264,22 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
         else:
             lines.append(f'✈️ {link_text}')
 
+        # Adiciona insight de preço se disponível
+        insight = row.get('price_insight', '').strip()
+        if insight:
+            # Limpa o erro de digitação do Google
+            insight = re.sub(r'aEconômica', 'a Econômica', insight, flags=re.I)
+            
+            # Se tiver as duas partes, remove a primeira ("O preço normal...") para ficar mais direto
+            if "Os voos mais baratos" in insight and "O preço normal para" in insight:
+                insight = re.sub(r"O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?\s*", "", insight, flags=re.I).strip()
+            
+            if insight:
+                lines.append(f'<i>{insight}</i>')
+
+        # Dica da IA
+        dica = dicas[i] if i < len(dicas) else '📌 Preço dentro do esperado.'
+        lines.append(dica)
         lines.append('')
 
     result = '\n'.join(lines).strip()

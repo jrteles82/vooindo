@@ -586,16 +586,21 @@ def process_job(conn, bot: Bot, loop, job):
     # Agências desativadas conforme solicitação
     should_split = False
 
+    import functools
     is_manual_now = str(job.get('job_type') or '').strip().lower() == 'manual_now'
     
-    parsed = run_scan_for_routes(
-        routes,
-        sources={
-            'google_flights': bool(settings['enable_google_flights']),
-            '': False,
-        },
-        fast_mode=is_manual_now
+    # Roda scan em thread separada para evitar conflito sync/async do Playwright
+    _loop = asyncio.get_event_loop()
+    _future = _loop.run_in_executor(
+        None,
+        functools.partial(
+            run_scan_for_routes,
+            routes,
+            sources={'google_flights': bool(settings['enable_google_flights']), '': False},
+            fast_mode=is_manual_now,
+        )
     )
+    parsed = _loop.run_until_complete(_future)
     logger.info('[job-worker] job_id=%s | scan concluído | parsed=%s', job_id, len(parsed))
     if is_job_cancelled(conn, job_id):
         raise RuntimeError('cancelled_by_new_request')
