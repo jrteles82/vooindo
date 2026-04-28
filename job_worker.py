@@ -71,13 +71,52 @@ def _return_current_job_to_queue():
         return
     try:
         conn = connect_db()
-        conn.execute(
-            sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ? AND status = 'running'"),
+        # Pega info do job antes de modificar
+        job_info = conn.execute(
+            sql("SELECT id, user_id, chat_id, job_type, COALESCE(retry_count, 0) as retry_count FROM scan_jobs WHERE id = ?"),
             (job_id,),
-        )
-        conn.commit()
+        ).fetchone()
+
+        if job_info:
+            retry_count = int(job_info['retry_count']) + 1
+            is_manual = job_info['job_type'] in ('manual_now', 'manual')
+            chat_id = str(job_info['chat_id'])
+
+            if is_manual and retry_count >= 2:
+                # Já tentou uma vez, agora falha e avisa o usuário
+                conn.execute(
+                    sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'consulta_interrompida_restart' WHERE id = ?"),
+                    (job_id,),
+                )
+                conn.commit()
+                logger.info('[job-worker] job manual %s falhou apos restart (retry_count=%s)', job_id, retry_count)
+                # Tenta avisar o usuário
+                try:
+                    from telegram import Bot
+                    from telegram.request import HTTPXRequest
+                    _bot = Bot(token=TOKEN, request=HTTPXRequest())
+                    import asyncio
+                    asyncio.run(_bot.send_message(
+                        chat_id=chat_id,
+                        text='Sua consulta manual foi interrompida devido a uma atualizacao do sistema. Por favor, tente novamente.',
+                    ))
+                except Exception:
+                    pass
+            else:
+                # Devolve para fila para tentar novamente
+                conn.execute(
+                    sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = ? WHERE id = ? AND status = 'running'"),
+                    (retry_count, job_id),
+                )
+                conn.commit()
+                logger.info('[job-worker] job %s devolvido para fila (retry_count=%s)', job_id, retry_count)
+        else:
+            conn.execute(
+                sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ? AND status = 'running'"),
+                (job_id,),
+            )
+            conn.commit()
         conn.close()
-        logger.info('[job-worker] job %s devolvido para fila (retry_count++)', job_id)
     except Exception as exc:
         logger.warning('[job-worker] falha ao devolver job %s para fila: %s', job_id, exc)
 
