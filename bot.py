@@ -3104,6 +3104,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
     conn = get_db()
 
