@@ -542,12 +542,48 @@ def main():
 
         if first_cycle:
             first_cycle = False
-            logger.info(
-                "[bot-scheduler] iniciado em %s, aguardando primeiro slot de %ss",
-                now_local_iso(sep='T'),
-                interval_seconds,
-            )
-            sleep_until_next_slot(interval_seconds)
+            # Recuperar jobs órfãos na inicialização (scheduler/workers anteriores morreram)
+            try:
+                # Resetar jobs 'running' presos há mais de 5 minutos (workers morreram)
+                stuck_running = conn.execute(
+                    sql("""
+                        UPDATE scan_jobs
+                        SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1
+                        WHERE status = 'running'
+                          AND started_at IS NOT NULL
+                          AND started_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                          AND job_type = 'scheduled'
+                    """)
+                )
+                stuck_count = getattr(conn.cursor(), 'rowcount', 0)
+                if stuck_count > 0:
+                    conn.commit()
+                    logger.info(
+                        "[bot-scheduler] resetados %s jobs 'running' presos para 'pending'",
+                        stuck_count,
+                    )
+
+                # Verificar se há jobs pendentes órfãos
+                orphan_count = conn.execute(
+                    sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE status = 'pending' AND job_type = 'scheduled'")
+                ).fetchone()
+                orphan_count = int((orphan_count['c'] if isinstance(orphan_count, dict) else orphan_count[0]) or 0)
+                if orphan_count > 0:
+                    logger.info(
+                        "[bot-scheduler] detectados %s jobs pendentes órfãos na inicialização — executando ciclo imediato",
+                        orphan_count,
+                    )
+                    # Pula o sleep e vai direto para o ciclo
+                else:
+                    logger.info(
+                        "[bot-scheduler] iniciado em %s, aguardando primeiro slot de %ss",
+                        now_local_iso(sep='T'),
+                        interval_seconds,
+                    )
+                    sleep_until_next_slot(interval_seconds)
+            except Exception as exc:
+                logger.warning("[bot-scheduler] erro ao recuperar jobs órfãos: %s", exc)
+                sleep_until_next_slot(interval_seconds)
 
         try:
             if conn is None:
@@ -834,8 +870,17 @@ def main():
         except Exception as exc:
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 
-        sleep_until_next_slot(interval_seconds)
+        try:
+            sleep_until_next_slot(interval_seconds)
+        except Exception as exc:
+            logger.error('[bot-scheduler] erro no sleep_until_next_slot: %s', exc, exc_info=True)
+            time.sleep(60)
+            continue
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.critical('[bot-scheduler] CRASH não tratado no main(): %s', exc, exc_info=True)
+        raise

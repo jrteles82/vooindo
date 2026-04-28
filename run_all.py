@@ -23,13 +23,14 @@ LOCK_PATH = BASE_DIR / 'run_all.lock'
 processes = []
 _lock_handle = None
 START_DELAY_SECONDS = float(os.getenv('RUN_ALL_START_DELAY_SECONDS', '2'))
-RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '45'))
+RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '120'))
 NUM_JOB_WORKERS = int(os.getenv("NUM_JOB_WORKERS", "1"))  # 1 scheduled + 1 manual = 2 workers total
 
 
 def _find_stale_pids(script_names: list[str]) -> list[int]:
     my_pid = os.getpid()
     stale = []
+    bot_markers = ['bot.py', 'bot_scheduler.py', 'job_worker.py', 'payment_monitor.py', 'payment_webhook.py']
     try:
         for entry in os.scandir('/proc'):
             if not entry.name.isdigit():
@@ -41,8 +42,19 @@ def _find_stale_pids(script_names: list[str]) -> list[int]:
                 cmdline_path = f'/proc/{pid}/cmdline'
                 with open(cmdline_path, 'rb') as f:
                     cmdline = f.read().decode('utf-8', errors='replace').replace('\x00', ' ').strip()
+                # Match por nome de script no final do cmdline (ignora caminho completo)
                 if any(name in cmdline for name in script_names):
                     stale.append(pid)
+                    continue
+                # Match amplo: qualquer processo python rodando scripts do bot,
+                # mesmo com caminhos diferentes (ex: /.venv/bin/python vs /usr/bin/python3)
+                for marker in bot_markers:
+                    # Verifica se o nome do script aparece como argumento (ultimo elemento antes de espaco)
+                    # Ex: /opt/vooindo/.venv/bin/python /opt/vooindo/bot.py
+                    # Ex: /usr/bin/python3 /opt/vooindo/bot.py
+                    if marker in cmdline and 'vooindo' in cmdline:
+                        stale.append(pid)
+                        break
             except (PermissionError, FileNotFoundError, ProcessLookupError):
                 continue
     except Exception:

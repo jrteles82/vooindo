@@ -150,7 +150,7 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int = 12, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+def recover_stale_jobs(conn, running_timeout_minutes: int = 20, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
     stale_running = conn.execute(
         sql(
             f"""
@@ -794,10 +794,10 @@ def main():
                     conn.close()
                 except Exception:
                     pass
-            # Erro 1020 (race condition) não deve derrubar o worker — só tenta de novo
+            # Erros de concorrência não devem derrubar o worker — só tenta de novo
             err_msg = str(sys.exc_info()[1])
-            if 'OperationalError' in err_msg or '1020' in err_msg or "Record has changed since last read" in err_msg:
-                logger.warning('[RACE_CONDITION] erro 1020 no loop principal, re-tentando | err=%s', err_msg[:200])
+            if any(x in err_msg for x in ['OperationalError', '1020', 'Record has changed since last read', 'Lock wait timeout', '1205', 'Deadlock']):
+                logger.warning('[RACE_CONDITION] erro de concorrência no loop principal, re-tentando | err=%s', err_msg[:200])
                 time.sleep(2)
                 continue
             raise
