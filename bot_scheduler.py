@@ -1,4 +1,7 @@
 import asyncio
+import pymysql
+import pymysql.cursors
+from urllib.parse import urlparse
 import json
 import os
 import random
@@ -97,17 +100,27 @@ def was_sent_recently(last_sent_at: str, window_seconds: int = SEND_COOLDOWN_SEC
 
 
 def mark_sent(conn, user_id: int, send_type: str = 'scheduled'):
-    if send_type == 'manual':
-        conn.execute(
-            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
-            (user_id,),
-        )
-    else:
-        conn.execute(
-            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
-            (user_id,),
-        )
-    conn.commit()
+    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
+    _cap = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+    try:
+        if send_type == 'manual':
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
+        else:
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
+    finally:
+        _cap.close()
 
 
 async def _send_message(bot: Bot, chat_id: str, text: str, reply_markup=None, disable_web_page_preview: bool = False, parse_mode: str | None = None):
@@ -324,17 +337,27 @@ def was_sent_recently(last_sent_at: str, window_seconds: int = SEND_COOLDOWN_SEC
 
 
 def mark_sent(conn, user_id: int, send_type: str = 'scheduled'):
-    if send_type == 'manual':
-        conn.execute(
-            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
-            (user_id,),
-        )
-    else:
-        conn.execute(
-            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
-            (user_id,),
-        )
-    conn.commit()
+    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
+    _cap = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+    try:
+        if send_type == 'manual':
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
+        else:
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
+    finally:
+        _cap.close()
 
 
 async def _send_message(bot: Bot, chat_id: str, text: str, reply_markup=None, disable_web_page_preview: bool = False, parse_mode: str | None = None):

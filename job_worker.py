@@ -519,11 +519,15 @@ def _send_links_message(bot: Bot, loop, chat_id: str, links_msg: str, reply_mark
 
 
 def mark_sent(conn, user_id: int):
-    conn.execute(
-        sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
-        (user_id,),
-    )
-    conn.commit()
+    """Atualiza last_sent_at usando conexão autocommit separada para evitar conflito com scheduler."""
+    _cap = _make_cap_conn()
+    try:
+        _cap.cursor().execute(
+            f"UPDATE bot_settings SET last_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+            (user_id,),
+        )
+    finally:
+        _cap.close()
 
 
 def process_job(conn, bot: Bot, loop, job):
