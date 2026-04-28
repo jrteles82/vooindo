@@ -55,6 +55,7 @@ from access_policy import (
     set_maintenance_mode,
     is_exempt_from_maintenance,
 )
+from cmd_status import cmd_status
 
 
 ASK_ORIGIN, ASK_DESTINATION, ASK_OUTBOUND, ASK_LIMIT, ASK_SUPPORT_MESSAGE, ASK_ADMIN_SUPPORT_MESSAGE = range(6)
@@ -4524,6 +4525,7 @@ async def run_bot():
     app.add_handler(CommandHandler('agora', agora))
     app.add_handler(CommandHandler('fontes', fontes))
     app.add_handler(CommandHandler('painel', cmd_painel))
+    app.add_handler(CommandHandler('status', cmd_status))
 
     conv = ConversationHandler(
         entry_points=[CommandHandler('addrota', addrota_start), CallbackQueryHandler(menu_callback, pattern=r'^menu:addrota$')],
