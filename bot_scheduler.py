@@ -42,6 +42,8 @@ SEND_COOLDOWN_SECONDS = int(
     os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
 )
 _METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
+_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '1800'))
+_ROUND_REPORT_POLL_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_POLL_SECONDS', '5'))
 
 
 def get_db():
@@ -267,6 +269,8 @@ SEND_COOLDOWN_SECONDS = int(
     os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
 )
 _METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
+_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '1800'))
+_ROUND_REPORT_POLL_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_POLL_SECONDS', '5'))
 
 
 def get_db():
@@ -507,6 +511,177 @@ def _append_cycle_metrics(entry: dict) -> None:
         logger.warning('[bot-scheduler] falha ao persistir métricas do ciclo | erro=%s', exc)
 
 
+def _wait_for_round_completion(job_ids: list[int], timeout_seconds: int = _ROUND_REPORT_TIMEOUT_SECONDS, poll_seconds: int = _ROUND_REPORT_POLL_SECONDS) -> dict:
+    if not job_ids:
+        return {'complete': True, 'counts': {'done': 0, 'error': 0, 'running': 0, 'pending': 0}, 'elapsed_seconds': 0}
+
+    started = time.time()
+    placeholders = ', '.join(['%s'] * len(job_ids))
+    counts = {'done': 0, 'error': 0, 'running': 0, 'pending': 0}
+    while True:
+        conn = None
+        try:
+            conn = get_db()
+            row = conn.execute(sql(f"""
+                SELECT
+                  SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done_count,
+                  SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_count,
+                  SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+                  SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                FROM scan_jobs
+                WHERE id IN ({placeholders})
+            """), tuple(job_ids)).fetchone()
+            counts = {
+                'done': int((row['done_count'] if isinstance(row, dict) else row[0]) or 0),
+                'error': int((row['error_count'] if isinstance(row, dict) else row[1]) or 0),
+                'running': int((row['running_count'] if isinstance(row, dict) else row[2]) or 0),
+                'pending': int((row['pending_count'] if isinstance(row, dict) else row[3]) or 0),
+            }
+            if counts['running'] == 0 and counts['pending'] == 0:
+                return {'complete': True, 'counts': counts, 'elapsed_seconds': round(time.time() - started, 1)}
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        if time.time() - started >= timeout_seconds:
+            return {'complete': False, 'counts': counts, 'elapsed_seconds': round(time.time() - started, 1)}
+        time.sleep(max(1, poll_seconds))
+
+
+def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_stats: dict, job_ids: list[int], wait_result: dict | None = None) -> str:
+    if not job_ids:
+        reasons = cycle_stats.get('reasons', {}) or {}
+        lines = [
+            f"📊 RELATÓRIO DA RODADA — {cycle_started_iso[:16]}",
+            '',
+            '📋 RESUMO',
+            f"  👥 Elegíveis: {cycle_stats.get('eligible_users', 0)}",
+            '  📭 Nenhum job foi criado nesta rodada',
+        ]
+        if reasons:
+            lines.append('')
+            lines.append('⏭ IGNORADOS')
+            for motivo, qtd in sorted(reasons.items(), key=lambda x: -x[1]):
+                lines.append(f"  {motivo}: {qtd}")
+        return '\n'.join(lines)
+
+    conn_report = get_db()
+    try:
+        placeholders = ', '.join(['%s'] * len(job_ids))
+        params = tuple(job_ids)
+        try:
+            import psutil as _psutil
+            mem = _psutil.virtual_memory()
+            cpu_pct = _psutil.cpu_percent(interval=0.5)
+            load_avg = os.getloadavg()
+            proc = _psutil.Process()
+            proc_mem = proc.memory_info().rss / 1024 / 1024
+        except Exception:
+            mem = cpu_pct = proc_mem = None
+            load_avg = (0, 0, 0)
+
+        job_stats = conn_report.execute(sql(f"""
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+              SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
+              SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+              ROUND(AVG(CASE WHEN finished_at IS NOT NULL AND started_at IS NOT NULL
+                  THEN TIMESTAMPDIFF(SECOND, started_at, finished_at) END), 1) AS avg_duration_s,
+              ROUND(COALESCE(SUM(cost_score), 0), 0) AS total_cost,
+              MIN(created_at) AS min_created,
+              MAX(finished_at) AS max_finished
+            FROM scan_jobs
+            WHERE id IN ({placeholders})
+        """), params).fetchone()
+
+        job_durations = conn_report.execute(sql(f"""
+            SELECT
+              bu.first_name,
+              TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at) AS dur_s,
+              j.status,
+              j.error_message
+            FROM scan_jobs j
+            JOIN bot_users bu ON bu.user_id = j.user_id
+            WHERE j.id IN ({placeholders})
+            ORDER BY dur_s DESC, j.id DESC
+            LIMIT 10
+        """), params).fetchall()
+
+        received = conn_report.execute(sql(f"""
+            SELECT DISTINCT bu.first_name
+            FROM scan_jobs j
+            JOIN bot_users bu ON bu.user_id = j.user_id
+            WHERE j.id IN ({placeholders}) AND j.status = 'done'
+            ORDER BY bu.first_name
+        """), params).fetchall()
+
+        not_received = conn_report.execute(sql(f"""
+            SELECT DISTINCT bu.first_name, COALESCE(j.error_message, 'erro') AS erro
+            FROM scan_jobs j
+            JOIN bot_users bu ON bu.user_id = j.user_id
+            WHERE j.id IN ({placeholders}) AND j.status = 'error'
+              AND j.user_id NOT IN (
+                  SELECT DISTINCT user_id FROM scan_jobs
+                  WHERE id IN ({placeholders}) AND status = 'done'
+              )
+            ORDER BY bu.first_name
+        """), params + params).fetchall()
+
+        reasons = cycle_stats.get('reasons', {}) or {}
+        lines = []
+        lines.append(f"📊 RELATÓRIO DA RODADA — {cycle_started_iso[:16]}")
+        lines.append('')
+        lines.append('⚙️ DESEMPENHO')
+        lines.append(f"  ⏱ Scheduler: {round(cycle_duration_ms / 1000, 1)}s | Rodada completa: {wait_result.get('elapsed_seconds', 0) if wait_result else 0}s")
+        lines.append(f"  ⏱ Janela: {job_stats['min_created']} → {job_stats['max_finished']}")
+        lines.append(f"  🖥 CPU: {cpu_pct}% | RAM proc: {round(proc_mem, 0)}MB" if cpu_pct is not None else '  🖥 CPU/RAM: n/d')
+        lines.append(f"  📈 Load: {load_avg[0]:.2f} {load_avg[1]:.2f} {load_avg[2]:.2f}")
+        if mem:
+            lines.append(f"  💾 RAM total: {round(mem.used/1024/1024, 0)}/{round(mem.total/1024/1024, 0)}GB ({mem.percent}%)")
+        lines.append('')
+        lines.append('📋 RESUMO')
+        lines.append(f"  👥 Elegíveis: {cycle_stats.get('eligible_users', 0)}")
+        lines.append(f"  📦 Jobs: {job_stats['total'] or 0} | ✅ {job_stats['done'] or 0} | ❌ {job_stats['erro'] or 0} | 🏃 {job_stats['running'] or 0} | 🕒 {job_stats['pending'] or 0}")
+        lines.append(f"  ⏲ Média/job: {job_stats['avg_duration_s'] or '?'}s | Custo total: {job_stats['total_cost'] or 0}")
+        if reasons:
+            ignored = ', '.join(f"{k}={v}" for k, v in sorted(reasons.items(), key=lambda x: -x[1]))
+            lines.append(f"  ⏭ Ignorados: {ignored}")
+        lines.append('')
+
+        if received:
+            names = ' | '.join((r['first_name'] or '---') for r in received)
+            lines.append(f"✅ RECEBERAM ({len(received)})")
+            lines.append(f"  {names}")
+            lines.append('')
+
+        if not_received:
+            lines.append(f"❌ NÃO RECEBERAM ({len(not_received)})")
+            for r in not_received:
+                lines.append(f"  {(r['first_name'] or '---')}: {(r['erro'] or 'erro')[:80]}")
+            lines.append('')
+
+        if job_durations:
+            lines.append('🐌 TEMPOS (top 10)')
+            for jd in job_durations:
+                name = jd['first_name'] or '---'
+                dur = jd['dur_s'] if jd['dur_s'] is not None else '?'
+                suffix = f" | {(jd['error_message'] or '')[:50]}" if jd['status'] == 'error' else ''
+                lines.append(f"  {name}: {dur}s | {jd['status']}{suffix}")
+
+        if wait_result and not wait_result.get('complete', True):
+            lines.append('')
+            lines.append(f"⚠️ Relatório gerado por timeout de espera ({wait_result.get('elapsed_seconds', 0)}s).")
+
+        return '\n'.join(lines)
+    finally:
+        conn_report.close()
+
+
 async def _send_admin_alert(bot: Bot, message: str):
     admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
     if not admin_chat_id:
@@ -592,7 +767,7 @@ def main():
             cycle_started = time.perf_counter()
             cycle_started_iso = now_local_iso(sep='T')
             cycle_metrics = record_cycle_start()
-            cycle_metrics['_start_time'] = cycle_started
+            cycle_metrics['_start_time'] = time.time()
             maintenance_on = is_maintenance_mode(conn)
             users = list(iter_users(conn))
             random.shuffle(users)
@@ -645,6 +820,7 @@ def main():
             # Em vez de rodar run_for_user nas threads (que competem pelo mesmo profile),
             # cria jobs no scan_jobs para cada usuario elegivel.
             # Os job_workers (com profiles Chrome separados) pegam e processam em paralelo.
+            created_job_ids = []
             for user in eligible_users:
                 try:
                     label = user_label(user)
@@ -657,11 +833,17 @@ def main():
                     ).fetchone()
                     cost = int((routes_row['c'] if isinstance(routes_row, dict) else routes_row[0]) or 1)
 
-                    conn.execute(
+                    insert_result = conn.execute(
                         sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'scheduled', 'pending', ?, ?)"),
-                        (user_id, chat_id, '{}', cost),
+                        (user_id, chat_id, json.dumps({'round_started_at': cycle_started_iso}, ensure_ascii=False), cost),
                     )
                     conn.commit()
+                    job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
+                    if not job_id:
+                        last_id_row = conn.execute(sql("SELECT LAST_INSERT_ID() AS id")).fetchone()
+                        job_id = int((last_id_row['id'] if isinstance(last_id_row, dict) else last_id_row[0]) or 0)
+                    if job_id:
+                        created_job_ids.append(job_id)
                     logger.info("[bot-scheduler] %s | job criado para worker", label)
                     cycle_stats['sent_users'] += 1
                 except Exception as exc:
@@ -721,152 +903,23 @@ def main():
             interval_seconds,
         )
 
-        # Relatório para admin ao final de cada rodada
+        # Relatório automático para admin após o término real da rodada
         try:
+            wait_result = _wait_for_round_completion(created_job_ids)
+            logger.info(
+                '[bot-scheduler] rodada %s finalizada | complete=%s | done=%s | error=%s | running=%s | pending=%s | wait_s=%s',
+                cycle_started_iso[:16],
+                wait_result.get('complete', True),
+                wait_result.get('counts', {}).get('done', 0),
+                wait_result.get('counts', {}).get('error', 0),
+                wait_result.get('counts', {}).get('running', 0),
+                wait_result.get('counts', {}).get('pending', 0),
+                wait_result.get('elapsed_seconds', 0),
+            )
             admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
-            if admin_chat_id and cycle_stats['sent_users'] > 0:
-                conn_report = get_db()
-                try:
-                    # Métricas de sistema
-                    try:
-                        import psutil as _psutil
-                        mem = _psutil.virtual_memory()
-                        cpu_pct = _psutil.cpu_percent(interval=0.5)
-                        load_avg = os.getloadavg()
-                        proc = _psutil.Process()
-                        proc_mem = proc.memory_info().rss / 1024 / 1024
-                    except Exception:
-                        mem = cpu_pct = proc_mem = None
-                        load_avg = (0, 0, 0)
-
-                    # Métricas de jobs da rodada
-                    job_stats = conn_report.execute(sql("""
-                        SELECT
-                          COUNT(*) AS total,
-                          SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
-                          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
-                          ROUND(AVG(CASE WHEN finished_at IS NOT NULL AND started_at IS NOT NULL
-                              THEN (julianday(finished_at) - julianday(started_at)) * 86400 END), 1) AS avg_duration_s,
-                          ROUND(COALESCE(SUM(cost_score), 0), 0) AS total_cost
-                        FROM scan_jobs
-                        WHERE job_type = 'scheduled' AND created_at >= ?
-                    """), (cycle_started_iso,)).fetchone()
-
-                    # Duração detalhada por job
-                    job_durations = conn_report.execute(sql("""
-                        SELECT
-                          bu.first_name,
-                          ROUND((julianday(j.finished_at) - julianday(j.started_at)) * 86400, 1) AS dur_s,
-                          j.status,
-                          j.error_message
-                        FROM scan_jobs j
-                        JOIN bot_users bu ON bu.user_id = j.user_id
-                        WHERE j.job_type = 'scheduled' AND j.created_at >= ?
-                        ORDER BY j.finished_at - j.started_at DESC
-                        LIMIT 5
-                    """), (cycle_started_iso,)).fetchall()
-
-                    # Métricas de cache (price_cache)
-                    cache_stats = conn_report.execute(sql("""
-                        SELECT
-                          COUNT(*) AS total_cache,
-                          ROUND(AVG((julianday('now', 'localtime') - julianday(cached_at, 'unixepoch')) * 86400), 0) AS avg_age_s
-                        FROM price_cache
-                    """)).fetchone()
-
-                    # Quem recebeu (jobs com done)
-                    received = conn_report.execute(sql("""
-                        SELECT DISTINCT bu.first_name
-                        FROM scan_jobs j
-                        JOIN bot_users bu ON bu.user_id = j.user_id
-                        WHERE j.job_type = 'scheduled'
-                          AND j.created_at >= ?
-                          AND j.status = 'done'
-                        ORDER BY bu.first_name
-                    """), (cycle_started_iso,)).fetchall()
-
-                    # Quem não recebeu (jobs com error)
-                    not_received = conn_report.execute(sql("""
-                        SELECT DISTINCT bu.first_name,
-                               COALESCE(j.error_message, 'erro') as erro
-                        FROM scan_jobs j
-                        JOIN bot_users bu ON bu.user_id = j.user_id
-                        WHERE j.job_type = 'scheduled'
-                          AND j.created_at >= ?
-                          AND j.status = 'error'
-                          AND j.user_id NOT IN (
-                              SELECT DISTINCT user_id FROM scan_jobs
-                              WHERE job_type = 'scheduled' AND status = 'done'
-                                AND created_at >= ?
-                          )
-                        ORDER BY bu.first_name
-                    """), (cycle_started_iso, cycle_started_iso)).fetchall()
-
-                    report_lines = []
-                    report_lines.append(f"📊 RELATÓRIO DA RODADA — {cycle_finished_iso[:16]}")
-                    report_lines.append(f"")
-                    report_lines.append(f"⚙️ DESEMPENHO")
-                    report_lines.append(f"  ⏱ Duração: {round(cycle_duration_ms / 1000)}s | Média/job: {job_stats['avg_duration_s'] or '?'}s")
-                    report_lines.append(f"  🖥 CPU: {cpu_pct}% | RAM: {round(proc_mem, 0)}MB" if cpu_pct else '')
-                    report_lines.append(f"  📈 Load: {load_avg[0]:.1f} {load_avg[1]:.1f} {load_avg[2]:.1f}" if load_avg else '')
-                    if mem:
-                        report_lines.append(f"  💾 RAM Total: {round(mem.used/1024/1024, 0)}/{round(mem.total/1024/1024, 0)}GB ({mem.percent}%)")
-                    report_lines.append(f"" if any(l for l in report_lines if 'CPU' in l) else '')
-                    report_lines.append(f"📋 RESUMO")
-                    report_lines.append(f"  👥 Total usuários: {cycle_stats['eligible_users']}")
-                    report_lines.append(f"  ✅ Jobs concluídos: {job_stats['done'] or 0}")
-                    report_lines.append(f"  ❌ Jobs com erro: {job_stats['erro'] or 0}")
-                    report_lines.append(f"  ⏭ Ignorados: {cycle_stats['skipped_users']}")
-                    report_lines.append(f"  📦 Cache ativo: {cache_stats['total_cache'] or 0} registros")
-                    report_lines.append(f"")
-
-                    # Jobs mais lentos
-                    if job_durations:
-                        report_lines.append(f"🐌 JOBS MAIS LENTOS (top 5)")
-                        for jd in job_durations:
-                            name = jd['first_name'] or '---'
-                            dur = jd['dur_s'] or '?'
-                            err = f" -> {str(jd['error_message'] or '')[:50]}" if jd['status'] == 'error' else ''
-                            report_lines.append(f"  {name}: {dur}s{err}")
-                        report_lines.append(f"")
-
-                    # Quem recebeu
-                    if received:
-                        names = ' | '.join(r['first_name'] or '---' for r in received)
-                        report_lines.append(f"✅ RECEBERAM ({len(received)})")
-                        report_lines.append(f"  {names}")
-                        report_lines.append(f"")
-
-                    # Quem não recebeu
-                    if not_received:
-                        report_lines.append(f"❌ NÃO RECEBERAM ({len(not_received)})")
-                        for r in not_received:
-                            name = r['first_name'] or '---'
-                            erro = (r['erro'] or 'erro').replace("'", "")[:80]
-                            report_lines.append(f"  {name}: {erro}")
-                        report_lines.append(f"")
-
-                    # Motivos de ignorados
-                    reasons = cycle_stats.get('reasons', {})
-                    if reasons:
-                        report_lines.append(f"⏭ IGNORADOS")
-                        for motivo, qtd in sorted(reasons.items(), key=lambda x: -x[1]):
-                            labels = {
-                                'alertas_desativados': 'Alertas desativados',
-                                'execucao_em_andamento': 'Execução em andamento',
-                                'cooldown': 'Cooldown',
-                                'manutencao': 'Modo manutenção',
-                            }
-                            report_lines.append(f"  {labels.get(motivo, motivo)}: {qtd}")
-
-                    loop.run_until_complete(_send_message(
-                        bot, admin_chat_id,
-                        '\n'.join(rl for rl in report_lines if rl),
-                    ))
-                except Exception as exc:
-                    logger.warning('[bot-scheduler] erro ao gerar relatorio admin: %s', exc)
-                finally:
-                    conn_report.close()
+            if admin_chat_id:
+                report_text = _build_round_report(cycle_started_iso, cycle_duration_ms, cycle_stats, created_job_ids, wait_result)
+                loop.run_until_complete(_send_message(bot, admin_chat_id, report_text))
         except Exception as exc:
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 
