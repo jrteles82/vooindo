@@ -796,6 +796,17 @@ def main():
                         cycle_stats['reasons']['alertas_desativados'] = cycle_stats['reasons'].get('alertas_desativados', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | alertas desativados", label)
                         continue
+                    # Pular usuários sem rotas ativas
+                    route_count_row = conn.execute(
+                        sql("SELECT COUNT(*) AS c FROM user_routes WHERE user_id = ? AND active = 1"),
+                        (int(user['user_id']),),
+                    ).fetchone()
+                    route_count = int((route_count_row['c'] if isinstance(route_count_row, dict) else route_count_row[0]) or 0)
+                    if route_count == 0:
+                        cycle_stats['skipped_users'] += 1
+                        cycle_stats['reasons']['sem_rotas'] = cycle_stats['reasons'].get('sem_rotas', 0) + 1
+                        logger.info("[bot-scheduler] %s | ignorado | sem rotas ativas", label)
+                        continue
                     user_cooldown_seconds = 30 * 60
                     running_row = conn.execute(
                         sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = ? AND status IN ('pending', 'running')"),
