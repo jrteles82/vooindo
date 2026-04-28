@@ -4543,6 +4543,7 @@ async def run_bot():
             ],
         },
         fallbacks=[CommandHandler('cancelar', cancel)],
+        conversation_timeout=600,
     )
     limite_conv = ConversationHandler(
         entry_points=[
