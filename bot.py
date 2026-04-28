@@ -2775,6 +2775,9 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addrota_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'airport_stage' not in context.user_data:
+        logger.info('[addrota_origin] ignorando mensagem sem conversa ativa | chat_id=%s', update.effective_chat.id)
+        return ConversationHandler.END
     conn = get_db()
     try:
         matches = search_airports(conn, update.message.text, limit=8)
@@ -2797,6 +2800,9 @@ async def addrota_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addrota_destination(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if 'airport_stage' not in context.user_data or context.user_data.get('airport_stage') != 'destino':
+        logger.info('[addrota_destination] ignorando mensagem sem conversa ativa | chat_id=%s', update.effective_chat.id)
+        return ConversationHandler.END
     conn = get_db()
     try:
         matches = search_airports(conn, update.message.text, limit=8)
@@ -2819,6 +2825,10 @@ async def addrota_destination(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Só processa se realmente houver um cadastro de rota em andamento
+    if 'airport_stage' not in context.user_data and 'origin' not in context.user_data:
+        logger.info('[addrota_outbound] ignorando mensagem sem conversa ativa | chat_id=%s', update.effective_chat.id)
+        return ConversationHandler.END
     try:
         dt_str = normalize_date(update.message.text)
         dt_obj = datetime.strptime(dt_str, '%Y-%m-%d').date()
