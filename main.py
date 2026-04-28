@@ -974,6 +974,10 @@ def _load_booking_options(row: dict) -> list[dict]:
 
 
 def _price_vendor_display(row: dict) -> str:
+    def _is_generic_vendor(value: str) -> bool:
+        normalized = (value or '').strip().lower().replace('_', ' ')
+        return normalized in {'', 'google', 'google flights', 'n/a', 'nd', 'n/d'}
+
     display_price = row.get("best_vendor_price")
     if not isinstance(display_price, (int, float)):
         display_price = row.get("price")
@@ -982,23 +986,28 @@ def _price_vendor_display(row: dict) -> str:
     vendor = (row.get("best_vendor") or "").strip()
     booking_options = _load_booking_options(row)
 
-    if not vendor:
-        if booking_options:
-            first_vendor = str((booking_options[0] or {}).get("vendor") or "").strip()
-            if first_vendor:
-                vendor = first_vendor
+    if booking_options and _is_generic_vendor(vendor):
+        priced_options = [opt for opt in booking_options if isinstance(opt.get('price'), (int, float))]
+        sorted_options = sorted(priced_options or booking_options, key=lambda opt: float(opt.get('price') or 10**12))
+        for opt in sorted_options:
+            candidate = str((opt or {}).get("vendor") or "").strip()
+            if not _is_generic_vendor(candidate):
+                vendor = candidate
+                break
 
-    if not vendor or vendor.lower() in ('google_flights', 'google'):
+    if _is_generic_vendor(vendor):
         import re as _re
         notes = (row.get('notes') or '')
         notes_match = _re.search(r'^([A-Z][a-zA-ZÀ-ÿ]+(?: [A-Z][a-zA-ZÀ-ÿ]+)*)', notes)
         if notes_match:
-            vendor = notes_match.group(1).strip()
+            candidate = notes_match.group(1).strip()
+            if not _is_generic_vendor(candidate):
+                vendor = candidate
         airline = row.get('airline', '')
-        if not vendor or vendor.lower() in ('google_flights', 'google', ''):
-            if airline and airline.lower() not in ('', 'google_flights', 'google', 'n/a'):
+        if _is_generic_vendor(vendor):
+            if airline and not _is_generic_vendor(airline):
                 vendor = airline
-        if not vendor or vendor.lower() in ('google_flights', 'google', '', 'n/a'):
+        if _is_generic_vendor(vendor):
             vendor = row.get('site', '') or 'N/D'
 
     vendor_label = _pretty_vendor_name(vendor)

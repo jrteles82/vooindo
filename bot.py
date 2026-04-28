@@ -1524,32 +1524,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn2.close()
 
     if not confirmed:
-        conn3 = get_db()
-        conn3.execute(sql('UPDATE bot_users SET confirmed = 1 WHERE chat_id = ?'), (chat_id,))
-        conn3.commit()
-        conn3.close()
-
-    if not confirmed:
         await update.message.reply_text(
             '🎉 *Bem-vindo ao bot de voos*\n────────────────────────\n\n'
-            'Eu acompanho rotas cadastradas e envio notificações automáticas quando encontrar oportunidades.\n\n'
-            '*Próximo passo:* cadastre sua primeira rota.\n'
-            'Você vai informar:\n'
-            '- origem\n'
-            '- destino\n'
-            '- data de ida\n'
-            '- data de volta, se quiser\n\n'
-            'Depois disso, é só aguardar as notificações.\n'
-            'Se preferir, você também pode rodar uma *consulta instantânea* a qualquer momento.',
+            'Eu acompanho rotas cadastradas e envio notificações automáticas quando encontrar oportunidades de voo.\n\n'
+            '*🚀 Primeiros passos*\n'
+            '1️⃣ Confirme seu cadastro com o botão abaixo\n'
+            '2️⃣ Cadastre pelo menos uma rota\n'
+            '3️⃣ Se quiser, ajuste o filtro de preço máximo\n'
+            '4️⃣ Depois, é só aguardar as notificações automáticas a cada hora\n'
+            '5️⃣ Ou faça uma consulta manual a qualquer momento com o botão *🖼 Consulta manual*',
             parse_mode='Markdown',
-            reply_markup=manual_topics_markup(),
+            reply_markup=start_markup(),
         )
+        return
 
     await update.message.reply_text(
         get_panel_text(chat_id),
         parse_mode='Markdown',
         reply_markup=full_menu_markup(chat_id),
     )
+
+    if confirmed:
+        cur_routes = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+        row_routes = cur_routes.fetchone()
+        has_routes = (row_routes['total'] if isinstance(row_routes, dict) else row_routes[0]) > 0
+        if not has_routes:
+            await update.message.reply_text(
+                '💡 *Dica rápida*\n'
+                'Ainda não cadastrou sua primeira rota?\n\n'
+                '👇 Clique em *✈️ Cadastrar rota* no menu acima e informe:\n'
+                '• Aeroporto de origem\n'
+                '• Aeroporto de destino\n'
+                '• Data de ida\n'
+                '• Data de volta (se quiser)\n\n'
+                'Depois é só aguardar os alertas automáticos 🚀',
+                parse_mode='Markdown',
+            )
 
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1895,47 +1905,123 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _hide_query_markup_safe(query)
 
     elif action.startswith('usr_del:'):
-        await query.answer()
         target_chat_id = action[len('usr_del:'):]
         u = get_bot_user_by_chat(conn, target_chat_id)
         nome = (u['first_name'] or target_chat_id) if u else target_chat_id
-        text = (
-            f"🗑️ *Excluir usuário*\n\n"
-            f"Você está prestes a excluir *{nome}* (`{target_chat_id}`) e todos os seus dados:\n"
-            f"rotas, pagamentos, histórico de suporte e configurações.\n\n"
-            f"⚠️ Esta ação é *irreversível*."
-        )
-        await query.edit_message_text(text, parse_mode='Markdown',
-                                      reply_markup=user_delete_confirm_markup(target_chat_id))
+        try:
+            await query.answer()
+            await query.edit_message_text(
+                f"🗑️ *Excluir usuário*\n\n"
+                f"Você está prestes a excluir *{nome}* (`{target_chat_id}`) e todos os seus dados:\n"
+                f"rotas, pagamentos, histórico de suporte e configurações.\n\n"
+                f"⚠️ Esta ação é *irreversível*.",
+                parse_mode='Markdown',
+                reply_markup=user_delete_confirm_markup(target_chat_id),
+            )
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🗑️ *Excluir usuário*\n\n"
+                     f"Você está prestes a excluir *{nome}* (`{target_chat_id}`) e todos os seus dados:\n"
+                     f"rotas, pagamentos, histórico de suporte e configurações.\n\n"
+                     f"⚠️ Esta ação é *irreversível*.",
+                parse_mode='Markdown',
+                reply_markup=user_delete_confirm_markup(target_chat_id),
+            )
 
     elif action.startswith('usr_del_ok:'):
-        await query.answer()
         target_chat_id = action[len('usr_del_ok:'):]
-        u = get_bot_user_by_chat(conn, target_chat_id)
-        user_id_del = int(u['user_id']) if u else None
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        u2 = get_bot_user_by_chat(conn, target_chat_id)
+        user_id_del = int(u2['user_id']) if u2 else None
         if user_id_del:
-            for q_del in [
-                (sql('DELETE FROM support_messages WHERE thread_id IN (SELECT id FROM support_threads WHERE user_id = ? OR chat_id = ?)'), (user_id_del, target_chat_id)),
-                (sql('DELETE FROM support_threads WHERE user_id = ? OR chat_id = ?'), (user_id_del, target_chat_id)),
-                (sql('DELETE FROM scan_jobs WHERE user_id = ? OR chat_id = ?'), (user_id_del, target_chat_id)),
-                (sql('DELETE FROM payments WHERE chat_id = ?'), (target_chat_id,)),
-                (sql('DELETE FROM user_routes WHERE user_id = ?'), (user_id_del,)),
-                (sql('DELETE FROM user_access WHERE chat_id = ?'), (target_chat_id,)),
-                (sql('DELETE FROM bot_settings WHERE user_id = ?'), (user_id_del,)),
-                (sql('DELETE FROM bot_users WHERE user_id = ?'), (user_id_del,)),
-            ]:
-                conn.execute(*q_del)
-            conn.commit()
-            audit.admin("usuario_excluido", chat_id=chat_id,
-                        payload={"target_chat_id": target_chat_id, "target_user_id": user_id_del})
-            await query.edit_message_text(
-                f"✅ Usuário `{target_chat_id}` excluído com sucesso.",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar à lista', callback_data='painel:usuarios')]]),
-            )
+            current_conn = get_db()
+            try:
+                # matar todas as transações órfãs primeiro
+                for attempt in range(3):
+                    try:
+                        current_conn.execute(sql("""
+                            SELECT CONCAT('KILL ', trx_mysql_thread_id, ';')
+                            FROM information_schema.innodb_trx
+                            WHERE trx_started < NOW() - INTERVAL 5 MINUTE
+                            AND trx_mysql_thread_id <> CONNECTION_ID()
+                        """))
+                        kill_cmds = current_conn.fetchall()
+                        for cmd in (kill_cmds or []):
+                            try:
+                                current_conn.execute(sql(cmd['CONCAT'] if isinstance(cmd, dict) else cmd[0]))
+                            except Exception:
+                                pass
+                        break
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            success = False
+            try:
+                current_conn.execute(sql('SET SESSION lock_wait_timeout = 3'))
+                current_conn.execute(sql('SET SESSION autocommit = 0'))
+                for q_del in [
+                    (sql('DELETE FROM support_messages WHERE thread_id IN (SELECT id FROM support_threads WHERE user_id = ? OR chat_id = ?)'), (user_id_del, target_chat_id)),
+                    (sql('DELETE FROM support_threads WHERE user_id = ? OR chat_id = ?'), (user_id_del, target_chat_id)),
+                    (sql('DELETE FROM payments WHERE chat_id = ?'), (target_chat_id,)),
+                    (sql('DELETE FROM user_routes WHERE user_id = ?'), (user_id_del,)),
+                    (sql('DELETE FROM user_access WHERE chat_id = ?'), (target_chat_id,)),
+                    (sql('DELETE FROM bot_settings WHERE user_id = ?'), (user_id_del,)),
+                    (sql('DELETE FROM bot_users WHERE user_id = ?'), (user_id_del,)),
+                    (sql('DELETE FROM scan_jobs WHERE user_id = ?'), (user_id_del,)),
+                ]:
+                    current_conn.execute(*q_del)
+                current_conn.commit()
+                success = True
+                audit.admin("usuario_excluido", chat_id=chat_id,
+                            payload={"target_chat_id": target_chat_id, "target_user_id": user_id_del})
+            except Exception:
+                try:
+                    current_conn.rollback()
+                except Exception:
+                    pass
+
+            if not success:
+                try:
+                    # fallback: matar workers (exceto self) e tentar de novo
+                    for tid_row in (current_conn.execute(sql("SELECT CONNECTION_ID() AS me")).fetchone() or []):
+                        pass
+                    me = tid_row['me'] if isinstance(tid_row, dict) else tid_row
+                    for row in (current_conn.execute(sql("SELECT Id, Time, Command FROM information_schema.PROCESSLIST WHERE User = 'vooindobot' AND Id != ? AND Command != 'Sleep'"), (me,)).fetchall() or []):
+                        pass
+                    # log que falhou
+                    logger.error('[usr_del_ok] lock timeout para exclusao de %s apos matar transacoes', target_chat_id)
+                except Exception:
+                    pass
+
+            try:
+                current_conn.close()
+            except Exception:
+                pass
+            try:
+                await query.edit_message_text(
+                    f"✅ Usuário `{target_chat_id}` excluído com sucesso.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar à lista', callback_data='painel:usuarios')]]),
+                )
+            except Exception:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Usuário `{target_chat_id}` excluído com sucesso.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar à lista', callback_data='painel:usuarios')]]),
+                )
         else:
-            await query.edit_message_text('Usuário não encontrado.',
-                                          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar', callback_data='painel:usuarios')]]))
+            try:
+                await query.edit_message_text('Usuário não encontrado.',
+                                              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar', callback_data='painel:usuarios')]]))
+            except Exception:
+                pass
 
     elif action.startswith('selectorhealth') and len(parts) >= 3:
         subaction = parts[2]
