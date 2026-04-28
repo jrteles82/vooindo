@@ -192,6 +192,30 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
         import re as _re_vendor
         vendor = _re_vendor.sub(r'Companhia\s*a[ée]rea\s*', '', vendor, flags=_re_vendor.I).strip()
         vendor = _re_vendor.sub(r'\s*Companhia\s*a[ée]rea\s*', '', vendor, flags=_re_vendor.I).strip()
+        # Normaliza nome da companhia
+        _vendor_lower = vendor.lower().replace('-', '_').replace(' ', '_')
+        _vendor_aliases = {
+            'gol': 'GOL', 'latam': 'LATAM', 'azul': 'Azul',
+            'voeazul': 'Azul', 'decolar': 'Decolar', 'zupper': 'Zupper',
+            'booking': 'Booking.com', 'kayak': 'KAYAK',
+            '123milhas': '123 Milhas', '123_milhas': '123 Milhas',
+            'viajanet': 'ViajaNet', 'smiles': 'Smiles',
+            'aerolineas_argentinas': 'Aerolineas Argentinas',
+            'aeromexico': 'Aeromexico', 'avianca': 'Avianca',
+            'copA': 'CopA', 'delta': 'Delta', 'united': 'United',
+            'american': 'American Airlines', 'aa': 'American Airlines',
+            'british_airways': 'British Airways', 'iberia': 'Iberia',
+            'tap': 'TAP', 'tap_air_portugal': 'TAP',
+            'emirates': 'Emirates', 'qatar': 'Qatar Airways',
+            'ethiad': 'Etihad', 'air_france': 'Air France',
+            'klm': 'KLM', 'lufthansa': 'Lufthansa',
+            'swiss': 'Swiss', 'ryanair': 'Ryanair',
+            'easyjet': 'EasyJet', 'wizz': 'Wizz Air',
+        }
+        if _vendor_lower in _vendor_aliases:
+            vendor = _vendor_aliases[_vendor_lower]
+        elif vendor and vendor != '—':
+            vendor = vendor.replace('_', ' ').strip().title()
         price = row.get('best_vendor_price') or row.get('price')
         price_str = f'R$ {price:,.0f}'.replace(',', '.') if price else 'N/D'
         booking_url = row.get('booking_url', '') or row.get('url', '')
