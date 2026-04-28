@@ -1306,7 +1306,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     final_height = y + padding_y
     cropped = image.crop((0, 0, width, final_height))
 
-    safe_max_width = 620 if is_manual_user and row_count <= 1 else 680
+    safe_max_width = 720 if is_manual_user and row_count <= 1 else 780
     if cropped.width > safe_max_width:
         ratio = safe_max_width / float(cropped.width)
         safe_height = max(1, int(cropped.height * ratio))
