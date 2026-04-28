@@ -684,6 +684,84 @@ def main():
             json.dumps(cycle_stats['reasons'], ensure_ascii=False, sort_keys=True),
             interval_seconds,
         )
+
+        # Relatório para admin ao final de cada rodada
+        try:
+            admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
+            if admin_chat_id and cycle_stats['sent_users'] > 0:
+                # Consulta quem recebeu e quem não recebeu nesta rodada
+                conn_report = get_db()
+                try:
+                    report_lines = []
+                    report_lines.append(f"Relatorio da Rodada")
+                    report_lines.append(f"Duracao: {round(cycle_duration_ms / 1000)}s")
+                    report_lines.append(f"")
+                    report_lines.append(f"Total de usuarios: {cycle_stats['eligible_users']}")
+                    report_lines.append(f"Jobs criados: {cycle_stats['sent_users']}")
+                    report_lines.append(f"Ignorados: {cycle_stats['skipped_users']}")
+                    report_lines.append(f"Erros: {cycle_stats['errors']}")
+                    report_lines.append(f"")
+
+                    # Quem recebeu (jobs com done)
+                    received = conn_report.execute(sql("""
+                        SELECT DISTINCT bu.first_name
+                        FROM scan_jobs j
+                        JOIN bot_users bu ON bu.user_id = j.user_id
+                        WHERE j.job_type = 'scheduled'
+                          AND j.created_at >= ?
+                          AND j.status = 'done'
+                        ORDER BY bu.first_name
+                    """), (cycle_started_iso,)).fetchall()
+
+                    # Quem não recebeu (jobs com error, sem nenhum done)
+                    not_received = conn_report.execute(sql("""
+                        SELECT DISTINCT bu.first_name,
+                               COALESCE(j.error_message, 'erro') as erro
+                        FROM scan_jobs j
+                        JOIN bot_users bu ON bu.user_id = j.user_id
+                        WHERE j.job_type = 'scheduled'
+                          AND j.created_at >= ?
+                          AND j.status = 'error'
+                          AND j.user_id NOT IN (
+                              SELECT DISTINCT user_id FROM scan_jobs
+                              WHERE job_type = 'scheduled' AND status = 'done'
+                                AND created_at >= ?
+                          )
+                        ORDER BY bu.first_name
+                    """), (cycle_started_iso, cycle_started_iso)).fetchall()
+
+                    if received:
+                        report_lines.append("Receberam:")
+                        for r in received:
+                            report_lines.append(f"  {r['first_name'] or '---'}")
+                        report_lines.append(f"")
+
+                    if not_received:
+                        report_lines.append("Nao receberam:")
+                        for r in not_received:
+                            name = r['first_name'] or '---'
+                            erro = (r['erro'] or 'erro')[:60]
+                            report_lines.append(f"  {name} -> {erro}")
+                        report_lines.append(f"")
+
+                    # Motivos de ignorados
+                    reasons = cycle_stats.get('reasons', {})
+                    if reasons:
+                        report_lines.append("Ignorados por:")
+                        for motivo, qtd in sorted(reasons.items(), key=lambda x: -x[1]):
+                            report_lines.append(f"  {motivo}: {qtd}")
+
+                    loop.run_until_complete(_send_message(
+                        bot, admin_chat_id,
+                        '\n'.join(report_lines),
+                    ))
+                except Exception as exc:
+                    logger.warning('[bot-scheduler] erro ao gerar relatorio admin: %s', exc)
+                finally:
+                    conn_report.close()
+        except Exception as exc:
+            logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
+
         sleep_until_next_slot(interval_seconds)
 
 
