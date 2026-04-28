@@ -405,7 +405,7 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
     for i, line in enumerate(lines):
         # Método 1: "Reserve com [a] Vendor" — agência ou companhia via painel lateral
         m = re.search(
-            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|Companhia\s*a[ée]rea|$)",
+            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|$)",
             line, re.I
         )
         if m:
