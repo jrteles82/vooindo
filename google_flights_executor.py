@@ -543,6 +543,39 @@ def is_international_route(origin: str, dest: str) -> bool:
     return o not in _BR_AIRPORTS or d not in _BR_AIRPORTS
 
 
+def extract_vendor_from_body(body: str) -> str:
+    """Extrai o nome da companhia aérea do texto do card principal do Google Flights.
+    Procura por padrões como:
+        R$ 1.234
+        LATAM
+        Companhia aérea
+
+    Ou texto concatenado:
+        Aerolineas ArgentinasCompanhia aérea
+    """
+    lines = [ln.strip() for ln in (body or '').splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        if re.search(r'Companhia\s*a[ée]rea', line, re.I):
+            # Tenta extrair da própria linha (antes de "Companhia")
+            before = re.sub(r'Companhia\s*a[ée]rea.*', '', line, flags=re.I).strip()
+            before = re.sub(r'R\$[\s\d.,]+', '', before).strip()
+            if before and is_probable_airline_vendor(before):
+                return before
+            # Fallback: linha anterior
+            candidate = lines[i - 1] if i > 0 else ''
+            if candidate:
+                candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
+                if candidate and is_probable_airline_vendor(candidate):
+                    return candidate
+        # Padrão: nome em linha curta, logo acima de "Companhia" na linha seguinte
+        if i + 1 < len(lines) and re.search(r'Companhia\s*a[ée]rea', lines[i + 1], re.I):
+            candidate = line.strip()
+            candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
+            if candidate and is_probable_airline_vendor(candidate):
+                return candidate
+    return ''
+
+
 def is_probable_airline_vendor(vendor: str) -> bool:
     low = (vendor or '').strip().lower()
     if not low:
@@ -984,6 +1017,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 body = page.locator("body").inner_text(timeout=8000)
             except Exception:
                 body = ""
+            # Salva o body dos cards antes de tentar booking (antes do DOM mudar)
+            cards_body = body
+            # Log do body bruto para debug (primeiros 500 chars)
+            notes.append(f'cards_body_len={len(cards_body)}')
+            _debug = cards_body[:500].replace('\n', '\\n')
+            notes.append(f'cards_body_preview={_debug}')
             # Tenta extrair preços — se não encontrar, faz refresh e tenta de novo
             REFRESH_MAX_RETRIES = 3
             retry_count = 0
@@ -1072,6 +1111,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 best_agency_price = best_agency[1]
                 best_agency_visible_price = best_agency[2]
                 best_agency_url = best_agency[4]
+            # Se booking não retornou vendor, tenta extrair do card principal (antes do booking alterar DOM)
+            if not best_vendor and cards_body:
+                card_vendor = extract_vendor_from_body(cards_body)
+                if card_vendor:
+                    best_vendor = card_vendor
+                    notes.append(f'vendor_from_card={best_vendor}')
             # Propaga nome da companhia aérea para best_vendor quando disponível
             if not best_vendor and best_airline_vendor:
                 best_vendor = best_airline_vendor
