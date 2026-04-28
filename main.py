@@ -1133,19 +1133,19 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     def scaled5(value: int) -> int:
         return max(1, int(round(value * SCAN_IMAGE_SCALE * 3.6)))
 
-    # Fontes 20% menores
-    title_font = _load_font(scaled5(18), bold=True)
-    header_font = _load_font(scaled5(13), bold=True)
-    body_font = _load_font(scaled5(11), bold=False)
-    price_font = _load_font(scaled5(10))
-    small_font = _load_font(scaled5(9))
+    # Fontes reduzidas para máximo de compactação
+    title_font = _load_font(scaled5(13), bold=True)
+    header_font = _load_font(scaled5(9), bold=True)
+    body_font = _load_font(scaled5(8), bold=False)
+    price_font = _load_font(scaled5(7))
+    small_font = _load_font(scaled5(6))
 
-    padding_x = scaled5(8)
-    padding_y = scaled5(5)
-    row_h = scaled5(28)
-    section_h = scaled5(2)
-    title_h = scaled5(22)
-    meta_h = scaled5(14)
+    padding_x = scaled5(5)
+    padding_y = scaled5(3)
+    row_h = scaled5(20)
+    section_h = scaled5(1)
+    title_h = scaled5(16)
+    meta_h = scaled5(10)
     # Colunas mais equilibradas: Trecho, Data, Preço/Companhia
     col_widths = [scaled5(90), scaled5(75), scaled5(95)]
     headers = ["Trecho", "Data", "Preço / Companhia"]
@@ -1236,7 +1236,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         badge_bbox = draw.textbbox((0, 0), date_txt, font=small_font)
         badge_text_w = badge_bbox[2] - badge_bbox[0]
         badge_text_h = badge_bbox[3] - badge_bbox[1]
-        badge_h = scaled5(18)
+        badge_h = scaled5(13)
         badge_w = min(col_widths[1] - scaled5(8), badge_text_w + scaled5(12))
         date_x = date_col_x + max(0, (col_widths[1] - badge_w) / 2)
         badge_y = base_y + (draw_h - badge_h) / 2
@@ -1306,7 +1306,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     final_height = y + padding_y
     cropped = image.crop((0, 0, width, final_height))
 
-    safe_max_width = 780 if is_manual_user and row_count <= 1 else 840
+    safe_max_width = 620 if is_manual_user and row_count <= 1 else 680
     if cropped.width > safe_max_width:
         ratio = safe_max_width / float(cropped.width)
         safe_height = max(1, int(cropped.height * ratio))
