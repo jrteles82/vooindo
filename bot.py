@@ -3235,19 +3235,19 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running_count = int((running_now['c'] if isinstance(running_now, dict) else running_now[0]) or 0)
     replaced_existing = False
     if running_count > 0:
-        # Usa conexão separada com autocommit=1 e lock_wait_timeout curto pra evitar lock com workers
+        # Tenta cancelar jobs anteriores com timeout curto
         try:
-            cancel_conn = _new_lockfree_conn()
-            cancel_cur = cancel_conn.cursor()
-            cancel_cur.execute("SET SESSION lock_wait_timeout = 3")
-            cancel_cur.execute(
-                "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
-                (user_id,),
-            )
-            cancel_conn.close()
+            with conn.cursor() as cur:
+                cur.execute("SET SESSION lock_wait_timeout = 1")
+                cur.execute(
+                    "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
+                    (user_id,),
+                )
+            conn.commit()
             replaced_existing = True
         except Exception as exc:
             logger.warning('[agora] Erro ao cancelar jobs anteriores (concorrência): %s', exc)
+            conn.rollback()
 
     last_manual_row = conn.execute(
         sql("SELECT COALESCE(last_manual_sent_at, COALESCE(last_sent_at, '')) AS last_manual_sent_at FROM bot_settings WHERE user_id = ?"),

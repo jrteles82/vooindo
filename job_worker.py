@@ -197,53 +197,42 @@ def recover_stale_jobs(conn, running_timeout_minutes: int = 20, pending_timeout_
 
 
 def fetch_next_job(conn, pool='scheduled'):
-    recovered_running_ids, expired_pending_ids = recover_stale_jobs(conn)
-    if recovered_running_ids:
-        logger.warning('scan_jobs travados recuperados: %s', recovered_running_ids)
-    if expired_pending_ids:
-        logger.warning('scan_jobs pendentes expirados: %s', expired_pending_ids)
-
-    # Workers do pool 'scheduled' só pegam jobs agendados
-    # Workers do pool 'manual' só pegam jobs manuais (prioridade)
     if pool == 'manual':
         job_type_filter = "job_type IN ('manual_now', 'manual')"
     else:
         job_type_filter = "job_type = 'scheduled'"
 
-    # Usa UPDATE atômico sem FOR UPDATE para evitar lock longo.
-    # A subconsulta aninhada é necessária no MariaDB (não permite referenciar
-    # a mesma tabela em um subselect dentro de UPDATE).
-    now_str = now_expression()
+    # Garantir que não há transação pendente antes do UPDATE
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+    _now = now_expression()
     updated = conn.execute(
         sql(f"""
             UPDATE scan_jobs
-            SET status = 'running', started_at = {now_str}
-            WHERE id = (
-                SELECT id FROM (
-                    SELECT id
-                    FROM scan_jobs
-                    WHERE status = 'pending' AND {job_type_filter}
-                    ORDER BY cost_score ASC, id ASC
-                    LIMIT 1
-                ) AS sub
-            ) AND status = 'pending'
+            SET status = 'running', started_at = {_now}
+            WHERE status = 'pending' AND {job_type_filter}
+            ORDER BY cost_score ASC, id ASC
+            LIMIT 1
         """)
     )
     try:
         conn.commit()
-    except Exception as commit_err:
-        logger.warning("falha no commit do job capture: %s", commit_err)
+    except Exception as _ce:
+        logger.warning('fetch_next_job: commit falhou: %s', _ce)
         return None
     if getattr(updated, 'rowcount', 0) != 1:
+        # Lock wait timeout também cai aqui
         logger.info('nenhum job pendente disponível no pool %s', pool)
         return None
 
-    # Busca o job que acabou de ser setado como running
     row = conn.execute(
-        sql("SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1".format(job_type_filter=job_type_filter))
+        sql(f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1")
     ).fetchone()
     if not row:
-        logger.error('fetch_next_job: UPDATE succeeded but SELECT returned no row')
+        logger.error('fetch_next_job: capturou mas SELECT retornou None')
         return None
     return row
 
