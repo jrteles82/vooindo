@@ -689,18 +689,54 @@ def main():
         try:
             admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
             if admin_chat_id and cycle_stats['sent_users'] > 0:
-                # Consulta quem recebeu e quem não recebeu nesta rodada
                 conn_report = get_db()
                 try:
-                    report_lines = []
-                    report_lines.append(f"Relatorio da Rodada")
-                    report_lines.append(f"Duracao: {round(cycle_duration_ms / 1000)}s")
-                    report_lines.append(f"")
-                    report_lines.append(f"Total de usuarios: {cycle_stats['eligible_users']}")
-                    report_lines.append(f"Jobs criados: {cycle_stats['sent_users']}")
-                    report_lines.append(f"Ignorados: {cycle_stats['skipped_users']}")
-                    report_lines.append(f"Erros: {cycle_stats['errors']}")
-                    report_lines.append(f"")
+                    # Métricas de sistema
+                    try:
+                        import psutil as _psutil
+                        mem = _psutil.virtual_memory()
+                        cpu_pct = _psutil.cpu_percent(interval=0.5)
+                        load_avg = os.getloadavg()
+                        proc = _psutil.Process()
+                        proc_mem = proc.memory_info().rss / 1024 / 1024
+                    except Exception:
+                        mem = cpu_pct = proc_mem = None
+                        load_avg = (0, 0, 0)
+
+                    # Métricas de jobs da rodada
+                    job_stats = conn_report.execute(sql("""
+                        SELECT
+                          COUNT(*) AS total,
+                          SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+                          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
+                          ROUND(AVG(CASE WHEN finished_at IS NOT NULL AND started_at IS NOT NULL
+                              THEN (julianday(finished_at) - julianday(started_at)) * 86400 END), 1) AS avg_duration_s,
+                          ROUND(COALESCE(SUM(cost_score), 0), 0) AS total_cost
+                        FROM scan_jobs
+                        WHERE job_type = 'scheduled' AND created_at >= ?
+                    """), (cycle_started_iso,)).fetchone()
+
+                    # Duração detalhada por job
+                    job_durations = conn_report.execute(sql("""
+                        SELECT
+                          bu.first_name,
+                          ROUND((julianday(j.finished_at) - julianday(j.started_at)) * 86400, 1) AS dur_s,
+                          j.status,
+                          j.error_message
+                        FROM scan_jobs j
+                        JOIN bot_users bu ON bu.user_id = j.user_id
+                        WHERE j.job_type = 'scheduled' AND j.created_at >= ?
+                        ORDER BY j.finished_at - j.started_at DESC
+                        LIMIT 5
+                    """), (cycle_started_iso,)).fetchall()
+
+                    # Métricas de cache (price_cache)
+                    cache_stats = conn_report.execute(sql("""
+                        SELECT
+                          COUNT(*) AS total_cache,
+                          ROUND(AVG((julianday('now', 'localtime') - julianday(cached_at, 'unixepoch')) * 86400), 0) AS avg_age_s
+                        FROM price_cache
+                    """)).fetchone()
 
                     # Quem recebeu (jobs com done)
                     received = conn_report.execute(sql("""
@@ -713,7 +749,7 @@ def main():
                         ORDER BY bu.first_name
                     """), (cycle_started_iso,)).fetchall()
 
-                    # Quem não recebeu (jobs com error, sem nenhum done)
+                    # Quem não recebeu (jobs com error)
                     not_received = conn_report.execute(sql("""
                         SELECT DISTINCT bu.first_name,
                                COALESCE(j.error_message, 'erro') as erro
@@ -730,30 +766,66 @@ def main():
                         ORDER BY bu.first_name
                     """), (cycle_started_iso, cycle_started_iso)).fetchall()
 
-                    if received:
-                        report_lines.append("Receberam:")
-                        for r in received:
-                            report_lines.append(f"  {r['first_name'] or '---'}")
+                    report_lines = []
+                    report_lines.append(f"📊 RELATÓRIO DA RODADA — {cycle_finished_iso[:16]}")
+                    report_lines.append(f"")
+                    report_lines.append(f"⚙️ DESEMPENHO")
+                    report_lines.append(f"  ⏱ Duração: {round(cycle_duration_ms / 1000)}s | Média/job: {job_stats['avg_duration_s'] or '?'}s")
+                    report_lines.append(f"  🖥 CPU: {cpu_pct}% | RAM: {round(proc_mem, 0)}MB" if cpu_pct else '')
+                    report_lines.append(f"  📈 Load: {load_avg[0]:.1f} {load_avg[1]:.1f} {load_avg[2]:.1f}" if load_avg else '')
+                    if mem:
+                        report_lines.append(f"  💾 RAM Total: {round(mem.used/1024/1024, 0)}/{round(mem.total/1024/1024, 0)}GB ({mem.percent}%)")
+                    report_lines.append(f"" if any(l for l in report_lines if 'CPU' in l) else '')
+                    report_lines.append(f"📋 RESUMO")
+                    report_lines.append(f"  👥 Total usuários: {cycle_stats['eligible_users']}")
+                    report_lines.append(f"  ✅ Jobs concluídos: {job_stats['done'] or 0}")
+                    report_lines.append(f"  ❌ Jobs com erro: {job_stats['erro'] or 0}")
+                    report_lines.append(f"  ⏭ Ignorados: {cycle_stats['skipped_users']}")
+                    report_lines.append(f"  📦 Cache ativo: {cache_stats['total_cache'] or 0} registros")
+                    report_lines.append(f"")
+
+                    # Jobs mais lentos
+                    if job_durations:
+                        report_lines.append(f"🐌 JOBS MAIS LENTOS (top 5)")
+                        for jd in job_durations:
+                            name = jd['first_name'] or '---'
+                            dur = jd['dur_s'] or '?'
+                            err = f" -> {str(jd['error_message'] or '')[:50]}" if jd['status'] == 'error' else ''
+                            report_lines.append(f"  {name}: {dur}s{err}")
                         report_lines.append(f"")
 
+                    # Quem recebeu
+                    if received:
+                        names = ' | '.join(r['first_name'] or '---' for r in received)
+                        report_lines.append(f"✅ RECEBERAM ({len(received)})")
+                        report_lines.append(f"  {names}")
+                        report_lines.append(f"")
+
+                    # Quem não recebeu
                     if not_received:
-                        report_lines.append("Nao receberam:")
+                        report_lines.append(f"❌ NÃO RECEBERAM ({len(not_received)})")
                         for r in not_received:
                             name = r['first_name'] or '---'
-                            erro = (r['erro'] or 'erro')[:60]
-                            report_lines.append(f"  {name} -> {erro}")
+                            erro = (r['erro'] or 'erro').replace("'", "")[:80]
+                            report_lines.append(f"  {name}: {erro}")
                         report_lines.append(f"")
 
                     # Motivos de ignorados
                     reasons = cycle_stats.get('reasons', {})
                     if reasons:
-                        report_lines.append("Ignorados por:")
+                        report_lines.append(f"⏭ IGNORADOS")
                         for motivo, qtd in sorted(reasons.items(), key=lambda x: -x[1]):
-                            report_lines.append(f"  {motivo}: {qtd}")
+                            labels = {
+                                'alertas_desativados': 'Alertas desativados',
+                                'execucao_em_andamento': 'Execução em andamento',
+                                'cooldown': 'Cooldown',
+                                'manutencao': 'Modo manutenção',
+                            }
+                            report_lines.append(f"  {labels.get(motivo, motivo)}: {qtd}")
 
                     loop.run_until_complete(_send_message(
                         bot, admin_chat_id,
-                        '\n'.join(report_lines),
+                        '\n'.join(rl for rl in report_lines if rl),
                     ))
                 except Exception as exc:
                     logger.warning('[bot-scheduler] erro ao gerar relatorio admin: %s', exc)
