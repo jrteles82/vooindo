@@ -30,7 +30,7 @@ def get_earliest_auth_expiry():
         return None
     
     try:
-        conn = sqlite3.connect(f'file:{COOKIE_DB}?mode=ro', uri=True)
+        conn = sqlite3.connect(f'file:{COOKIE_DB}%smode=ro', uri=True)
         cursor = conn.cursor()
         rows = cursor.execute("""
             SELECT name, (expires_utc / 1000000 - 11644473600) as expires_unix
@@ -119,7 +119,7 @@ def main():
     
     result = get_earliest_auth_expiry()
     if result is None:
-        print(f"[watchdog] Não foi possível ler cookies. DB existe? {os.path.exists(COOKIE_DB)}")
+        print(f"[watchdog] Não foi possível ler cookies. DB existe%s {os.path.exists(COOKIE_DB)}")
         return
     
     earliest_ts, earliest_name = result

@@ -42,7 +42,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.job_type = 'scheduled' AND j.status = 'done'
-              AND j.finished_at >= ?
+              AND j.finished_at >= %s
             ORDER BY bu.first_name
         """), (today_iso,)).fetchall()
 
@@ -54,11 +54,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.job_type = 'scheduled' AND j.status = 'error'
-              AND j.finished_at >= ?
+              AND j.finished_at >= %s
               AND j.user_id NOT IN (
                   SELECT DISTINCT user_id FROM scan_jobs
                   WHERE job_type = 'scheduled' AND status = 'done'
-                    AND finished_at >= ?
+                    AND finished_at >= %s
               )
             GROUP BY j.user_id
             ORDER BY bu.first_name
@@ -170,7 +170,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         scan = last_cycle.get("scan", {})
         lines.append(f"  Duracao: {dur}min | Mem: {mem}MB | CPU: {cpu}%")
         if scan:
-            lines.append(f"  Elegiveis: {scan.get('eligible_users', '?')} | Enviados: {scan.get('sent_users', '?')} | Ignorados: {scan.get('skipped_users', '?')}")
+            lines.append(f"  Elegiveis: {scan.get('eligible_users', '%s')} | Enviados: {scan.get('sent_users', '%s')} | Ignorados: {scan.get('skipped_users', '%s')}")
         errs = last_cycle.get("errors", [])
         if errs:
             lines.append(f"  Alertas: {', '.join(errs[:3])}")

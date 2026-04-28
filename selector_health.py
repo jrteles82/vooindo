@@ -432,7 +432,7 @@ def run_health_check(url: str | None = None, dry_run: bool = False, approve_toke
         hl = os.getenv("GOOGLE_HL", "pt-BR")
         gl = os.getenv("GOOGLE_GL", "BR")
         curr = os.getenv("GOOGLE_CURR", "BRL")
-        url = f"{base}?q=GRU+to+GIG+{date_str}+one+way&hl={hl}&gl={gl}&curr={curr}"
+        url = f"{base}%sq=GRU+to+GIG+{date_str}+one+way&hl={hl}&gl={gl}&curr={curr}"
 
     logger.info("URL de teste: %s", url)
 

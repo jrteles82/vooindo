@@ -69,7 +69,7 @@ class Database:
                 sql("""
                     SELECT MIN(price) as min_p, AVG(price) as avg_p
                     FROM results
-                    WHERE origin = ? AND destination = ? AND outbound_date = ? AND inbound_date = ?
+                    WHERE origin = %s AND destination = %s AND outbound_date = %s AND inbound_date = %s
                       AND price IS NOT NULL AND price > 0
                 """),
                 (route.origin, route.destination, route.outbound_date, route.inbound_date or "")
@@ -78,7 +78,7 @@ class Database:
             last = self.conn.execute(
                 sql("""
                     SELECT price FROM results
-                    WHERE origin = ? AND destination = ? AND outbound_date = ? AND inbound_date = ?
+                    WHERE origin = %s AND destination = %s AND outbound_date = %s AND inbound_date = %s
                       AND price IS NOT NULL AND price > 0
                     ORDER BY id DESC LIMIT 1
                 """),
@@ -103,9 +103,9 @@ class Database:
                         price, currency, url, notes, price_band,
                         best_vendor, best_vendor_price, visible_card_price, booking_options_json
                     ) VALUES (
-                        {now_expression()}, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?
+                        {now_expression()}, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s
                     )
                 """),
                 (

@@ -47,7 +47,7 @@ def _resolve_airline_name(row: dict) -> str:
         try:
             conn = connect_db()
             row_db = conn.execute(
-                sql('SELECT name FROM airlines WHERE iata_code = ? AND is_active = 1'),
+                sql('SELECT name FROM airlines WHERE iata_code = %s AND is_active = 1'),
                 (cleaned.upper(),)
             ).fetchone()
             conn.close()
@@ -122,8 +122,8 @@ def _build_ai_prompt(rows: list[dict]) -> str:
     lines.append("ROTAS:")
 
     for i, row in enumerate(rows, 1):
-        origin = row.get('origin', '???').upper()
-        dest = row.get('destination', '???').upper()
+        origin = row.get('origin', '%s%s%s').upper()
+        dest = row.get('destination', '%s%s%s').upper()
         date = row.get('outbound_date', '')
         try:
             date_fmt = datetime.strptime(date, '%Y-%m-%d').strftime('%d/%m/%y')
@@ -240,8 +240,8 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
     # Monta a mensagem final no formato que o Teles pediu
     lines = ['🔗 Acesse os voos encontrados por companhia:\n']
     for i, row in enumerate(valid_rows):
-        origin = row.get('origin', '???').upper()
-        dest = row.get('destination', '???').upper()
+        origin = row.get('origin', '%s%s%s').upper()
+        dest = row.get('destination', '%s%s%s').upper()
         date = row.get('outbound_date', '')
         try:
             date_fmt = datetime.strptime(date, '%Y-%m-%d').strftime('%d/%m/%y')

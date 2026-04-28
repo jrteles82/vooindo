@@ -90,7 +90,7 @@ sync_base_session_to_worker_profiles(force=True, skip_in_use=False)
 import sqlite3
 cookies_db = SESSION_DIR / 'Default' / 'Cookies'
 if cookies_db.exists():
-    conn = sqlite3.connect(f'file:{cookies_db}?mode=ro', uri=True)
+    conn = sqlite3.connect(f'file:{cookies_db}%smode=ro', uri=True)
     c = conn.cursor()
     c.execute("SELECT name, host_key FROM cookies WHERE name IN ('SAPISID','SSID') AND host_key='.google.com'")
     cnt = len(c.fetchall())
