@@ -196,61 +196,84 @@ def recover_stale_jobs(conn, running_timeout_minutes: int = 20, pending_timeout_
     return recovered_running_ids, expired_pending_ids
 
 
+def _make_cap_conn():
+    """Cria uma conexão pymysql com autocommit=True e timeout curto.
+    Usada exclusivamente para capturar jobs (fetch_next_job) sem lock retido."""
+    import pymysql
+    from urllib.parse import urlparse
+    _url = os.environ.get('MYSQL_URL', '')
+    _parsed = urlparse(_url)
+    import pymysql.cursors
+    _c = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5, read_timeout=30,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+    _c.cursor().execute("SET SESSION lock_wait_timeout = 3")
+    return _c
+
+
 def fetch_next_job(conn, pool='scheduled'):
+    """Captura o próximo job pendente usando conexão separada com autocommit=True.
+    Isso garante que o UPDATE lock seja imediato e não conflite com outros workers ou o bot."""
     if pool == 'manual':
         job_type_filter = "job_type IN ('manual_now', 'manual')"
     else:
         job_type_filter = "job_type = 'scheduled'"
 
-    # Garantir que não há transação pendente antes do UPDATE
+    _cap = _make_cap_conn()
+    _cur = _cap.cursor()
     try:
-        conn.rollback()
-    except Exception:
-        pass
+        _now = now_expression()
+        _cur.execute(
+            f"""
+                UPDATE scan_jobs
+                SET status = 'running', started_at = {_now}
+                WHERE status = 'pending' AND {job_type_filter}
+                ORDER BY cost_score ASC, id ASC
+                LIMIT 1
+            """
+        )
+        if _cur.rowcount != 1:
+            logger.info('nenhum job pendente disponível no pool %s', pool)
+            return None
 
-    _now = now_expression()
-    updated = conn.execute(
-        sql(f"""
-            UPDATE scan_jobs
-            SET status = 'running', started_at = {_now}
-            WHERE status = 'pending' AND {job_type_filter}
-            ORDER BY cost_score ASC, id ASC
-            LIMIT 1
-        """)
-    )
-    try:
-        conn.commit()
-    except Exception as _ce:
-        logger.warning('fetch_next_job: commit falhou: %s', _ce)
-        return None
-    if getattr(updated, 'rowcount', 0) != 1:
-        # Lock wait timeout também cai aqui
-        logger.info('nenhum job pendente disponível no pool %s', pool)
-        return None
-
-    row = conn.execute(
-        sql(f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1")
-    ).fetchone()
-    if not row:
-        logger.error('fetch_next_job: capturou mas SELECT retornou None')
-        return None
-    return row
+        _cur.execute(
+            f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1"
+        )
+        _row = _cur.fetchone()
+        if not _row:
+            logger.error('fetch_next_job: capturou mas SELECT retornou None')
+            return None
+        return _row
+    finally:
+        _cap.close()
 
 
 def finish_job(conn, job_id: int):
-    conn.execute(
-        sql(f"UPDATE scan_jobs SET status = 'done', finished_at = {now_expression()} WHERE id = ?"),
-        (job_id,),
-    )
-    conn.commit()
+    """Marca job como done usando conexão separada autocommit."""
+    _cap = _make_cap_conn()
+    try:
+        _cap.cursor().execute(
+            f"UPDATE scan_jobs SET status = 'done', finished_at = {now_expression()} WHERE id = %s",
+            (job_id,),
+        )
+    finally:
+        _cap.close()
 
 
 def fail_job(conn, job_id: int, error_message: str):
-    conn.execute(
-        sql(f"UPDATE scan_jobs SET status = 'error', finished_at = {now_expression()}, error_message = ? WHERE id = ?"),
-        (error_message[:500], job_id),
-    )
-    conn.commit()
+    """Marca job como error usando conexão separada autocommit."""
+    _cap = _make_cap_conn()
+    try:
+        _cap.cursor().execute(
+            f"UPDATE scan_jobs SET status = 'error', finished_at = {now_expression()}, error_message = %s WHERE id = %s",
+            (error_message[:500], job_id),
+        )
+    finally:
+        _cap.close()
 
 
 def retry_job(conn, job_id: int) -> int:

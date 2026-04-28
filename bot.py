@@ -9,6 +9,9 @@ import uuid
 import requests
 import logging
 import unicodedata
+import pymysql
+import pymysql.cursors
+from urllib.parse import urlparse
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ForceReply, ReplyKeyboardRemove, Bot
 from telegram_bot_calendar import DetailedTelegramCalendar, LSTEP
@@ -3234,10 +3237,7 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Usa conexão separada com autocommit=True e timeout curto para operações em scan_jobs
     # Isso evita lock wait timeout com workers que estão processando a mesma tabela
     replaced_existing = False
-    import pymysql
-    from urllib.parse import urlparse
-    _url = os.environ.get('MYSQL_URL', '')
-    _parsed = urlparse(_url)
+    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
     _sconn = pymysql.connect(
         host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
         user=_parsed.username or 'vooindobot', password=_parsed.password or '',
@@ -3269,11 +3269,19 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    conn.execute(
-        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'manual_now', 'pending', ?, 0)"),
+    # INSERT do job manual em conexão separada com autocommit para evitar lock com workers
+    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
+    _ic = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5,
+    )
+    _ic.cursor().execute(
+        "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
         (user_id, chat_id, '{}'),
     )
-    conn.commit()
+    _ic.close()
 
     audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
                       payload={"trigger": "manual_now"})
