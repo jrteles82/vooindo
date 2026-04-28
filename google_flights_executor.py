@@ -101,6 +101,10 @@ def parse_price(text: str) -> float | None:
     return vals[0] if vals else None
 
 
+def _valid_price(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+
 def extract_section(text: str, start_label: str, end_label: str | None = None) -> str:
     if not text:
         return ""
@@ -683,7 +687,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             if _try_click_selecionar_voo():
                 notes.append(f"clicked_selecionar_voo_card_{idx}")
                 vendor, vendor_price, options = extract_booking_options(page, allow_agencies=True)
-        booking_price = vendor_price or card_price
+        booking_price = _valid_price(vendor_price) or _valid_price(card_price)
         _n_airline = sum(1 for o in options if o.get('is_airline'))
         _n_agency = sum(1 for o in options if not o.get('is_airline'))
         if options:
@@ -980,12 +984,49 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 body = page.locator("body").inner_text(timeout=8000)
             except Exception:
                 body = ""
-            main_prices = [p for p in parse_prices(extract_section(body, "Principais voos", "Outros voos")) if p >= 300]
-            other_prices = [p for p in parse_prices(extract_section(body, "Outros voos", "Mostrar mais voos")) if p >= 300]
-            summary_price = extract_summary_price(body)
-            main_min = min(main_prices) if main_prices else None
-            other_min = min(other_prices) if other_prices else None
-            overall_min = min(main_prices + other_prices) if (main_prices or other_prices) else None
+            # Tenta extrair preços — se não encontrar, faz refresh e tenta de novo
+            REFRESH_MAX_RETRIES = 3
+            retry_count = 0
+            overall_min = None
+            summary_price = None
+            while retry_count <= REFRESH_MAX_RETRIES:
+                body = page.locator("body").inner_text(timeout=8000)
+                main_prices = [p for p in parse_prices(extract_section(body, "Principais voos", "Outros voos")) if p >= 300]
+                other_prices = [p for p in parse_prices(extract_section(body, "Outros voos", "Mostrar mais voos")) if p >= 300]
+                current_summary = extract_summary_price(body)
+                main_min = min(main_prices) if main_prices else None
+                other_min = min(other_prices) if other_prices else None
+                current_overall = min(main_prices + other_prices) if (main_prices or other_prices) else None
+                if current_overall is not None or current_summary is not None:
+                    summary_price = current_summary
+                    overall_min = current_overall
+                    notes.append(f'price_retry_{retry_count}_found=True')
+                    break
+                retry_count += 1
+                if retry_count <= REFRESH_MAX_RETRIES:
+                    notes.append(f'price_retry_{retry_count}_sem_preco=True')
+                    page.reload(wait_until='domcontentloaded')
+                    time.sleep(2)
+                    wait_for_results(page)
+                    try_click_result_tab(page, notes)
+                    expand_results(page, notes, is_international=is_intl)
+            if overall_min is None and summary_price is None:
+                # Mesmo após retries, sem preço — varre HTML bruto por qualquer menção de valor
+                # pra tentar extrair algo que o seletor de sessão não pegou
+                try:
+                    body = page.locator("body").inner_text(timeout=8000)
+                except Exception:
+                    body = ""
+                # Tenta qualquer padrão de preço no body inteiro
+                all_prices = [p for p in parse_prices(body) if p >= 300]
+                if all_prices:
+                    overall_min = min(all_prices)
+                    notes.append(f'price_fallback_body_parse_min={overall_min}')
+                    if not summary_price:
+                        summary_price = overall_min
+                else:
+                    notes.append('price_fallback_body_parse_sem_preco=True')
+
             booking_followed = False
             best_vendor = ""
             best_vendor_price = None
@@ -1001,6 +1042,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency = maybe_open_booking(page, summary_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
                 booking_followed = followed
 
+            best_vendor_price = _valid_price(best_vendor_price)
+            visible_card_price = _valid_price(visible_card_price)
+            summary_price = _valid_price(summary_price)
+            overall_min = _valid_price(overall_min)
+            main_min = _valid_price(main_min)
+            other_min = _valid_price(other_min)
             final_price = None
             if best_vendor_price is not None and best_vendor:
                 final_price = best_vendor_price

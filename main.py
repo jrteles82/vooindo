@@ -39,9 +39,14 @@ def parse_price_brl(text: str) -> float:
         return 0.0
 
 def classify_price(price: float | None, min_price: float | None, average: float | None) -> str:
-    if not min_price or price is None: return "⚪️"
-    if price <= min_price: return "🟢"
-    if price <= average: return "🟡"
+    if price is None:
+        return "⚪️"
+    if not isinstance(min_price, (int, float)) or min_price <= 0:
+        return "⚪️"
+    if price <= min_price:
+        return "🟢"
+    if isinstance(average, (int, float)) and price <= average:
+        return "🟡"
     return "🔴"
 
 logger = get_logger('main')
@@ -972,7 +977,7 @@ def _price_vendor_display(row: dict) -> str:
     display_price = row.get("best_vendor_price")
     if not isinstance(display_price, (int, float)):
         display_price = row.get("price")
-    price_text = format_brl(display_price) if isinstance(display_price, (int, float)) else "sem preço"
+    price_text = format_brl(display_price) if isinstance(display_price, (int, float)) else "ainda sem"
 
     vendor = (row.get("best_vendor") or "").strip()
     booking_options = _load_booking_options(row)

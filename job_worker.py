@@ -606,7 +606,13 @@ def process_job(conn, bot: Bot, loop, job):
         raise RuntimeError('cancelled_by_new_request')
 
     if not filtered:
-        mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
+        price_filtered_out = bool(expanded) and not filtered_price and max_price is not None
+        if price_filtered_out:
+            mensagem = f'⚠️ Encontramos voos, mas todos ficaram acima do seu teto atual de R$ {max_price:,.0f}.'.replace(',', '.')
+            error_msg = 'Consulta acima do teto configurado'
+        else:
+            mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
+            error_msg = 'Consulta sem resultados filtrados'
         loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
@@ -614,7 +620,13 @@ def process_job(conn, bot: Bot, loop, job):
                 (chat_id,)
             )
             conn.commit()
-        raise RuntimeError('Consulta sem resultados filtrados')
+        raise RuntimeError(error_msg)
+
+    if not _rows_have_displayable_result(filtered):
+        mensagem = '⚠️ Encontramos a rota, mas sem preço ou link confiável no momento. Tente novamente em alguns minutos.'
+        loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
+        logger.warning('[job-worker] job_id=%s | resultados sem preço/link utilizável após filtros', job_id)
+        raise RuntimeError('Consulta sem preço ou link confiável')
 
     split_blocks = should_split
     is_scheduled_job = str(job.get('job_type') or '').strip().lower() == 'scheduled'
@@ -626,26 +638,42 @@ def process_job(conn, bot: Bot, loop, job):
     else:
         image_path = build_scan_results_image(filtered, trigger=image_trigger)
     if not image_path:
-        raise RuntimeError('Falha ao gerar print da consulta')
+        logger.warning('[job-worker] job_id=%s | imagem não gerada, usando fallback por texto', job_id)
+        fallback_msg = build_booking_links_message(filtered)
+        if fallback_msg:
+            _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
+            image_path = None
+        else:
+            raise RuntimeError('Falha ao gerar print da consulta')
     try:
         if is_job_cancelled(conn, job_id):
             raise RuntimeError('cancelled_by_new_request')
-        logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
-        send_photo(bot, loop, chat_id, image_path)
+        if image_path:
+            logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
+            send_photo(bot, loop, chat_id, image_path)
         # Mensagem IA + links inline
         try:
             ai_msg = generate_ai_message(filtered)
             if ai_msg:
                 _send_links_message(bot, loop, chat_id, ai_msg, main_menu_markup())
             else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                links_msg = build_booking_links_message(filtered)
+                if links_msg:
+                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                else:
+                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
         except Exception:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+            links_msg = build_booking_links_message(filtered)
+            if links_msg:
+                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+            else:
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
     finally:
-        try:
-            os.remove(image_path)
-        except OSError:
-            pass
+        if image_path:
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
     logger.info('[job-worker] job_id=%s | envio concluído | atualizando last_sent', job_id)
     if is_scheduled_job:
         try:
@@ -675,6 +703,17 @@ def process_job(conn, bot: Bot, loop, job):
 def _is_chat_not_found(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return 'chat not found' in msg or 'forbidden' in msg or 'bot was blocked' in msg or 'user is deactivated' in msg
+
+
+def _rows_have_displayable_result(rows: list[dict]) -> bool:
+    for row in rows:
+        if isinstance(row.get('price'), (int, float)):
+            return True
+        if isinstance(row.get('best_vendor_price'), (int, float)):
+            return True
+        if str(row.get('booking_url') or row.get('url') or '').strip():
+            return True
+    return False
 
 
 def _mark_user_blocked(conn, chat_id: str) -> None:
@@ -765,6 +804,8 @@ def main():
                     'sessao_google_invalida_aguardando_renovacao',
                     'Usuário sem rotas ativas',
                     'Consulta sem resultados filtrados',
+                    'Consulta acima do teto configurado',
+                    'Consulta sem preço ou link confiável',
                     'usuario_bloqueado',
                     'bloqueado_por_monetizacao',
                     'cancelled_by_new_request',

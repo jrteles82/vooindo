@@ -338,10 +338,15 @@ def _update_daily_summary(record: dict):
             'max_memory_mb': 0,
             'avg_cpu': 0,
             'total_errors': [],
-            'total_solutions': set(),
-            'total_improvements': set(),
+            'total_solutions': [],
+            'total_improvements': [],
             'results_added': 0,
         }
+
+    # Garantir que campos usados como lista existam (resumo de dias anteriores pode ter sido salvo com tipos diferentes)
+    for key in ('total_solutions', 'total_improvements'):
+        if key not in summary or not isinstance(summary[key], list):
+            summary[key] = []
 
     summary['cycles'] += 1
     summary['total_duration_minutes'] += record.get('duration_minutes', 0)
@@ -353,15 +358,14 @@ def _update_daily_summary(record: dict):
     summary['avg_cpu'] = (prev_avg * prev_count + record.get('cpu_percent', 0)) / summary['cycles']
 
     summary['total_errors'].extend(record.get('errors', []))
-    summary['total_solutions'].update(record.get('solutions', []))
-    summary['total_improvements'].update(record.get('improvements', []))
+    summary['total_solutions'] = list(set(summary.get('total_solutions', [])) | set(record.get('solutions', [])))
+    summary['total_improvements'] = list(set(summary.get('total_improvements', [])) | set(record.get('improvements', [])))
 
     results = record.get('results', {})
     summary['results_added'] += results.get('today_results', 0)
 
     # Converte sets para listas para JSON
-    summary['total_solutions'] = list(summary['total_solutions'])
-    summary['total_improvements'] = list(summary['total_improvements'])
+    # Garantir que sejam listas serializáveis (já foram convertidas acima)
 
     with open(_SUMMARY_LOG, 'w') as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
