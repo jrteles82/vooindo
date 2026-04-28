@@ -1146,8 +1146,8 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     section_h = scaled5(1)
     title_h = scaled5(16)
     meta_h = scaled5(10)
-    # Colunas mais equilibradas: Trecho, Data, Preço/Companhia
-    col_widths = [scaled5(90), scaled5(75), scaled5(95)]
+    # Colunas mais estreitas para caber no mobile sem cortar
+    col_widths = [scaled5(65), scaled5(55), scaled5(70)]
     headers = ["Trecho", "Data", "Preço / Companhia"]
 
     split_combined = False
@@ -1306,7 +1306,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     final_height = y + padding_y
     cropped = image.crop((0, 0, width, final_height))
 
-    safe_max_width = 720 if is_manual_user and row_count <= 1 else 780
+    safe_max_width = 520 if is_manual_user and row_count <= 1 else 560
     if cropped.width > safe_max_width:
         ratio = safe_max_width / float(cropped.width)
         safe_height = max(1, int(cropped.height * ratio))
