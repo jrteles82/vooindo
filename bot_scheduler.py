@@ -214,7 +214,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
         loop.run_until_complete(_send_message(bot, chat_id, '⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
-                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
                 (chat_id,)
             )
             conn.commit()
@@ -451,7 +451,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
         loop.run_until_complete(_send_message(bot, chat_id, '⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
-                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
                 (chat_id,)
             )
             conn.commit()
@@ -494,7 +494,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
                 pass
     if charge_now:
         conn.execute(
-            sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+            sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
             (chat_id,)
         )
         conn.commit()
@@ -518,7 +518,7 @@ def _is_chat_not_found(exc: Exception) -> bool:
 
 
 def _mark_user_blocked(conn, chat_id: str) -> None:
-    conn.execute(sql("UPDATE bot_users SET blocked = 1 WHERE chat_id = ?"), (chat_id,))
+    conn.execute(sql("UPDATE bot_users SET blocked = 1 WHERE chat_id = %s"), (chat_id,))
     conn.commit()
     logger.warning('[bot-scheduler] chat_id=%s marcado como bloqueado (Chat not found)', chat_id)
     audit.system("usuario_bloqueado_automatico", chat_id=chat_id, status="blocked",
@@ -670,7 +670,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         lines.append('📋 RESUMO')
         lines.append(f"  👥 Elegíveis: {cycle_stats.get('eligible_users', 0)}")
         lines.append(f"  📦 Jobs: {job_stats['total'] or 0} | ✅ {job_stats['done'] or 0} | ❌ {job_stats['erro'] or 0} | 🏃 {job_stats['running'] or 0} | 🕒 {job_stats['pending'] or 0}")
-        lines.append(f"  ⏲ Média/job: {job_stats['avg_duration_s'] or '?'}s | Custo total: {job_stats['total_cost'] or 0}")
+        lines.append(f"  ⏲ Média/job: {job_stats['avg_duration_s'] or '%s'}s | Custo total: {job_stats['total_cost'] or 0}")
         if reasons:
             ignored = ', '.join(f"{k}={v}" for k, v in sorted(reasons.items(), key=lambda x: -x[1]))
             lines.append(f"  ⏭ Ignorados: {ignored}")
@@ -692,7 +692,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             lines.append('🐌 TEMPOS (top 10)')
             for jd in job_durations:
                 name = jd['first_name'] or '---'
-                dur = jd['dur_s'] if jd['dur_s'] is not None else '?'
+                dur = jd['dur_s'] if jd['dur_s'] is not None else '%s'
                 suffix = f" | {(jd['error_message'] or '')[:50]}" if jd['status'] == 'error' else ''
                 lines.append(f"  {name}: {dur}s | {jd['status']}{suffix}")
 
@@ -821,7 +821,7 @@ def main():
                         continue
                     # Pular usuários sem rotas ativas
                     route_count_row = conn.execute(
-                        sql("SELECT COUNT(*) AS c FROM user_routes WHERE user_id = ? AND active = 1"),
+                        sql("SELECT COUNT(*) AS c FROM user_routes WHERE user_id = %s AND active = 1"),
                         (int(user['user_id']),),
                     ).fetchone()
                     route_count = int((route_count_row['c'] if isinstance(route_count_row, dict) else route_count_row[0]) or 0)
@@ -832,7 +832,7 @@ def main():
                         continue
                     user_cooldown_seconds = 30 * 60
                     running_row = conn.execute(
-                        sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = ? AND status IN ('pending', 'running')"),
+                        sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = %s AND status IN ('pending', 'running')"),
                         (int(user['user_id']),),
                     ).fetchone()
                     running_count = int((running_row['c'] if isinstance(running_row, dict) else running_row[0]) or 0)
@@ -862,13 +862,13 @@ def main():
                     user_id = int(user['user_id'])
                     # Calcular custo (quantidade de rotas) para balanceamento inteligente
                     routes_row = conn.execute(
-                        sql("SELECT COUNT(*) as c FROM user_routes WHERE user_id = ? AND active = 1"),
+                        sql("SELECT COUNT(*) as c FROM user_routes WHERE user_id = %s AND active = 1"),
                         (user_id,)
                     ).fetchone()
                     cost = int((routes_row['c'] if isinstance(routes_row, dict) else routes_row[0]) or 1)
 
                     insert_result = conn.execute(
-                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'scheduled', 'pending', ?, ?)"),
+                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'scheduled', 'pending', %s, %s)"),
                         (user_id, chat_id, json.dumps({'round_started_at': cycle_started_iso}, ensure_ascii=False), cost),
                     )
                     conn.commit()

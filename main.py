@@ -336,7 +336,7 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
             sql(
                 """
                 DELETE FROM user_routes
-                WHERE user_id = ?
+                WHERE user_id = %s
                   AND active = 1
                   AND date(outbound_date) < date('now', 'localtime')
                 """
@@ -349,7 +349,7 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
             """
             SELECT origin, destination, outbound_date, inbound_date
             FROM user_routes
-            WHERE user_id = ? AND active = 1
+            WHERE user_id = %s AND active = 1
             ORDER BY id ASC
             """
         ),
@@ -677,7 +677,7 @@ def run_full_scan(on_row=None):
 
 def _create_user_run(conn, user_id: int, trigger: str = "manual-user") -> int:
     cur = conn.execute(
-        sql("INSERT INTO user_runs (user_id, started_at, status, summary, run_trigger) VALUES (?, ?, ?, ?, ?)"),
+        sql("INSERT INTO user_runs (user_id, started_at, status, summary, run_trigger) VALUES (%s, %s, %s, %s, %s)"),
         (user_id, now_local_iso(sep="T"), "running", "", trigger),
     )
     conn.commit()
@@ -687,7 +687,7 @@ def _create_user_run(conn, user_id: int, trigger: str = "manual-user") -> int:
 def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
     try:
         conn.execute(
-            sql("UPDATE user_runs SET finished_at = ?, status = ?, summary = ? WHERE id = ?"),
+            sql("UPDATE user_runs SET finished_at = %s, status = %s, summary = %s WHERE id = %s"),
             (now_local_iso(sep="T"), status, summary, run_id),
         )
         conn.commit()
@@ -698,7 +698,7 @@ def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
     retry_conn = get_db_connection(auth_db_path())
     try:
         retry_conn.execute(
-            sql("UPDATE user_runs SET finished_at = ?, status = ?, summary = ? WHERE id = ?"),
+            sql("UPDATE user_runs SET finished_at = %s, status = %s, summary = %s WHERE id = %s"),
             (now_local_iso(sep="T"), status, summary, run_id),
         )
         retry_conn.commit()
@@ -728,7 +728,7 @@ def _user_has_running_scan(conn, user_id: int) -> bool:
             """
             SELECT 1
             FROM user_runs
-            WHERE user_id = ? AND status = 'running'
+            WHERE user_id = %s AND status = 'running'
             ORDER BY id DESC
             LIMIT 1
             """
@@ -769,14 +769,14 @@ def _cleanup_stale_running_user_runs(conn, stale_minutes: int = 5) -> int:
 
     if not stale_ids:
         return 0
-    placeholders = ",".join("?" for _ in stale_ids)
+    placeholders = ",".join("%s" for _ in stale_ids)
     conn.execute(
         sql(
             f"""
             UPDATE user_runs
             SET status = 'error',
                 summary = 'encerrado automaticamente: execução travada',
-                finished_at = ?
+                finished_at = %s
             WHERE id IN ({placeholders})
             """
         ),
@@ -795,7 +795,7 @@ def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = Tru
             summary = "sem rotas ativas"
             _finish_user_run(conn, run_id, "ok", summary)
             return {"status": "ok", "summary": summary, "parsed": []}
-        settings = conn.execute(sql("SELECT COALESCE(enable_google_flights, 1) AS enable_google_flights, COALESCE(airline_filters_json, '') AS airline_filters_json FROM bot_settings WHERE user_id = ?"), (user_id,)).fetchone()
+        settings = conn.execute(sql("SELECT COALESCE(enable_google_flights, 1) AS enable_google_flights, COALESCE(airline_filters_json, '') AS airline_filters_json FROM bot_settings WHERE user_id = %s"), (user_id,)).fetchone()
         parsed = run_scan_for_routes(
             routes,
             sources={
@@ -1020,7 +1020,7 @@ def _price_vendor_display(row: dict) -> str:
     if _is_generic_vendor(vendor):
         import re as _re
         notes = (row.get('notes') or '')
-        notes_match = _re.search(r'^([A-Z][a-zA-ZÀ-ÿ]+(?: [A-Z][a-zA-ZÀ-ÿ]+)*)', notes)
+        notes_match = _re.search(r'^([A-Z][a-zA-ZÀ-ÿ]+(%s: [A-Z][a-zA-ZÀ-ÿ]+)*)', notes)
         if notes_match:
             candidate = notes_match.group(1).strip()
             if not _is_generic_vendor(candidate):
@@ -1088,14 +1088,14 @@ def _get_last_sent_at_for_user(conn, user_id: int, send_type: str | None = None)
         column = 'last_scheduled_sent_at'
     try:
         row = conn.execute(
-            sql(f"SELECT COALESCE({column}, COALESCE({fallback}, '')) AS last_sent_at FROM bot_settings WHERE user_id = ?"),
+            sql(f"SELECT COALESCE({column}, COALESCE({fallback}, '')) AS last_sent_at FROM bot_settings WHERE user_id = %s"),
             (user_id,),
         ).fetchone()
     except Exception as exc:
         if is_missing_column_error(exc):
             try:
                 row = conn.execute(
-                    sql("SELECT COALESCE(last_sent_at, '') AS last_sent_at FROM bot_settings WHERE user_id = ?"),
+                    sql("SELECT COALESCE(last_sent_at, '') AS last_sent_at FROM bot_settings WHERE user_id = %s"),
                     (user_id,),
                 ).fetchone()
             except Exception as inner_exc:
@@ -1111,7 +1111,7 @@ def _get_last_sent_at_for_user(conn, user_id: int, send_type: str | None = None)
 
 def _has_user_running_scan(conn, user_id: int) -> bool:
     row = conn.execute(
-        sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = ? AND status IN ('pending', 'running')"),
+        sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = %s AND status IN ('pending', 'running')"),
         (user_id,),
     ).fetchone()
     count = int((row['c'] if isinstance(row, dict) else row[0]) or 0)
@@ -1135,7 +1135,7 @@ def _mark_last_sent_now_for_user(conn, user_id: int, send_type: str | None = Non
     try:
         conn.execute(
             sql(
-                f"INSERT INTO bot_settings ({columns}) VALUES ({', '.join(['?'] * len(values))})"
+                f"INSERT INTO bot_settings ({columns}) VALUES ({', '.join(['%s'] * len(values))})"
                 f" ON DUPLICATE KEY UPDATE {update_part}"
             ),
             values,
@@ -1480,7 +1480,7 @@ def send_user_telegram_message(
     conn = get_db_connection(auth_db_path())
     try:
         row = conn.execute(
-            sql("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = ?"),
+            sql("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = %s"),
             (user_id,),
         ).fetchone()
         if not row:

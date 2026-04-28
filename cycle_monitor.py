@@ -243,9 +243,9 @@ def record_cycle_end(cycle_metrics: dict, scan_results: dict = None):
         '[cycle_monitor] Ciclo completo | duracao=%.1fs | memoria=%.1fMB | cpu=%.1f%% | '
         'resultados=%s | usuarios_ativos=%s | rotas=%s | erros=%s',
         duration_seconds, mem_mb, cpu,
-        results_count.get('today_results', '?'),
-        users_count.get('active_users', '?'),
-        routes_count.get('active_routes', '?'),
+        results_count.get('today_results', '%s'),
+        users_count.get('active_users', '%s'),
+        routes_count.get('active_routes', '%s'),
         len(record.get('errors', [])),
     )
 

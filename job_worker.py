@@ -73,7 +73,7 @@ def _return_current_job_to_queue():
         conn = connect_db()
         # Pega info do job antes de modificar
         job_info = conn.execute(
-            sql("SELECT id, user_id, chat_id, job_type, COALESCE(retry_count, 0) as retry_count FROM scan_jobs WHERE id = ?"),
+            sql("SELECT id, user_id, chat_id, job_type, COALESCE(retry_count, 0) as retry_count FROM scan_jobs WHERE id = %s"),
             (job_id,),
         ).fetchone()
 
@@ -85,7 +85,7 @@ def _return_current_job_to_queue():
             if is_manual and retry_count >= 2:
                 # Já tentou uma vez, agora falha e avisa o usuário
                 conn.execute(
-                    sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'consulta_interrompida_restart' WHERE id = ?"),
+                    sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'consulta_interrompida_restart' WHERE id = %s"),
                     (job_id,),
                 )
                 conn.commit()
@@ -105,14 +105,14 @@ def _return_current_job_to_queue():
             else:
                 # Devolve para fila para tentar novamente
                 conn.execute(
-                    sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = ? WHERE id = ? AND status = 'running'"),
+                    sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = %s WHERE id = %s AND status = 'running'"),
                     (retry_count, job_id),
                 )
                 conn.commit()
                 logger.info('[job-worker] job %s devolvido para fila (retry_count=%s)', job_id, retry_count)
         else:
             conn.execute(
-                sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ? AND status = 'running'"),
+                sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1 WHERE id = %s AND status = 'running'"),
                 (job_id,),
             )
             conn.commit()
@@ -278,16 +278,16 @@ def fail_job(conn, job_id: int, error_message: str):
 
 def retry_job(conn, job_id: int) -> int:
     conn.execute(
-        sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, error_message = NULL, retry_count = retry_count + 1 WHERE id = ?"),
+        sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, error_message = NULL, retry_count = retry_count + 1 WHERE id = %s"),
         (job_id,),
     )
     conn.commit()
-    row = conn.execute(sql("SELECT retry_count FROM scan_jobs WHERE id = ?"), (job_id,)).fetchone()
+    row = conn.execute(sql("SELECT retry_count FROM scan_jobs WHERE id = %s"), (job_id,)).fetchone()
     return int(row['retry_count'] if isinstance(row, dict) else row[0])
 
 
 def is_job_cancelled(conn, job_id: int) -> bool:
-    row = conn.execute(sql("SELECT status, COALESCE(error_message, '') AS error_message FROM scan_jobs WHERE id = ?"), (job_id,)).fetchone()
+    row = conn.execute(sql("SELECT status, COALESCE(error_message, '') AS error_message FROM scan_jobs WHERE id = %s"), (job_id,)).fetchone()
     if not row:
         return True
     status = str(row['status'] if isinstance(row, dict) else row[0] or '')
@@ -311,7 +311,7 @@ def get_user_settings(conn, user_id: int):
                COALESCE(last_sent_at, '') AS last_sent_at,
                COALESCE(airline_filters_json, '') AS airline_filters_json
         FROM bot_settings
-        WHERE user_id = ?
+        WHERE user_id = %s
         '''),
         (user_id,),
     ).fetchone()
@@ -549,7 +549,7 @@ def process_job(conn, bot: Bot, loop, job):
                  payload={"job_id": job['id'], "job_type": job['job_type']})
 
     blocked_row = conn.execute(
-        sql('SELECT blocked FROM bot_users WHERE user_id = ?'), (user_id,)
+        sql('SELECT blocked FROM bot_users WHERE user_id = %s'), (user_id,)
     ).fetchone()
     if blocked_row and int((blocked_row['blocked'] if isinstance(blocked_row, dict) else blocked_row[0]) or 0):
         raise RuntimeError('usuario_bloqueado')
@@ -627,7 +627,7 @@ def process_job(conn, bot: Bot, loop, job):
         loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
-                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
                 (chat_id,)
             )
             conn.commit()
@@ -698,7 +698,7 @@ def process_job(conn, bot: Bot, loop, job):
             mark_sent(conn, user_id)
     if charge_now:
         conn.execute(
-            sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+            sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
             (chat_id,)
         )
         conn.commit()
@@ -728,7 +728,7 @@ def _rows_have_displayable_result(rows: list[dict]) -> bool:
 
 
 def _mark_user_blocked(conn, chat_id: str) -> None:
-    conn.execute(sql("UPDATE bot_users SET blocked = 1 WHERE chat_id = ?"), (chat_id,))
+    conn.execute(sql("UPDATE bot_users SET blocked = 1 WHERE chat_id = %s"), (chat_id,))
     conn.commit()
     logger.warning('[job-worker] chat_id=%s marcado como bloqueado (Chat not found)', chat_id)
     audit.system("usuario_bloqueado_automatico", chat_id=chat_id, status="blocked",

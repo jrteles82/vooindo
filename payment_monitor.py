@@ -63,17 +63,17 @@ def add_days_to_expiration(current_expiration: str | None, days: int) -> str:
 def ensure_user_access(conn, chat_id: str):
     conn.execute(
         sql(f'''
-        {insert_ignore_sql('user_access', ['chat_id', 'status', 'free_uses', 'test_charge', 'total_paid', 'updated_at'], f"?, 'free', 0, 0, 0, {now_expression()}")}
+        {insert_ignore_sql('user_access', ['chat_id', 'status', 'free_uses', 'test_charge', 'total_paid', 'updated_at'], f"%s, 'free', 0, 0, 0, {now_expression()}")}
         '''),
         (chat_id,)
     )
     conn.commit()
-    return conn.execute(sql('SELECT * FROM user_access WHERE chat_id = ?'), (chat_id,)).fetchone()
+    return conn.execute(sql('SELECT * FROM user_access WHERE chat_id = %s'), (chat_id,)).fetchone()
 
 
 def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     row = conn.execute(
-        sql('SELECT mp_payment_id, chat_id, plan_name, amount, status FROM payments WHERE mp_payment_id = ?'),
+        sql('SELECT mp_payment_id, chat_id, plan_name, amount, status FROM payments WHERE mp_payment_id = %s'),
         (payment_id,)
     ).fetchone()
     if not row:
@@ -83,7 +83,7 @@ def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     status = payment.get('status', row['status'])
     approved_at = payment.get('date_approved')
     conn.execute(
-        sql('UPDATE payments SET status = ?, approved_at = COALESCE(?, approved_at) WHERE mp_payment_id = ?'),
+        sql('UPDATE payments SET status = %s, approved_at = COALESCE(%s, approved_at) WHERE mp_payment_id = %s'),
         (status, approved_at, payment_id)
     )
 
@@ -100,15 +100,15 @@ def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     conn.execute(
         sql(f'''
         UPDATE user_access
-        SET status = ?, expires_at = ?, free_uses = 0, total_paid = COALESCE(total_paid, 0) + ?, updated_at = {now_expression()}
-        WHERE chat_id = ?
+        SET status = %s, expires_at = %s, free_uses = 0, total_paid = COALESCE(total_paid, 0) + %s, updated_at = {now_expression()}
+        WHERE chat_id = %s
         '''),
         ('active', expires_at, float(row['amount'] or 0), chat_id)
     )
-    bot_user = conn.execute(sql('SELECT user_id FROM bot_users WHERE chat_id = ?'), (chat_id,)).fetchone()
+    bot_user = conn.execute(sql('SELECT user_id FROM bot_users WHERE chat_id = %s'), (chat_id,)).fetchone()
     if bot_user:
         conn.execute(
-            sql(f"UPDATE bot_settings SET alerts_enabled = 1, updated_at = {now_expression()} WHERE user_id = ?"),
+            sql(f"UPDATE bot_settings SET alerts_enabled = 1, updated_at = {now_expression()} WHERE user_id = %s"),
             (int(bot_user['user_id']),),
         )
     conn.commit()

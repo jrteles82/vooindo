@@ -255,7 +255,7 @@ def ensure_policy_schema(conn) -> None:
                         raise
             conn.execute(
                 sql(f"""
-                {insert_ignore_sql('monetization_settings', ['id', 'test_mode', 'charge_global', 'charge_admin_only', 'weekly_price', 'biweekly_price', 'monthly_price', 'free_uses_limit', 'max_routes_default', 'pix_pending_expiration_hours'], '1, 1, 0, 1, 5, 10, 15, ?, ?, ?')}
+                {insert_ignore_sql('monetization_settings', ['id', 'test_mode', 'charge_global', 'charge_admin_only', 'weekly_price', 'biweekly_price', 'monthly_price', 'free_uses_limit', 'max_routes_default', 'pix_pending_expiration_hours'], '1, 1, 0, 1, 5, 10, 15, %s, %s, %s')}
                 """),
                 (
                     DEFAULT_FREE_USES_LIMIT,
@@ -266,9 +266,9 @@ def ensure_policy_schema(conn) -> None:
             conn.execute(
                 sql("""
                 UPDATE monetization_settings
-                SET free_uses_limit = COALESCE(free_uses_limit, ?),
-                    max_routes_default = COALESCE(max_routes_default, ?),
-                    pix_pending_expiration_hours = COALESCE(pix_pending_expiration_hours, ?)
+                SET free_uses_limit = COALESCE(free_uses_limit, %s),
+                    max_routes_default = COALESCE(max_routes_default, %s),
+                    pix_pending_expiration_hours = COALESCE(pix_pending_expiration_hours, %s)
                 WHERE id = 1
                 """),
                 (
@@ -280,13 +280,13 @@ def ensure_policy_schema(conn) -> None:
             admins_count = conn.execute(sql("SELECT COUNT(*) AS total FROM admins")).fetchone()["total"]
             if int(admins_count or 0) == 0:
                 conn.execute(
-                    sql("INSERT INTO admins (chat_id, active) VALUES (?, 1)"),
+                    sql("INSERT INTO admins (chat_id, active) VALUES (%s, 1)"),
                     (TELEGRAM_CHAT_ID,),
                 )
             for idx, (code, name) in enumerate(DEFAULT_AIRPORT_OPTIONS, start=1):
                 conn.execute(
                     sql(f"""
-                    {insert_ignore_sql('airports', ['code', 'name', 'active', 'sort_order'], '?, ?, 1, ?')}
+                    {insert_ignore_sql('airports', ['code', 'name', 'active', 'sort_order'], '%s, %s, 1, %s')}
                     """),
                     (str(code).upper(), str(name), idx),
                 )
@@ -310,7 +310,7 @@ def get_monetization_settings(conn):
 def is_admin_chat(conn, chat_id: str) -> bool:
     ensure_policy_schema(conn)
     row = conn.execute(
-        sql("SELECT 1 FROM admins WHERE chat_id = ? AND active = 1 LIMIT 1"),
+        sql("SELECT 1 FROM admins WHERE chat_id = %s AND active = 1 LIMIT 1"),
         (chat_id,),
     ).fetchone()
     return bool(row)
@@ -332,7 +332,7 @@ def is_maintenance_mode(conn) -> bool:
 
 def set_maintenance_mode(conn, enabled: bool) -> None:
     ensure_policy_schema(conn)
-    conn.execute(sql("UPDATE monetization_settings SET maintenance_mode = ? WHERE id = 1"), (1 if enabled else 0,))
+    conn.execute(sql("UPDATE monetization_settings SET maintenance_mode = %s WHERE id = 1"), (1 if enabled else 0,))
     conn.commit()
 
 
@@ -342,7 +342,7 @@ def is_exempt_from_maintenance(conn, chat_id: str) -> bool:
     if is_admin_chat(conn, chat_id):
         return True
     row = conn.execute(
-        sql("SELECT exempt_from_maintenance FROM bot_users WHERE chat_id = ? LIMIT 1"), (chat_id,)
+        sql("SELECT exempt_from_maintenance FROM bot_users WHERE chat_id = %s LIMIT 1"), (chat_id,)
     ).fetchone()
     return bool(int((row["exempt_from_maintenance"] if row else None) or 0))
 
@@ -350,7 +350,7 @@ def is_exempt_from_maintenance(conn, chat_id: str) -> bool:
 def set_exempt_from_maintenance(conn, chat_id: str, exempt: bool) -> None:
     ensure_policy_schema(conn)
     conn.execute(
-        sql("UPDATE bot_users SET exempt_from_maintenance = ? WHERE chat_id = ?"),
+        sql("UPDATE bot_users SET exempt_from_maintenance = %s WHERE chat_id = %s"),
         (1 if exempt else 0, chat_id),
     )
     conn.commit()
@@ -439,12 +439,12 @@ def ensure_user_access(conn, chat_id: str):
     ensure_policy_schema(conn)
     conn.execute(
         sql(f"""
-        {insert_ignore_sql('user_access', ['chat_id', 'status', 'free_uses', 'test_charge', 'total_paid', 'updated_at'], f"?, 'free', 0, 0, 0, {now_expression()}")}
+        {insert_ignore_sql('user_access', ['chat_id', 'status', 'free_uses', 'test_charge', 'total_paid', 'updated_at'], f"%s, 'free', 0, 0, 0, {now_expression()}")}
         """),
         (chat_id,),
     )
     conn.commit()
-    return conn.execute(sql("SELECT * FROM user_access WHERE chat_id = ?"), (chat_id,)).fetchone()
+    return conn.execute(sql("SELECT * FROM user_access WHERE chat_id = %s"), (chat_id,)).fetchone()
 
 
 def is_active_access(access_row) -> bool:

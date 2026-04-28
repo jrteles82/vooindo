@@ -123,7 +123,7 @@ def get_panel_text(chat_id: str) -> str:
         conn.close()
         return panel_text
 
-    cur = conn.execute(sql('SELECT COUNT(*) FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+    cur = conn.execute(sql('SELECT COUNT(*) FROM user_routes WHERE user_id = %s AND active = 1'), (row['user_id'],))
     count_row = cur.fetchone()
     routes_count = count_row[0] if not isinstance(count_row, dict) else next(iter(count_row.values()))
     conn.close()
@@ -275,7 +275,7 @@ DEFAULT_AIRLINES = [
 def seed_airlines(conn) -> None:
     for iata_code, name, is_active in DEFAULT_AIRLINES:
         conn.execute(
-            sql(insert_ignore_sql('airlines', ['iata_code', 'name', 'is_active'], '?, ?, ?')),
+            sql(insert_ignore_sql('airlines', ['iata_code', 'name', 'is_active'], '%s, %s, %s')),
             (iata_code, name, is_active),
         )
 
@@ -451,7 +451,7 @@ def ensure_owner_test_access(conn):
         if int(access['test_charge'] or 0) == desired_test:
             continue
         conn.execute(
-            sql("UPDATE user_access SET test_charge = ?, updated_at = datetime('now') WHERE chat_id = ?"),
+            sql("UPDATE user_access SET test_charge = %s, updated_at = datetime('now') WHERE chat_id = %s"),
             (desired_test, admin_chat_id),
         )
         conn.commit()
@@ -532,7 +532,7 @@ def get_valid_pending_payment(conn, chat_id: str):
         sql('''
         SELECT mp_payment_id, plan_name, amount, status, qr_code, ticket_url, created_at
         FROM payments
-        WHERE chat_id = ? AND status = 'pending'
+        WHERE chat_id = %s AND status = 'pending'
         ORDER BY created_at DESC
         LIMIT 1
         '''),
@@ -555,14 +555,14 @@ def get_valid_pending_payment(conn, chat_id: str):
 
 def ensure_app_user(conn, first_name: str) -> int:
     row = conn.execute(
-        sql("SELECT id FROM users WHERE email = ?"),
+        sql("SELECT id FROM users WHERE email = %s"),
         (f"telegram:{first_name.lower()}@local",),
     ).fetchone()
     if row:
         return int(row['id'])
 
     cur = conn.execute(
-        sql("INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, datetime('now'))"),
+        sql("INSERT INTO users (email, password_hash, created_at) VALUES (%s, %s, datetime('now'))"),
         (f"telegram:{first_name.lower()}@local", 'telegram-bot'),
     )
     conn.commit()
@@ -571,7 +571,7 @@ def ensure_app_user(conn, first_name: str) -> int:
 
 def get_bot_user_by_chat(conn, chat_id: str):
     return conn.execute(
-        sql("SELECT user_id, confirmed, first_name, username, COALESCE(blocked, 0) AS blocked FROM bot_users WHERE chat_id = ?"),
+        sql("SELECT user_id, confirmed, first_name, username, COALESCE(blocked, 0) AS blocked FROM bot_users WHERE chat_id = %s"),
         (chat_id,),
     ).fetchone()
 
@@ -637,7 +637,7 @@ def add_days_to_expiration(current_expiration: str | None, days: int) -> str:
 
 def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     row = conn.execute(
-        sql('SELECT mp_payment_id, chat_id, plan_name, amount, status FROM payments WHERE mp_payment_id = ?'),
+        sql('SELECT mp_payment_id, chat_id, plan_name, amount, status FROM payments WHERE mp_payment_id = %s'),
         (payment_id,)
     ).fetchone()
     if not row:
@@ -647,7 +647,7 @@ def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     status = payment.get('status', row['status'])
     approved_at = payment.get('date_approved')
     conn.execute(
-        sql('UPDATE payments SET status = ?, approved_at = COALESCE(?, approved_at) WHERE mp_payment_id = ?'),
+        sql('UPDATE payments SET status = %s, approved_at = COALESCE(%s, approved_at) WHERE mp_payment_id = %s'),
         (status, approved_at, payment_id)
     )
 
@@ -662,15 +662,15 @@ def apply_approved_payment(conn, payment_id: str) -> tuple[bool, str]:
     conn.execute(
         sql('''
         UPDATE user_access
-        SET status = ?, expires_at = ?, free_uses = 0, total_paid = COALESCE(total_paid, 0) + ?, updated_at = datetime('now')
-        WHERE chat_id = ?
+        SET status = %s, expires_at = %s, free_uses = 0, total_paid = COALESCE(total_paid, 0) + %s, updated_at = datetime('now')
+        WHERE chat_id = %s
         '''),
         ('active', expires_at, float(row['amount'] or 0), chat_id)
     )
     user_id = get_user_id_by_chat(conn, chat_id)
     if user_id:
         conn.execute(
-            sql("UPDATE bot_settings SET alerts_enabled = 1, updated_at = datetime('now') WHERE user_id = ?"),
+            sql("UPDATE bot_settings SET alerts_enabled = 1, updated_at = datetime('now') WHERE user_id = %s"),
             (user_id,),
         )
     push_admin_notif(
@@ -701,7 +701,7 @@ def is_confirmed(conn, chat_id: str) -> bool:
 def ensure_user_settings(conn, user_id: int) -> None:
     conn.execute(sql(
         'INSERT INTO bot_settings (user_id, max_price, enable_google_flights, alerts_enabled) '
-        'VALUES (?, NULL, 1, 1) ON DUPLICATE KEY UPDATE user_id = user_id'
+        'VALUES (%s, NULL, 1, 1) ON DUPLICATE KEY UPDATE user_id = user_id'
     ), (user_id,))
     conn.commit()
 
@@ -716,7 +716,7 @@ def get_user_settings(conn, user_id: int):
                    COALESCE(alerts_enabled, 1) AS alerts_enabled,
                    COALESCE(airline_filters_json, '') AS airline_filters_json
             FROM bot_settings
-            WHERE user_id = ?
+            WHERE user_id = %s
             """
         ),
         (user_id,),
@@ -809,8 +809,8 @@ def get_support_badges(conn, chat_id: str, admin: bool = False) -> tuple[int, in
     row = get_bot_user_by_chat(conn, chat_id)
     if not row:
         return 0, 0
-    unread = _fetchcount(conn.execute(sql("SELECT COUNT(*) FROM support_messages sm JOIN support_threads st ON st.id = sm.thread_id WHERE st.user_id = ? AND sm.sender_role = 'admin' AND sm.is_read = 0 AND st.status = 'open'"), (row['user_id'],)).fetchone())
-    threads = _fetchcount(conn.execute(sql("SELECT COUNT(*) FROM support_threads WHERE user_id = ? AND status = 'open'"), (row['user_id'],)).fetchone())
+    unread = _fetchcount(conn.execute(sql("SELECT COUNT(*) FROM support_messages sm JOIN support_threads st ON st.id = sm.thread_id WHERE st.user_id = %s AND sm.sender_role = 'admin' AND sm.is_read = 0 AND st.status = 'open'"), (row['user_id'],)).fetchone())
+    threads = _fetchcount(conn.execute(sql("SELECT COUNT(*) FROM support_threads WHERE user_id = %s AND status = 'open'"), (row['user_id'],)).fetchone())
     return int(unread or 0), int(threads or 0)
 
 
@@ -847,7 +847,7 @@ def list_support_conversations_markup(rows, admin: bool = False) -> InlineKeyboa
 def create_support_conversation(conn, chat_id: str, subject: str) -> int:
     row = get_bot_user_by_chat(conn, chat_id)
     cur = conn.execute(
-        sql("INSERT INTO support_threads (user_id, chat_id, subject, status, blocked, created_at, updated_at) VALUES (?, ?, ?, 'open', 0, datetime('now'), datetime('now'))"),
+        sql("INSERT INTO support_threads (user_id, chat_id, subject, status, blocked, created_at, updated_at) VALUES (%s, %s, %s, 'open', 0, datetime('now'), datetime('now'))"),
         (row['user_id'], chat_id, subject),
     )
     conn.commit()
@@ -856,17 +856,17 @@ def create_support_conversation(conn, chat_id: str, subject: str) -> int:
 
 def get_support_conversation(conn, thread_id: int):
     return conn.execute(
-        sql("SELECT st.*, bu.first_name FROM support_threads st LEFT JOIN bot_users bu ON bu.user_id = st.user_id WHERE st.id = ?"),
+        sql("SELECT st.*, bu.first_name FROM support_threads st LEFT JOIN bot_users bu ON bu.user_id = st.user_id WHERE st.id = %s"),
         (thread_id,),
     ).fetchone()
 
 
 def append_support_message(conn, thread_id: int, sender_role: str, sender_chat_id: str, body: str) -> int:
     cur = conn.execute(
-        sql("INSERT INTO support_messages (thread_id, sender_role, sender_chat_id, body, is_read, created_at) VALUES (?, ?, ?, ?, 0, datetime('now'))"),
+        sql("INSERT INTO support_messages (thread_id, sender_role, sender_chat_id, body, is_read, created_at) VALUES (%s, %s, %s, %s, 0, datetime('now'))"),
         (thread_id, sender_role, sender_chat_id, body),
     )
-    conn.execute(sql("UPDATE support_threads SET updated_at = datetime('now') WHERE id = ?"), (thread_id,))
+    conn.execute(sql("UPDATE support_threads SET updated_at = datetime('now') WHERE id = %s"), (thread_id,))
     conn.commit()
     return int(cur.lastrowid)
 
@@ -874,15 +874,15 @@ def append_support_message(conn, thread_id: int, sender_role: str, sender_chat_i
 def mark_support_conversation_as_read(conn, thread_id: int, admin: bool = False) -> None:
     sender_role = 'user' if admin else 'admin'
     conn.execute(
-        sql("UPDATE support_messages SET is_read = 1 WHERE thread_id = ? AND sender_role = ? AND is_read = 0"),
+        sql("UPDATE support_messages SET is_read = 1 WHERE thread_id = %s AND sender_role = %s AND is_read = 0"),
         (thread_id, sender_role),
     )
     conn.commit()
 
 
 def clear_support_conversation(conn, thread_id: int) -> None:
-    conn.execute(sql("DELETE FROM support_messages WHERE thread_id = ?"), (thread_id,))
-    conn.execute(sql("DELETE FROM support_threads WHERE id = ?"), (thread_id,))
+    conn.execute(sql("DELETE FROM support_messages WHERE thread_id = %s"), (thread_id,))
+    conn.execute(sql("DELETE FROM support_threads WHERE id = %s"), (thread_id,))
     conn.commit()
 
 
@@ -1060,12 +1060,12 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool]
     u = get_bot_user_by_chat(conn, target_chat_id)
     if not u:
         return ('Usuário não encontrado.', False, False)
-    access = conn.execute(sql('SELECT * FROM user_access WHERE chat_id = ?'), (target_chat_id,)).fetchone()
+    access = conn.execute(sql('SELECT * FROM user_access WHERE chat_id = %s'), (target_chat_id,)).fetchone()
     routes_count = conn.execute(
-        sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (u['user_id'],)
+        sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = %s AND active = 1'), (u['user_id'],)
     ).fetchone()
     bot_settings = conn.execute(
-        sql('SELECT max_price, COALESCE(alerts_enabled, 1) AS alerts_enabled FROM bot_settings WHERE user_id = ?'), (u['user_id'],)
+        sql('SELECT max_price, COALESCE(alerts_enabled, 1) AS alerts_enabled FROM bot_settings WHERE user_id = %s'), (u['user_id'],)
     ).fetchone()
     rotas = int((routes_count['total'] if routes_count else None) or 0)
     max_price_raw = (bot_settings['max_price'] if bot_settings else None)
@@ -1518,7 +1518,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.execute(
             sql('''
             INSERT INTO bot_users (user_id, chat_id, username, first_name, confirmed)
-            VALUES (?, ?, ?, ?, 0)
+            VALUES (%s, %s, %s, %s, 0)
             '''),
             (user_id, chat_id, user.username or '', first_name),
         )
@@ -1528,8 +1528,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.execute(
             sql('''
             UPDATE bot_users
-            SET username = ?, first_name = ?
-            WHERE chat_id = ?
+            SET username = %s, first_name = %s
+            WHERE chat_id = %s
             '''),
             (user.username or '', first_name, chat_id),
         )
@@ -1571,7 +1571,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if confirmed:
-        cur_routes = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+        cur_routes = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = %s AND active = 1'), (row['user_id'],))
         row_routes = cur_routes.fetchone()
         has_routes = (row_routes['total'] if isinstance(row_routes, dict) else row_routes[0]) > 0
         if not has_routes:
@@ -1602,10 +1602,10 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text('⚠️ Use /start antes para iniciar seu cadastro.')
             return
 
-        conn.execute(sql('UPDATE bot_users SET confirmed = 1 WHERE chat_id = ?'), (chat_id,))
+        conn.execute(sql('UPDATE bot_users SET confirmed = 1 WHERE chat_id = %s'), (chat_id,))
         ensure_user_settings(conn, int(row['user_id']))
 
-        cur = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+        cur = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = %s AND active = 1'), (row['user_id'],))
         count_row = cur.fetchone()
         routes_count = count_row['total'] if isinstance(count_row, dict) else count_row[0]
 
@@ -1793,7 +1793,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         row = get_bot_user_by_chat(conn, target_chat_id)
         if row:
             novo = 0 if int(row['blocked'] or 0) else 1
-            conn.execute(sql('UPDATE bot_users SET blocked = ? WHERE chat_id = ?'), (novo, target_chat_id))
+            conn.execute(sql('UPDATE bot_users SET blocked = %s WHERE chat_id = %s'), (novo, target_chat_id))
             conn.commit()
             acao = 'bloqueado' if novo else 'desbloqueado'
             audit.admin(f"usuario_{acao}", chat_id=chat_id,
@@ -1812,7 +1812,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             routes = conn.execute(sql('''
                 SELECT origin, destination, outbound_date, inbound_date, active
                 FROM user_routes
-                WHERE user_id = ?
+                WHERE user_id = %s
                 ORDER BY active DESC, created_at DESC, id DESC
             '''), (user_row['user_id'],)).fetchall()
             if routes:
@@ -1846,11 +1846,11 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer('Usuário não encontrado.', show_alert=True)
         else:
             conn.execute(
-                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = ? AND job_type = 'manual_now' AND status IN ('pending', 'running')"),
+                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND job_type = 'manual_now' AND status IN ('pending', 'running')"),
                 (user_row['user_id'],),
             )
             conn.execute(
-                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'manual_now', 'pending', ?, 0)"),
+                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)"),
                 (user_row['user_id'], target_chat_id, '{}'),
             )
             conn.commit()
@@ -1865,11 +1865,11 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer('Usuário não encontrado.', show_alert=True)
         else:
             conn.execute(
-                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = ? AND job_type = 'scheduled' AND status IN ('pending', 'running')"),
+                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND job_type = 'scheduled' AND status IN ('pending', 'running')"),
                 (user_row['user_id'],),
             )
             conn.execute(
-                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (?, ?, 'scheduled', 'pending', ? )"),
+                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (%s, %s, 'scheduled', 'pending', %s )"),
                 (user_row['user_id'], target_chat_id, '{}'),
             )
             conn.commit()
@@ -1891,7 +1891,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             routes = conn.execute(sql('''
                 SELECT origin, destination, outbound_date, inbound_date, active
                 FROM user_routes
-                WHERE user_id = ?
+                WHERE user_id = %s
                 ORDER BY active DESC, created_at DESC, id DESC
             '''), (u['user_id'],)).fetchall()
             if not routes:
@@ -1908,7 +1908,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action.startswith('usr_zerar:'):
         target_chat_id = action[len('usr_zerar:'):]
         conn.execute(
-            sql(f"UPDATE user_access SET free_uses = 0, updated_at = datetime('now') WHERE chat_id = ?"),
+            sql(f"UPDATE user_access SET free_uses = 0, updated_at = datetime('now') WHERE chat_id = %s"),
             (target_chat_id,)
         )
         conn.commit()
@@ -1920,11 +1920,11 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action.startswith('usr_plano:'):
         target_chat_id = action[len('usr_plano:'):]
-        acc = conn.execute(sql('SELECT skip_charge FROM user_access WHERE chat_id = ?'), (target_chat_id,)).fetchone()
+        acc = conn.execute(sql('SELECT skip_charge FROM user_access WHERE chat_id = %s'), (target_chat_id,)).fetchone()
         current = int((acc['skip_charge'] if acc else None) or 0) if acc else 0
         novo = 0 if current else 1
         conn.execute(
-            sql(f"UPDATE user_access SET skip_charge = ?, updated_at = datetime('now') WHERE chat_id = ?"),
+            sql(f"UPDATE user_access SET skip_charge = %s, updated_at = datetime('now') WHERE chat_id = %s"),
             (novo, target_chat_id)
         )
         conn.commit()
@@ -2100,11 +2100,11 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         settings = get_monetization_settings(conn)
         novo = 0 if int(settings['test_mode']) == 1 else 1
-        conn.execute(sql('UPDATE monetization_settings SET test_mode = ? WHERE id = 1'), (novo,))
+        conn.execute(sql('UPDATE monetization_settings SET test_mode = %s WHERE id = 1'), (novo,))
         for admin_chat_id in list_active_admin_chat_ids(conn):
             ensure_user_access(conn, admin_chat_id)
             conn.execute(
-                sql("UPDATE user_access SET test_charge = ?, updated_at = datetime('now') WHERE chat_id = ?"),
+                sql("UPDATE user_access SET test_charge = %s, updated_at = datetime('now') WHERE chat_id = %s"),
                 (novo, admin_chat_id),
             )
         conn.commit()
@@ -2148,7 +2148,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         settings = get_monetization_settings(conn)
         novo = 0 if int(settings['charge_global']) == 1 else 1
-        conn.execute(sql('UPDATE monetization_settings SET charge_global = ? WHERE id = 1'), (novo,))
+        conn.execute(sql('UPDATE monetization_settings SET charge_global = %s WHERE id = 1'), (novo,))
         conn.commit()
         audit.admin("config_alterada", chat_id=chat_id,
                     payload={"campo": "cobranca_global", "valor_novo": novo})
@@ -2169,7 +2169,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         settings = get_monetization_settings(conn)
         novo = 0 if int(settings['charge_admin_only']) == 1 else 1
-        conn.execute(sql('UPDATE monetization_settings SET charge_admin_only = ? WHERE id = 1'), (novo,))
+        conn.execute(sql('UPDATE monetization_settings SET charge_admin_only = %s WHERE id = 1'), (novo,))
         conn.commit()
         audit.admin("config_alterada", chat_id=chat_id,
                     payload={"campo": "cobranca_admin", "valor_novo": novo})
@@ -2223,7 +2223,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         payment_id = parts[2]
         conn.execute(
-            sql("UPDATE payments SET status = 'cancelled' WHERE mp_payment_id = ? AND chat_id = ? AND status = 'pending'"),
+            sql("UPDATE payments SET status = 'cancelled' WHERE mp_payment_id = %s AND chat_id = %s AND status = 'pending'"),
             (payment_id, chat_id)
         )
         conn.commit()
@@ -2265,7 +2265,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         column, label = mapping[field]
         await query.edit_message_text(
-            f"🗑️ *Confirmar exclusão do plano {label}?*\n\nValor atual: R$ {format_money_br(settings[column])}\n\nIsso vai zerar o valor configurado no banco.",
+            f"🗑️ *Confirmar exclusão do plano {label}%s*\n\nValor atual: R$ {format_money_br(settings[column])}\n\nIsso vai zerar o valor configurado no banco.",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('✅ Confirmar exclusão', callback_data=f'painel:plan_delete_confirm:{field}')],
@@ -2298,7 +2298,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'toggle_result_type_filters':
         current = 1 if should_show_result_type_filters(conn) else 0
         novo = 0 if current == 1 else 1
-        conn.execute(sql('UPDATE app_settings SET show_result_type_filters = ?, updated_at = datetime(\'now\') WHERE id = 1'), (novo,))
+        conn.execute(sql('UPDATE app_settings SET show_result_type_filters = %s, updated_at = datetime(\'now\') WHERE id = 1'), (novo,))
         conn.commit()
         settings = get_monetization_settings(conn)
         maintenance_on = is_maintenance_mode(conn)
@@ -2339,7 +2339,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current = int((row[key] if isinstance(row, dict) else row[0]) or 0) if row else 0
             novo = 0 if current else 1
             conn.execute(
-                sql(f"UPDATE app_settings SET {key} = ?, updated_at = datetime('now') WHERE id = 1"),
+                sql(f"UPDATE app_settings SET {key} = %s, updated_at = datetime('now') WHERE id = 1"),
                 (novo,)
             )
             conn.commit()
@@ -2416,7 +2416,7 @@ LIMIT 5
 ''')
         user_out = db_query(r'''
 SELECT CONCAT(
-  COALESCE(b.first_name, '?'), "|",
+  COALESCE(b.first_name, '%s'), "|",
   COUNT(j.id), "|",
   SUM(CASE WHEN j.status='done' THEN 1 ELSE 0 END), "|",
   COALESCE(rcnt.r, 0)
@@ -2582,7 +2582,7 @@ LIMIT 15
                 'Se reiniciar agora, essas execuções podem ser interrompidas. Deseja continuar mesmo assim?'
             )
         else:
-            warning = '🔄 *Confirmar reinício do serviço?*\n\nIsso vai executar o comando de reinício configurado para o bot.'
+            warning = '🔄 *Confirmar reinício do serviço%s*\n\nIsso vai executar o comando de reinício configurado para o bot.'
         await query.edit_message_text(
             warning,
             parse_mode='Markdown',
@@ -2661,14 +2661,14 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if access['status'] == 'active' and expires_at:
             try:
                 if datetime.fromisoformat(expires_at) < now_local():
-                    conn.execute(sql("UPDATE user_access SET status = 'expired', updated_at = datetime('now') WHERE chat_id = ?"), (chat_id,))
+                    conn.execute(sql("UPDATE user_access SET status = 'expired', updated_at = datetime('now') WHERE chat_id = %s"), (chat_id,))
                     conn.commit()
                     access = ensure_user_access(conn, chat_id)
             except ValueError:
                 pass
 
     row = get_bot_user_by_chat(conn, chat_id)
-    cur = conn.execute(sql('SELECT COUNT(*) FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+    cur = conn.execute(sql('SELECT COUNT(*) FROM user_routes WHERE user_id = %s AND active = 1'), (row['user_id'],))
     count_row = cur.fetchone()
     routes_count = count_row[0] if not isinstance(count_row, dict) else next(iter(count_row.values()))
     conn.close()
@@ -2721,7 +2721,7 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sql('''
         SELECT origin, destination, outbound_date, inbound_date, active
         FROM user_routes
-        WHERE user_id = ? AND active = 1
+        WHERE user_id = %s AND active = 1
         ORDER BY outbound_date, origin, destination
         '''),
         (user_id,),
@@ -2817,7 +2817,7 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = get_user_id_by_chat(conn, chat_id)
     total_rotas = _fetchcount(conn.execute(
-        sql('SELECT COUNT(*) FROM user_routes WHERE user_id = ? AND active = 1'),
+        sql('SELECT COUNT(*) FROM user_routes WHERE user_id = %s AND active = 1'),
         (user_id,),
     ).fetchone())
     max_routes_default = get_max_routes_default(conn)
@@ -2940,7 +2940,7 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
     conn.execute(
         sql('''
         INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date, active, created_at)
-        VALUES (?, ?, ?, ?, ?, 1, datetime('now'))
+        VALUES (%s, %s, %s, %s, %s, 1, datetime('now'))
         '''),
         (
             user_id,
@@ -3052,7 +3052,7 @@ async def removerrota(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sql('''
         SELECT id, origin, destination, outbound_date, inbound_date
         FROM user_routes
-        WHERE user_id = ? AND active = 1
+        WHERE user_id = %s AND active = 1
         ORDER BY outbound_date, origin, destination
         '''),
         (user_id,),
@@ -3088,7 +3088,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if route_id_str.startswith('confirm_'):
         route_id = int(route_id_str.split('_')[1])
         row = conn.execute(
-            sql('SELECT origin, destination, outbound_date, inbound_date FROM user_routes WHERE id = ? AND user_id = ?'),
+            sql('SELECT origin, destination, outbound_date, inbound_date FROM user_routes WHERE id = %s AND user_id = %s'),
             (route_id, user_id),
         ).fetchone()
         if not row:
@@ -3097,7 +3097,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         conn.execute(
-            sql('DELETE FROM user_routes WHERE id = ? AND user_id = ?'),
+            sql('DELETE FROM user_routes WHERE id = %s AND user_id = %s'),
             (route_id, user_id),
         )
         conn.commit()
@@ -3118,7 +3118,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             sql('''
             SELECT id, origin, destination, outbound_date, inbound_date
             FROM user_routes
-            WHERE user_id = ? AND active = 1
+            WHERE user_id = %s AND active = 1
             ORDER BY outbound_date, origin, destination
             '''),
             (user_id,),
@@ -3157,7 +3157,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     row = conn.execute(
-        sql('SELECT origin, destination, outbound_date, inbound_date FROM user_routes WHERE id = ? AND user_id = ?'),
+        sql('SELECT origin, destination, outbound_date, inbound_date FROM user_routes WHERE id = %s AND user_id = %s'),
         (route_id, user_id),
     ).fetchone()
     conn.close()
@@ -3175,7 +3175,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton('❌ Não, cancelar', callback_data=f"removerrota:cancel_{route_id}")],
     ])
     
-    await query.edit_message_text(f"Tem certeza que deseja remover esta rota?\n\n{texto}", reply_markup=keyboard)
+    await query.edit_message_text(f"Tem certeza que deseja remover esta rota%s\n\n{texto}", reply_markup=keyboard)
 
 
 
@@ -3401,8 +3401,8 @@ async def limite_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.execute(
         sql('''
         UPDATE bot_settings
-        SET max_price = ?, updated_at = datetime('now')
-        WHERE user_id = ?
+        SET max_price = %s, updated_at = datetime('now')
+        WHERE user_id = %s
         '''),
         (valor, user_id),
     )
@@ -3449,7 +3449,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         context.user_data['awaiting_limit_input'] = True
         await query.message.reply_text(
-            'Qual o preço máximo por trecho? Exemplo: 1200 ou 1200,50. Se quiser aceitar qualquer valor, envie: sem limite',
+            'Qual o preço máximo por trecho%s Exemplo: 1200 ou 1200,50. Se quiser aceitar qualquer valor, envie: sem limite',
             reply_markup=cancel_markup('limite:cancel', '❌ Cancelar ajuste de limite'),
         )
         return ASK_LIMIT
@@ -3475,7 +3475,7 @@ async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     serialized_filters = serialize_airline_filters(selected_airlines)
     conn.execute(
-        sql("UPDATE bot_settings SET airline_filters_json = ?, updated_at = datetime('now') WHERE user_id = ?"),
+        sql("UPDATE bot_settings SET airline_filters_json = %s, updated_at = datetime('now') WHERE user_id = %s"),
         (serialized_filters, user_id),
     )
     conn.commit()
@@ -3508,7 +3508,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if action == 'view' and payment_id:
             row = conn.execute(
-                sql('SELECT mp_payment_id, plan_name, amount, status, created_at, approved_at FROM payments WHERE mp_payment_id = ? AND chat_id = ?'),
+                sql('SELECT mp_payment_id, plan_name, amount, status, created_at, approved_at FROM payments WHERE mp_payment_id = %s AND chat_id = %s'),
                 (payment_id, chat_id)
             ).fetchone()
             if not row:
@@ -3536,7 +3536,7 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(f'⏳ Pagamento ainda não aprovado. Status atual: {info}')
         elif action == 'cancel' and payment_id:
             conn.execute(
-                sql("UPDATE payments SET status = 'cancelled' WHERE mp_payment_id = ? AND chat_id = ? AND status = 'pending'"),
+                sql("UPDATE payments SET status = 'cancelled' WHERE mp_payment_id = %s AND chat_id = %s AND status = 'pending'"),
                 (payment_id, chat_id)
             )
             conn.commit()
@@ -3584,7 +3584,7 @@ async def alerts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         confirm_label = '🔕 Confirmar desativação dos alertas' if enabled else '🔔 Confirmar ativação dos alertas'
         cancel_label = '⬅️ Voltar ao menu'
         await query.edit_message_text(
-            f"Tem certeza que deseja {action_label} os alertas automáticos?\n\nVocê pode alterar isso depois no menu.",
+            f"Tem certeza que deseja {action_label} os alertas automáticos%s\n\nVocê pode alterar isso depois no menu.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(confirm_label, callback_data=f"menu:confirmalerts:{0 if enabled else 1}")],
                 [InlineKeyboardButton(cancel_label, callback_data='menu:back')],
@@ -3614,14 +3614,14 @@ async def alerts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
         if user_id:
             ensure_user_settings(conn, user_id)
-            before_row = conn.execute(sql('SELECT alerts_enabled FROM bot_settings WHERE user_id = ?'), (user_id,)).fetchone()
+            before_row = conn.execute(sql('SELECT alerts_enabled FROM bot_settings WHERE user_id = %s'), (user_id,)).fetchone()
             logger.info('[confirmalerts] antes do update | chat_id=%s | user_id=%s | alerts_enabled=%s', chat_id, user_id, before_row['alerts_enabled'] if before_row else None)
             conn.execute(
-                sql("UPDATE bot_settings SET alerts_enabled = ?, updated_at = datetime('now') WHERE user_id = ?"),
+                sql("UPDATE bot_settings SET alerts_enabled = %s, updated_at = datetime('now') WHERE user_id = %s"),
                 (new_value, user_id),
             )
             conn.commit()
-            after_row = conn.execute(sql('SELECT alerts_enabled, updated_at FROM bot_settings WHERE user_id = ?'), (user_id,)).fetchone()
+            after_row = conn.execute(sql('SELECT alerts_enabled, updated_at FROM bot_settings WHERE user_id = %s'), (user_id,)).fetchone()
             logger.info('[confirmalerts] depois do update | chat_id=%s | user_id=%s | alerts_enabled=%s | updated_at=%s', chat_id, user_id, after_row['alerts_enabled'] if after_row else None, after_row['updated_at'] if after_row else None)
         else:
             logger.warning('[confirmalerts] user_id não encontrado | chat_id=%s', chat_id)
@@ -3779,7 +3779,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
             conn = get_db()
             rows = conn.execute(
-                sql('SELECT mp_payment_id, plan_name, amount, status, created_at FROM payments WHERE chat_id = ? AND NOT (status = %s AND datetime(created_at) < datetime(%s, %s)) ORDER BY created_at DESC LIMIT 15' % ("'pending'", "'now'", "'-24 hours'")),
+                sql('SELECT mp_payment_id, plan_name, amount, status, created_at FROM payments WHERE chat_id = %s AND NOT (status = %s AND datetime(created_at) < datetime(%s, %s)) ORDER BY created_at DESC LIMIT 15' % ("'pending'", "'now'", "'-24 hours'")),
                 (chat_id,)
             ).fetchall()
             conn.close()
@@ -3969,7 +3969,7 @@ async def admin_broadcast_save(update: Update, context: ContextTypes.DEFAULT_TYP
     encoded = base64.urlsafe_b64encode(text.encode('utf-8')).decode('ascii')
     confirm_callback = f'painel:broadcast_confirm:{encoded}' if len(encoded) <= 48 else 'painel:broadcast_confirm'
     await update.message.reply_text(
-        '📣 Confirma o envio desta mensagem para todos os usuários?\n\n' + text,
+        '📣 Confirma o envio desta mensagem para todos os usuários%s\n\n' + text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('✅ Confirmar envio', callback_data=confirm_callback)],
             [InlineKeyboardButton('❌ Cancelar', callback_data='painel:back')],
@@ -4021,7 +4021,7 @@ def _support_conversation_text(conn, thread_id: int, admin: bool = False) -> str
     if not thread:
         return '⚠️ Conversa não encontrada.'
     messages = conn.execute(
-        sql("SELECT sender_role, body, created_at FROM support_messages WHERE thread_id = ? ORDER BY id ASC LIMIT 30"),
+        sql("SELECT sender_role, body, created_at FROM support_messages WHERE thread_id = %s ORDER BY id ASC LIMIT 30"),
         (thread_id,),
     ).fetchall()
     status_label = 'Bloqueado 🚫' if int(thread['blocked'] or 0) == 1 else 'Aberto ✅'
@@ -4141,7 +4141,7 @@ async def support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = []
         if row:
             rows = conn.execute(
-                sql("SELECT st.id, st.subject, st.blocked, (SELECT COUNT(*) FROM support_messages sm WHERE sm.thread_id = st.id AND sm.sender_role = 'admin' AND sm.is_read = 0) AS unread FROM support_threads st WHERE st.user_id = ? ORDER BY st.updated_at DESC LIMIT 20"),
+                sql("SELECT st.id, st.subject, st.blocked, (SELECT COUNT(*) FROM support_messages sm WHERE sm.thread_id = st.id AND sm.sender_role = 'admin' AND sm.is_read = 0) AS unread FROM support_threads st WHERE st.user_id = %s ORDER BY st.updated_at DESC LIMIT 20"),
                 (row['user_id'],),
             ).fetchall()
         conn.close()
@@ -4218,7 +4218,7 @@ async def support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == 'support:clear_all':
         row = get_bot_user_by_chat(conn, chat_id)
         if row:
-            thread_ids = conn.execute(sql("SELECT id FROM support_threads WHERE user_id = ?"), (row['user_id'],)).fetchall()
+            thread_ids = conn.execute(sql("SELECT id FROM support_threads WHERE user_id = %s"), (row['user_id'],)).fetchall()
             for thread_row in thread_ids:
                 clear_support_conversation(conn, int(thread_row['id']))
         conn.close()
@@ -4290,7 +4290,7 @@ async def support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text('⚠️ Conversa não encontrada.')
             return ConversationHandler.END
         new_blocked = 0 if int(thread['blocked'] or 0) == 1 else 1
-        conn.execute(sql("UPDATE support_threads SET blocked = ?, updated_at = datetime('now') WHERE id = ?"), (new_blocked, thread_id))
+        conn.execute(sql("UPDATE support_threads SET blocked = %s, updated_at = datetime('now') WHERE id = %s"), (new_blocked, thread_id))
         conn.commit()
         text = _support_conversation_text(conn, thread_id, admin=True)
         conn.close()
@@ -4330,7 +4330,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         column, label = mapping[field]
         conn = get_db()
         try:
-            conn.execute(sql(f'UPDATE monetization_settings SET {column} = ? WHERE id = 1'), (novo_valor,))
+            conn.execute(sql(f'UPDATE monetization_settings SET {column} = %s WHERE id = 1'), (novo_valor,))
             conn.commit()
         finally:
             conn.close()
@@ -4705,7 +4705,7 @@ async def run_bot():
         per_message=True,
     )
 
-    app.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern=r'^painel:broadcast_confirm(?::.*)?$'))
+    app.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern=r'^painel:broadcast_confirm(%s::.*)%s$'))
     app.add_handler(CallbackQueryHandler(admin_broadcast_start, pattern=r'^painel:broadcast$'))
     app.add_handler(CallbackQueryHandler(alerts_callback, pattern=r'^menu:(togglealerts|confirmalerts:)'))
     app.add_handler(conv)
