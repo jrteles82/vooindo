@@ -8,11 +8,14 @@ Companhia • R$ Preço
 📌 Dica personalizada
 """
 import os
+import re
 import time
 from datetime import datetime
 from typing import Optional
 
 import requests
+
+from db import connect as connect_db, sql
 
 from app_logging import get_logger
 
@@ -25,6 +28,63 @@ DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 # Cache em memória
 _cache = {}
 _CACHE_TTL = 3600
+
+
+
+def _resolve_airline_name(row: dict) -> str:
+    """Tenta resolver o nome da companhia pelo banco de dados.
+    Usa o best_vendor como fallback se não encontrar no banco."""
+    vendor = row.get('best_vendor') or row.get('vendor') or row.get('airline') or '—'
+    if vendor in ('—', '', None):
+        return vendor
+
+    # Limpa o sufixo "Companhia aérea" que o Google cola
+    cleaned = re.sub(r'Companhia\s*a[ée]rea\s*', '', vendor, flags=re.I).strip()
+    cleaned = re.sub(r'\s*Companhia\s*a[ée]rea\s*', '', cleaned, flags=re.I).strip()
+
+    # Se for um código IATA de 2 caracteres, busca no banco
+    if re.match(r'^[A-Za-z0-9]{2}$', cleaned):
+        try:
+            conn = connect_db()
+            row_db = conn.execute(
+                sql('SELECT name FROM airlines WHERE iata_code = ? AND is_active = 1'),
+                (cleaned.upper(),)
+            ).fetchone()
+            conn.close()
+            if row_db:
+                return row_db['name']
+        except Exception:
+            pass
+
+    # Fallback: normaliza o nome limpo via dicionário de aliases
+    _vendor_lower = cleaned.lower().replace('-', '_').replace(' ', '_')
+    _vendor_aliases = {
+        'gol': 'GOL', 'latam': 'LATAM', 'azul': 'Azul',
+        'voeazul': 'Azul', 'decolar': 'Decolar', 'zupper': 'Zupper',
+        'booking': 'Booking.com', 'kayak': 'KAYAK',
+        '123milhas': '123 Milhas', '123_milhas': '123 Milhas',
+        'viajanet': 'ViajaNet', 'smiles': 'Smiles',
+        'aerolineas_argentinas': 'Aerolineas Argentinas',
+        'aerolineas': 'Aerolineas Argentinas',
+        'aeromexico': 'Aeromexico', 'avianca': 'Avianca',
+        'copa': 'Copa Airlines', 'delta': 'Delta',
+        'united': 'United Airlines', 'american': 'American Airlines',
+        'british_airways': 'British Airways', 'iberia': 'Iberia',
+        'tap': 'TAP Air Portugal', 'tap_air_portugal': 'TAP Air Portugal',
+        'emirates': 'Emirates', 'qatar': 'Qatar Airways',
+        'ethiad': 'Etihad', 'air_france': 'Air France',
+        'klm': 'KLM', 'lufthansa': 'Lufthansa',
+        'swiss': 'Swiss', 'ryanair': 'Ryanair',
+        'easyjet': 'EasyJet', 'wizz': 'Wizz Air',
+        'flybondi': 'Flybondi', 'jetsmart': 'JetSmart',
+        'arajet': 'Arajet', 'air_canada': 'Air Canada',
+        'turkish': 'Turkish Airlines',
+    }
+    if _vendor_lower in _vendor_aliases:
+        return _vendor_aliases[_vendor_lower]
+    if cleaned and cleaned != '—':
+        return cleaned.replace('_', ' ').strip().title()
+    return cleaned
 
 
 def _city_name(code: str) -> str:
@@ -187,35 +247,7 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
             date_fmt = datetime.strptime(date, '%Y-%m-%d').strftime('%d/%m/%y')
         except (ValueError, TypeError):
             date_fmt = date
-        vendor = row.get('best_vendor') or row.get('vendor') or row.get('airline') or '—'
-        # Remove sufixo "Companhia aérea" que o Google cola (inclusive se concatenado)
-        import re as _re_vendor
-        vendor = _re_vendor.sub(r'Companhia\s*a[ée]rea\s*', '', vendor, flags=_re_vendor.I).strip()
-        vendor = _re_vendor.sub(r'\s*Companhia\s*a[ée]rea\s*', '', vendor, flags=_re_vendor.I).strip()
-        # Normaliza nome da companhia
-        _vendor_lower = vendor.lower().replace('-', '_').replace(' ', '_')
-        _vendor_aliases = {
-            'gol': 'GOL', 'latam': 'LATAM', 'azul': 'Azul',
-            'voeazul': 'Azul', 'decolar': 'Decolar', 'zupper': 'Zupper',
-            'booking': 'Booking.com', 'kayak': 'KAYAK',
-            '123milhas': '123 Milhas', '123_milhas': '123 Milhas',
-            'viajanet': 'ViajaNet', 'smiles': 'Smiles',
-            'aerolineas_argentinas': 'Aerolineas Argentinas',
-            'aeromexico': 'Aeromexico', 'avianca': 'Avianca',
-            'copA': 'CopA', 'delta': 'Delta', 'united': 'United',
-            'american': 'American Airlines', 'aa': 'American Airlines',
-            'british_airways': 'British Airways', 'iberia': 'Iberia',
-            'tap': 'TAP', 'tap_air_portugal': 'TAP',
-            'emirates': 'Emirates', 'qatar': 'Qatar Airways',
-            'ethiad': 'Etihad', 'air_france': 'Air France',
-            'klm': 'KLM', 'lufthansa': 'Lufthansa',
-            'swiss': 'Swiss', 'ryanair': 'Ryanair',
-            'easyjet': 'EasyJet', 'wizz': 'Wizz Air',
-        }
-        if _vendor_lower in _vendor_aliases:
-            vendor = _vendor_aliases[_vendor_lower]
-        elif vendor and vendor != '—':
-            vendor = vendor.replace('_', ' ').strip().title()
+        vendor = _resolve_airline_name(row)
         price = row.get('best_vendor_price') or row.get('price')
         price_str = f'R$ {price:,.0f}'.replace(',', '.') if price else 'N/D'
         booking_url = row.get('booking_url', '') or row.get('url', '')
