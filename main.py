@@ -38,8 +38,8 @@ def parse_price_brl(text: str) -> float:
     except:
         return 0.0
 
-def classify_price(price: float, min_price: float, average: float) -> str:
-    if not min_price: return "⚪️"
+def classify_price(price: float | None, min_price: float | None, average: float | None) -> str:
+    if not min_price or price is None: return "⚪️"
     if price <= min_price: return "🟢"
     if price <= average: return "🟡"
     return "🔴"
@@ -1135,7 +1135,7 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
 
     # Fontes reduzidas para máximo de compactação
     title_font = _load_font(scaled5(13), bold=True)
-    header_font = _load_font(scaled5(9), bold=True)
+    header_font = _load_font(scaled5(7), bold=True)
     body_font = _load_font(scaled5(8), bold=False)
     price_font = _load_font(scaled5(7))
     small_font = _load_font(scaled5(6))
