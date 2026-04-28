@@ -1554,46 +1554,55 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
     chat_id = str(query.message.chat.id)
 
-    conn = get_db()
-    row = get_bot_user_by_chat(conn, chat_id)
-    if row is None:
+    try:
+        conn = get_db()
+        row = get_bot_user_by_chat(conn, chat_id)
+        if row is None:
+            conn.close()
+            await query.edit_message_text('⚠️ Use /start antes para iniciar seu cadastro.')
+            return
+
+        conn.execute(sql('UPDATE bot_users SET confirmed = 1 WHERE chat_id = ?'), (chat_id,))
+        ensure_user_settings(conn, int(row['user_id']))
+
+        cur = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
+        count_row = cur.fetchone()
+        routes_count = count_row['total'] if isinstance(count_row, dict) else count_row[0]
+
+        conn.commit()
         conn.close()
-        await query.edit_message_text('⚠️ Use /start antes para iniciar seu cadastro.')
-        return
 
-    conn.execute(sql('UPDATE bot_users SET confirmed = 1 WHERE chat_id = ?'), (chat_id,))
-    ensure_user_settings(conn, int(row['user_id']))
+        audit.user_action("cadastro_confirmado", chat_id=chat_id,
+                          user_id=row['user_id'])
 
-    cur = conn.execute(sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = ? AND active = 1'), (row['user_id'],))
-    count_row = cur.fetchone()
-    routes_count = count_row['total'] if isinstance(count_row, dict) else count_row[0]
+        try:
+            await query.edit_message_text('✅ *Cadastro confirmado com sucesso!* 🎉', parse_mode='Markdown')
+        except Exception:
+            pass
 
-    conn.commit()
-    conn.close()
+        await query.message.reply_text(
+            '🎉 *Seja bem-vindo ao bot de voos!*\n────────────────────────\n\n'
+            'Aqui você acompanha rotas e recebe notificações quando encontrarmos oportunidades.\n\n'
+            '👇 *Primeiros passos:*\n'
+            '1️⃣ Clique em *✈️ Cadastrar rota* no menu abaixo\n'
+            '2️⃣ Informe: origem, destino, data de ida e volta (se quiser)\n'
+            '3️⃣ Pronto! Você receberá alertas automáticos 🚀',
+            parse_mode='Markdown',
+        )
 
-    audit.user_action("cadastro_confirmado", chat_id=chat_id,
-                      user_id=row['user_id'])
-
-    await query.edit_message_text('✅ *Cadastro confirmado com sucesso!* 🎉', parse_mode='Markdown')
-
-    await query.message.reply_text(
-        '🎉 *Seja bem-vindo ao bot de voos!*\n────────────────────────\n\n'
-        'Aqui você acompanha rotas e recebe notificações quando encontrarmos oportunidades.\n\n'
-        '👇 *Primeiros passos:*\n'
-        '1️⃣ Clique em *✈️ Cadastrar rota* no menu abaixo\n'
-        '2️⃣ Informe: origem, destino, data de ida e volta (se quiser)\n'
-        '3️⃣ Pronto! Você receberá alertas automáticos 🚀',
-        parse_mode='Markdown',
-    )
-
-    await query.message.reply_text(
-        get_panel_text(chat_id),
-        parse_mode='Markdown',
-        reply_markup=full_menu_markup(chat_id),
-    )
+        await query.message.reply_text(
+            get_panel_text(chat_id),
+            parse_mode='Markdown',
+            reply_markup=full_menu_markup(chat_id),
+        )
+    except Exception as exc:
+        logger.error('[confirm_callback] erro ao confirmar chat=%s: %s', chat_id, exc)
 
 
 async def cmd_painel(update: Update, context: ContextTypes.DEFAULT_TYPE):
