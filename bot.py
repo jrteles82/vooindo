@@ -3189,8 +3189,8 @@ def _agora_lockfree_conn():
         autocommit=True, connect_timeout=5,
         cursorclass=pymysql.cursors.DictCursor,
     )
-    _c.cursor().execute("SET SESSION lock_wait_timeout = 3")
-    _c.cursor().execute("SET SESSION innodb_lock_wait_timeout = 3")
+    _c.cursor().execute("SET SESSION lock_wait_timeout = 5")
+    _c.cursor().execute("SET SESSION innodb_lock_wait_timeout = 5")
     return _c
 
 
@@ -3218,17 +3218,40 @@ def _agora_criar_job(sc, chat_id: str) -> tuple[int, bool]:
     if not scursor.fetchone():
         raise RuntimeError('no_routes')
 
-    scursor.execute(
-        "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' "
-        "WHERE user_id = %s AND status IN ('pending', 'running')",
-        (user_id,),
-    )
-    replaced_existing = scursor.rowcount > 0
+    import time as _time
 
-    scursor.execute(
-        "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
-        (user_id, chat_id, '{}'),
-    )
+    # Cancela jobs pendentes com retry em caso de lock wait
+    replaced_existing = False
+    for _attempt in range(10):
+        try:
+            scursor.execute(
+                "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' "
+                "WHERE user_id = %s AND status IN ('pending', 'running')",
+                (user_id,),
+            )
+            replaced_existing = scursor.rowcount > 0
+            break
+        except pymysql.err.OperationalError as _le:
+            if _le.args[0] == 1205:
+                _time.sleep(0.3 * (_attempt + 1))
+                scursor = sc.cursor()
+                continue
+            raise
+
+    # INSERT job manual com retry
+    for _attempt in range(10):
+        try:
+            scursor.execute(
+                "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
+                (user_id, chat_id, '{}'),
+            )
+            break
+        except pymysql.err.OperationalError as _le:
+            if _le.args[0] == 1205:
+                _time.sleep(0.3 * (_attempt + 1))
+                scursor = sc.cursor()
+                continue
+            raise
 
     audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
                       payload={"trigger": "manual_now"})
@@ -3239,33 +3262,62 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
 
-    # Usa conexão lockfree para evitar lock contention com workers rodando scan_jobs
-    sc = _agora_lockfree_conn()
-    user_msg = None
+    # Responde o callback imediatamente para o Telegram não expirar
     try:
-        user_id, replaced_existing = _agora_criar_job(sc, chat_id)
-    except RuntimeError as _re:
+        query = update.callback_query
+        if query:
+            await query.answer()
+    except Exception:
+        pass
+
+    # Cria o job em thread separada (pymysql sync) para nao travar event loop
+    def _sync_run():
+        try:
+            sc = _agora_lockfree_conn()
+            try:
+                uid, replaced = _agora_criar_job(sc, chat_id)
+            except RuntimeError as _re:
+                sc.close()
+                return ('runtime', str(_re))
+            except Exception as _exc:
+                logger.error('[agora] Erro sync: %s', _exc)
+                sc.close()
+                return ('error', None)
+            sc.close()
+            return ('ok', replaced)
+        except Exception as _exc:
+            logger.error('[agora] Erro sync: %s', _exc)
+            return ('error', None)
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, _sync_run)
+    except Exception as _exc:
+        logger.error('[agora] run_in_executor erro: %s', _exc)
+        await update.message.reply_text('Erro ao criar consulta. Tente novamente.')
+        return
+
+    status, data = result
+    clear_pending_input_state(context)
+
+    if status == 'runtime':
         _msg_map = {
             'maintenance': '🔧 Em manutenção, aguarde um instante.',
             'no_routes': '\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.',
             'user_not_found': 'Erro ao criar consulta. Tente novamente.',
         }
-        user_msg = _msg_map.get(str(_re), 'Erro ao criar consulta. Tente novamente.')
-        logger.error('[agora] Erro: %s', _re)
-    except Exception as _exc:
-        logger.error('[agora] Erro: %s', _exc)
-        user_msg = 'Erro ao criar consulta. Tente novamente.'
-    sc.close()
-    clear_pending_input_state(context)
-    if user_msg:
+        user_msg = _msg_map.get(data, 'Erro ao criar consulta. Tente novamente.')
         if 'rotas ativas' in user_msg:
             await update.message.reply_text(user_msg, reply_markup=main_menu_markup())
         else:
             await update.message.reply_text(user_msg)
-    elif replaced_existing:
-        await update.message.reply_text('🔄 Consulta anterior cancelada. Já comecei a nova e vou te mandar o resultado assim que terminar.')
+    elif status == 'error':
+        await update.message.reply_text('Erro ao criar consulta. Tente novamente.')
     else:
-        await update.message.reply_text('🕒 Consulta recebida. Vou enviar o resultado aqui assim que terminar.')
+        replaced_existing = bool(data)
+        if replaced_existing:
+            await update.message.reply_text('🔄 Consulta anterior cancelada. Já comecei a nova e vou te mandar o resultado assim que terminar.')
+        else:
+            await update.message.reply_text('🕒 Consulta recebida. Vou enviar o resultado aqui assim que terminar.') 
 
 
 async def limite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):

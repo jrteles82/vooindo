@@ -288,9 +288,17 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
 
 
 def _filter_rows_no_vendor(rows: list[dict]) -> list[dict]:
-    """Filtra resultados que têm best_vendor. Se nenhum tiver, retorna todos."""
-    with_vendor = [r for r in rows if (r.get("best_vendor") or "").strip()]
-    return with_vendor if with_vendor else rows
+    """Filtra resultados que têm best_vendor de companhia aérea válida.
+    Exclui 'google_flights' que é fallback sem companhia identificada.
+    Se nenhum tiver vendor, retorna [] (não mostra nada sem companhia)."""
+    def _has_real_vendor(r):
+        v = (r.get("best_vendor") or "").strip().lower().replace(" ", "_")
+        if not v:
+            return False
+        if v in ("", "google_flights", "google"):
+            return False
+        return True
+    return [r for r in rows if _has_real_vendor(r)]
 
 
 def notify_full_scan(parsed: list[dict], trigger: str = "manual", send_fn=None, max_price: float | None = None, airline_filters_json: str | None = None) -> None:
