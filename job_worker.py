@@ -208,7 +208,7 @@ def _make_cap_conn():
         host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
         user=_parsed.username or 'vooindobot', password=_parsed.password or '',
         database=_parsed.path.lstrip('/') or 'vooindo',
-        autocommit=True, connect_timeout=5, read_timeout=30,
+        autocommit=True, connect_timeout=5, read_timeout=300,
         cursorclass=pymysql.cursors.DictCursor,
     )
     _c.cursor().execute("SET SESSION lock_wait_timeout = 3")

@@ -3190,102 +3190,79 @@ def _agora_lockfree_conn():
         cursorclass=pymysql.cursors.DictCursor,
     )
     _c.cursor().execute("SET SESSION lock_wait_timeout = 3")
+    _c.cursor().execute("SET SESSION innodb_lock_wait_timeout = 3")
     return _c
+
+
+def _agora_criar_job(sc, chat_id: str) -> tuple[int, bool]:
+    """Cria job manual usando a conexão lockfree. Retorna (user_id, replaced_existing)."""
+    scursor = sc.cursor()
+
+    # Maintenance check (query direta para evitar dependência de API conn)
+    scursor.execute("SELECT maintenance_mode FROM monetization_settings WHERE id = 1")
+    _row_m = scursor.fetchone()
+    _maintenance = _row_m and int(_row_m.get('maintenance_mode', 0)) == 1 if _row_m else False
+    if _maintenance:
+        scursor.execute("SELECT chat_id FROM bot_users WHERE chat_id = %s AND user_id IN (SELECT user_id FROM bot_settings WHERE id = 1) LIMIT 1", (chat_id,))
+        _exempt = scursor.fetchone() is not None
+        if not _exempt:
+            raise RuntimeError('maintenance')
+
+    scursor.execute("SELECT user_id FROM bot_users WHERE chat_id = %s", (chat_id,))
+    _row = scursor.fetchone()
+    if not _row:
+        raise RuntimeError('user_not_found')
+    user_id = int(_row['user_id'])
+
+    scursor.execute("SELECT 1 FROM user_routes WHERE user_id = %s AND active = 1 LIMIT 1", (user_id,))
+    if not scursor.fetchone():
+        raise RuntimeError('no_routes')
+
+    scursor.execute(
+        "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' "
+        "WHERE user_id = %s AND status IN ('pending', 'running')",
+        (user_id,),
+    )
+    replaced_existing = scursor.rowcount > 0
+
+    scursor.execute(
+        "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
+        (user_id, chat_id, '{}'),
+    )
+
+    audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
+                      payload={"trigger": "manual_now"})
+    return user_id, replaced_existing
 
 
 async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
 
-    # Toda operação neste handler usa conexão separada com autocommit=True
-    # para não competir com workers que processam scan_jobs
+    # Usa conexão lockfree para evitar lock contention com workers rodando scan_jobs
+    sc = _agora_lockfree_conn()
+    user_msg = None
     try:
-        conn = _agora_lockfree_conn()
-    except Exception:
-        await update.message.reply_text('Erro ao conectar ao banco de dados. Tente novamente.')
-        return
-
-    try:
-        _cur = conn.cursor()
-
-        # Maintenance check
-        _cur.execute("SELECT value FROM settings WHERE name = 'maintenance_mode'", )
-        _row = _cur.fetchone()
-        maintenance = _row and _row.get('value') == '1' if _row else False
-        if maintenance:
-            _cur.execute("SELECT 1 FROM bot_users WHERE chat_id = %s AND user_id IN (SELECT user_id FROM bot_settings WHERE is_exempt_from_maintenance = 1)", (chat_id,))
-            exempt = _cur.fetchone() is not None
-            if not exempt:
-                conn.close()
-                await update.message.reply_text('🔧 Em manutenção, aguarde um instante.')
-                return
-
-        # Confirmation check
-        _cur.execute("SELECT requires_confirmation FROM bot_users WHERE chat_id = %s", (chat_id,))
-        _row = _cur.fetchone()
-        if _row and _row.get('requires_confirmation'):
-            conn.close()
-            await update.message.reply_text('Confirme seu cadastro primeiro.', reply_markup=confirmation_markup_for_message('Confirme seu cadastro primeiro.'))
-            return
-
-        # Access check
-        _cur.execute("SELECT user_id FROM app_users WHERE chat_id = %s", (chat_id,))
-        _row = _cur.fetchone()
-        user_id = int(_row['user_id']) if _row else None
-        if user_id is None:
-            conn.close()
-            await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
-            return
-
-        _cur.execute("SELECT 1 FROM user_routes WHERE user_id = %s AND active = 1 LIMIT 1", (user_id,))
-        if not _cur.fetchone():
-            conn.close()
-            await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
-            return
-
-        # Cancela jobs pendentes anteriores do mesmo usuário
-        _cur.execute(
-            "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' "
-            "WHERE user_id = %s AND status IN ('pending', 'running')",
-            (user_id,),
-        )
-        replaced_existing = _cur.rowcount > 0
-
-        # Check 5 min cooldown (só para não-admin)
-        _cur.execute(
-            "SELECT COALESCE(last_manual_sent_at, '') AS last_manual FROM bot_settings WHERE user_id = %s",
-            (user_id,),
-        )
-        _row2 = _cur.fetchone()
-        if _row2 and _row2.get('last_manual'):
-            _last = _row2['last_manual']
-            if _last and str(user_id) != '2':
-                try:
-                    _dt = datetime.fromisoformat(_last.replace(' ', 'T'))
-                    if 0 <= (now_local() - _dt).total_seconds() < 5 * 60:
-                        conn.close()
-                        await update.message.reply_text('⏳ Aguarde 5 minutos desde o último envio manual antes de pedir outra consulta.', reply_markup=main_menu_markup())
-                        return
-                except ValueError:
-                    pass
-
-        # INSERT do job manual
-        _cur.execute(
-            "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
-            (user_id, chat_id, '{}'),
-        )
-
-        audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
-                          payload={"trigger": "manual_now"})
+        user_id, replaced_existing = _agora_criar_job(sc, chat_id)
+    except RuntimeError as _re:
+        _msg_map = {
+            'maintenance': '🔧 Em manutenção, aguarde um instante.',
+            'no_routes': '\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.',
+            'user_not_found': 'Erro ao criar consulta. Tente novamente.',
+        }
+        user_msg = _msg_map.get(str(_re), 'Erro ao criar consulta. Tente novamente.')
+        logger.error('[agora] Erro: %s', _re)
     except Exception as _exc:
         logger.error('[agora] Erro: %s', _exc)
-        conn.close()
-        await update.message.reply_text('Erro ao criar consulta. Tente novamente.')
-        return
-
-    conn.close()
+        user_msg = 'Erro ao criar consulta. Tente novamente.'
+    sc.close()
     clear_pending_input_state(context)
-    if replaced_existing:
+    if user_msg:
+        if 'rotas ativas' in user_msg:
+            await update.message.reply_text(user_msg, reply_markup=main_menu_markup())
+        else:
+            await update.message.reply_text(user_msg)
+    elif replaced_existing:
         await update.message.reply_text('🔄 Consulta anterior cancelada. Já comecei a nova e vou te mandar o resultado assim que terminar.')
     else:
         await update.message.reply_text('🕒 Consulta recebida. Vou enviar o resultado aqui assim que terminar.')

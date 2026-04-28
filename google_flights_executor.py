@@ -578,11 +578,20 @@ def extract_vendor_from_body(body: str) -> str:
                 return candidate
     # Fallback final: qualquer linha com nome de companhia antes de "Companhia"
     for line in lines:
-        # Procura padrão onde "Companhia" vem grudado no nome (sem espaço)
-        m = re.search(r'([A-Z][a-zA-ZÀ-ÿ]+)Companhia', line)
+        # Procura padrão onde "Companhia" vem grudado no nome (pode ser multi-palavra)
+        # Ex: "Aerolineas ArgentinasCompanhia aérea"
+        m = re.search(r'((?:[A-Z][a-zA-ZÀ-ÿ]+\s+)*[A-Z][a-zA-ZÀ-ÿ]+)Companhia', line)
         if m:
             candidate = m.group(1).strip()
             if is_probable_airline_vendor(candidate):
+                return candidate
+        # Fallback mais agressivo: tudo antes de "Companhia"
+        m = re.search(r'(.+?)Companhia', line)
+        if m:
+            candidate = m.group(1).strip()
+            # Remove preço se tiver na mesma linha
+            candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
+            if candidate and is_probable_airline_vendor(candidate):
                 return candidate
     return ''
 
