@@ -29,6 +29,7 @@ from config import TOKEN, now_local, now_local_iso
 from db import connect as connect_db, now_expression, sql, DatabaseRateLimitError
 from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
+from cycle_monitor import record_cycle_start, record_cycle_end
 
 # Número de workers paralelos para scheduler
 _NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '3'))
@@ -554,6 +555,8 @@ def main():
                 ensure_policy_schema(conn)
             cycle_started = time.perf_counter()
             cycle_started_iso = now_local_iso(sep='T')
+            cycle_metrics = record_cycle_start()
+            cycle_metrics['_start_time'] = cycle_started
             maintenance_on = is_maintenance_mode(conn)
             users = list(iter_users(conn))
             random.shuffle(users)
@@ -658,6 +661,16 @@ def main():
             'shuffled_users': cycle_stats['shuffled_users'],
             'reasons': cycle_stats['reasons'],
         }
+        # Registra métricas no monitor de ciclos
+        scan_results = {
+            'duration_seconds': round(cycle_duration_ms / 1000, 1),
+            'eligible_users': cycle_stats['eligible_users'],
+            'sent_users': cycle_stats['sent_users'],
+            'skipped_users': cycle_stats['skipped_users'],
+            'errors': cycle_stats['errors'],
+            'reasons': cycle_stats['reasons'],
+        }
+        record_cycle_end(cycle_metrics, scan_results=scan_results)
         _append_cycle_metrics(metrics_entry)
         logger.info(
             "[bot-scheduler] ciclo concluído em %s | duracao_ms=%s | elegiveis=%s | enviaram=%s | sem_envio=%s | ignorados=%s | erros=%s | reasons=%s | aguardando próximo slot de %ss",
