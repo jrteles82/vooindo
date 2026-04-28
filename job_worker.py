@@ -49,6 +49,7 @@ def _log_fatal_exception(exc_type, exc, tb) -> None:
 def _log_signal_and_exit(signum, _frame) -> None:
     try:
         logger.error('[job-worker][SIGNAL] sinal recebido | pid=%s | signal=%s', os.getpid(), signum)
+        _return_current_job_to_queue()
     finally:
         raise SystemExit(128 + int(signum))
 
@@ -61,6 +62,24 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
 _session_alert_sent_at: float = 0.0
 _SESSION_ALERT_COOLDOWN = 1800.0  # no máximo 1 alerta de sessão a cada 30 min
 _GOOGLE_SESSION_INVALID = False
+_current_job_id: int | None = None
+
+
+def _return_current_job_to_queue():
+    job_id = _current_job_id
+    if job_id is None:
+        return
+    try:
+        conn = connect_db()
+        conn.execute(
+            sql("UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ? AND status = 'running'"),
+            (job_id,),
+        )
+        conn.commit()
+        conn.close()
+        logger.info('[job-worker] job %s devolvido para fila (retry_count++)', job_id)
+    except Exception as exc:
+        logger.warning('[job-worker] falha ao devolver job %s para fila: %s', job_id, exc)
 
 
 def get_db():
@@ -665,6 +684,7 @@ def main():
                 conn.close()
                 time.sleep(POLL_SECONDS)
                 continue
+            _current_job_id = int(job['id'])
             try:
                 process_job(conn, bot, loop, job)
                 finish_job(conn, int(job['id']))
@@ -717,6 +737,7 @@ def main():
                         f"🚨 Falha em job\n\nJob ID: {job['id']}\nUser ID: {job['user_id']}\nChat ID: {job['chat_id']}\nTipo: {job['job_type']}\nErro: {error_text[:500]}",
                     )
             finally:
+                _current_job_id = None
                 conn.close()
         except DatabaseRateLimitError as exc:
             if conn is not None:

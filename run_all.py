@@ -23,7 +23,7 @@ LOCK_PATH = BASE_DIR / 'run_all.lock'
 processes = []
 _lock_handle = None
 START_DELAY_SECONDS = float(os.getenv('RUN_ALL_START_DELAY_SECONDS', '2'))
-RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '20'))
+RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '45'))
 NUM_JOB_WORKERS = int(os.getenv("NUM_JOB_WORKERS", "1"))  # 1 scheduled + 1 manual = 2 workers total
 
 
@@ -103,14 +103,21 @@ def acquire_single_instance_lock():
 
 
 def shutdown(*_args):
+    logger.info('[run_all] Iniciando desligamento gracioso...')
     for proc in processes:
         if proc.poll() is None:
             proc.terminate()
+    wait_until = time.monotonic() + 30
     for proc in processes:
+        remaining = max(0, wait_until - time.monotonic())
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=remaining)
         except Exception:
+            pass
+    for proc in processes:
+        if proc.poll() is None:
             proc.kill()
+    logger.info('[run_all] Desligamento concluído')
     sys.exit(0)
 
 
