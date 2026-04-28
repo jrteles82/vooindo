@@ -3179,112 +3179,110 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 
+def _agora_lockfree_conn():
+    """Cria conexão pymysql autocommit para o fluxo 'agora', evitando lock contention com workers."""
+    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
+    _c = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+    _c.cursor().execute("SET SESSION lock_wait_timeout = 3")
+    return _c
+
+
 async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_pending_input_state(context)
     chat_id = str(update.effective_chat.id)
-    conn = get_db()
+
+    # Toda operação neste handler usa conexão separada com autocommit=True
+    # para não competir com workers que processam scan_jobs
     try:
-        with conn.cursor() as cur:
-            cur.execute("SET SESSION lock_wait_timeout = 5")
+        conn = _agora_lockfree_conn()
     except Exception:
-        pass
-
-    if is_maintenance_mode(conn) and not is_exempt_from_maintenance(conn, chat_id):
-        conn.close()
-        await update.message.reply_text('🔧 Em manutenção, aguarde um instante.')
+        await update.message.reply_text('Erro ao conectar ao banco de dados. Tente novamente.')
         return
 
-    msg = require_confirmation(conn, chat_id)
-    if msg:
-        conn.close()
-        await update.message.reply_text(msg, reply_markup=confirmation_markup_for_message(msg))
-        return
+    try:
+        _cur = conn.cursor()
 
-    ensure_user_access(conn, chat_id)
-    ensure_owner_test_access(conn)
-    access = ensure_user_access(conn, chat_id)
-    should_charge = should_charge_user(conn, chat_id, access)
+        # Maintenance check
+        _cur.execute("SELECT value FROM settings WHERE name = 'maintenance_mode'", )
+        _row = _cur.fetchone()
+        maintenance = _row and _row.get('value') == '1' if _row else False
+        if maintenance:
+            _cur.execute("SELECT 1 FROM bot_users WHERE chat_id = %s AND user_id IN (SELECT user_id FROM bot_settings WHERE is_exempt_from_maintenance = 1)", (chat_id,))
+            exempt = _cur.fetchone() is not None
+            if not exempt:
+                conn.close()
+                await update.message.reply_text('🔧 Em manutenção, aguarde um instante.')
+                return
 
-    if should_charge and not is_active_access(access):
-        free_uses = int(access['free_uses'] or 0)
-        free_uses_limit = get_free_uses_limit(conn)
-        if free_uses >= free_uses_limit:
-            bot_user = get_bot_user_by_chat(conn, chat_id)
-            first_name = bot_user['first_name'] if bot_user else '—'
-            push_admin_notif(
-                conn,
-                "notif_acesso_expirado",
-                f"⚠️ *Acesso gratuito esgotado*\n\n"
-                f"*Nome:* {first_name}\n"
-                f"*Chat ID:* `{chat_id}`\n"
-                f"*Usos utilizados:* {free_uses}/{free_uses_limit}",
-            )
-            texto = choose_plan_text(conn, chat_id)
+        # Confirmation check
+        _cur.execute("SELECT requires_confirmation FROM bot_users WHERE chat_id = %s", (chat_id,))
+        _row = _cur.fetchone()
+        if _row and _row.get('requires_confirmation'):
             conn.close()
-            await update.message.reply_text(texto, parse_mode='Markdown', reply_markup=user_plan_markup())
+            await update.message.reply_text('Confirme seu cadastro primeiro.', reply_markup=confirmation_markup_for_message('Confirme seu cadastro primeiro.'))
             return
 
-    user_id = get_user_id_by_chat(conn, chat_id)
-    routes = conn.execute(
-        sql('SELECT 1 FROM user_routes WHERE user_id = ? AND active = 1 LIMIT 1'),
-        (user_id,),
-    ).fetchone()
-    if not routes:
+        # Access check
+        _cur.execute("SELECT user_id FROM app_users WHERE chat_id = %s", (chat_id,))
+        _row = _cur.fetchone()
+        user_id = int(_row['user_id']) if _row else None
+        if user_id is None:
+            conn.close()
+            await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
+            return
+
+        _cur.execute("SELECT 1 FROM user_routes WHERE user_id = %s AND active = 1 LIMIT 1", (user_id,))
+        if not _cur.fetchone():
+            conn.close()
+            await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
+            return
+
+        # Cancela jobs pendentes anteriores do mesmo usuário
+        _cur.execute(
+            "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' "
+            "WHERE user_id = %s AND status IN ('pending', 'running')",
+            (user_id,),
+        )
+        replaced_existing = _cur.rowcount > 0
+
+        # Check 5 min cooldown (só para não-admin)
+        _cur.execute(
+            "SELECT COALESCE(last_manual_sent_at, '') AS last_manual FROM bot_settings WHERE user_id = %s",
+            (user_id,),
+        )
+        _row2 = _cur.fetchone()
+        if _row2 and _row2.get('last_manual'):
+            _last = _row2['last_manual']
+            if _last and str(user_id) != '2':
+                try:
+                    _dt = datetime.fromisoformat(_last.replace(' ', 'T'))
+                    if 0 <= (now_local() - _dt).total_seconds() < 5 * 60:
+                        conn.close()
+                        await update.message.reply_text('⏳ Aguarde 5 minutos desde o último envio manual antes de pedir outra consulta.', reply_markup=main_menu_markup())
+                        return
+                except ValueError:
+                    pass
+
+        # INSERT do job manual
+        _cur.execute(
+            "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
+            (user_id, chat_id, '{}'),
+        )
+
+        audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
+                          payload={"trigger": "manual_now"})
+    except Exception as _exc:
+        logger.error('[agora] Erro: %s', _exc)
         conn.close()
-        await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
+        await update.message.reply_text('Erro ao criar consulta. Tente novamente.')
         return
 
-    # Usa conexão separada com autocommit=True e timeout curto para operações em scan_jobs
-    # Isso evita lock wait timeout com workers que estão processando a mesma tabela
-    replaced_existing = False
-    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
-    _sconn = pymysql.connect(
-        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
-        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
-        database=_parsed.path.lstrip('/') or 'vooindo',
-        autocommit=True, connect_timeout=5,
-    )
-    _cur = _sconn.cursor()
-    _cur.execute("SET SESSION lock_wait_timeout = 1")
-    _cur.execute(
-        "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
-        (user_id,),
-    )
-    if _cur.rowcount > 0:
-        replaced_existing = True
-    _sconn.close()
-
-    last_manual_row = conn.execute(
-        sql("SELECT COALESCE(last_manual_sent_at, COALESCE(last_sent_at, '')) AS last_manual_sent_at FROM bot_settings WHERE user_id = ?"),
-        (user_id,),
-    ).fetchone()
-    last_manual_sent_at = str((last_manual_row['last_manual_sent_at'] if isinstance(last_manual_row, dict) else last_manual_row[0]) or '') if last_manual_row else ''
-    if last_manual_sent_at and str(user_id) != '2':
-        try:
-            dt = datetime.fromisoformat(last_manual_sent_at.replace(' ', 'T'))
-            if 0 <= (now_local() - dt).total_seconds() < 5 * 60:
-                conn.close()
-                await update.message.reply_text('⏳ Aguarde 5 minutos desde o último envio manual antes de pedir outra consulta.', reply_markup=main_menu_markup())
-                return
-        except ValueError:
-            pass
-
-    # INSERT do job manual em conexão separada com autocommit para evitar lock com workers
-    _parsed = urlparse(os.environ.get('MYSQL_URL', ''))
-    _ic = pymysql.connect(
-        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
-        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
-        database=_parsed.path.lstrip('/') or 'vooindo',
-        autocommit=True, connect_timeout=5,
-    )
-    _ic.cursor().execute(
-        "INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'manual_now', 'pending', %s, 0)",
-        (user_id, chat_id, '{}'),
-    )
-    _ic.close()
-
-    audit.user_action("cmd_agora", chat_id=chat_id, user_id=user_id,
-                      payload={"trigger": "manual_now"})
     conn.close()
     clear_pending_input_state(context)
     if replaced_existing:
