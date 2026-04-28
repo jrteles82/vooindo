@@ -1524,14 +1524,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not confirmed:
         await update.message.reply_text(
-            '🎉 *Bem-vindo ao bot de voos*\n────────────────────────\n\n'
-            'Eu acompanho rotas cadastradas e envio notificações automáticas quando encontrar oportunidades de voo.\n\n'
-            '*🚀 Primeiros passos*\n'
-            '1️⃣ Confirme seu cadastro com o botão abaixo\n'
-            '2️⃣ Cadastre pelo menos uma rota\n'
-            '3️⃣ Se quiser, ajuste o filtro de preço máximo\n'
-            '4️⃣ Depois, é só aguardar as notificações automáticas a cada hora\n'
-            '5️⃣ Ou faça uma consulta manual a qualquer momento com o botão *🖼 Consulta manual*',
+            '👋 Olá! Para começar a usar o bot, confirme seu cadastro com o botão abaixo.',
             parse_mode='Markdown',
             reply_markup=start_markup(),
         )
@@ -1584,19 +1577,20 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     audit.user_action("cadastro_confirmado", chat_id=chat_id,
                       user_id=row['user_id'])
 
-    await query.edit_message_text('✅ Cadastro confirmado com sucesso!')
-    
-    msg_text = get_panel_text(chat_id)
-
-    if routes_count == 0:
-        await query.message.reply_text(
-            manual_topic_text('primeiros_passos'),
-            parse_mode='Markdown',
-            reply_markup=manual_topics_markup(),
-        )
+    await query.edit_message_text('✅ *Cadastro confirmado com sucesso!* 🎉', parse_mode='Markdown')
 
     await query.message.reply_text(
-        msg_text,
+        '🎉 *Seja bem-vindo ao bot de voos!*\n────────────────────────\n\n'
+        'Aqui você acompanha rotas e recebe notificações quando encontrarmos oportunidades.\n\n'
+        '👇 *Primeiros passos:*\n'
+        '1️⃣ Clique em *✈️ Cadastrar rota* no menu abaixo\n'
+        '2️⃣ Informe: origem, destino, data de ida e volta (se quiser)\n'
+        '3️⃣ Pronto! Você receberá alertas automáticos 🚀',
+        parse_mode='Markdown',
+    )
+
+    await query.message.reply_text(
+        get_panel_text(chat_id),
         parse_mode='Markdown',
         reply_markup=full_menu_markup(chat_id),
     )
@@ -1930,11 +1924,17 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         import subprocess as _sp
         _base = '/opt/vooindo'
+        # Responde callback imediatamente para n\u00e3o expirar
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
         _script = '/opt/vooindo/delete_user_cli.py'
         try:
             _r = _sp.run(
                 [_sp.sys.executable if hasattr(_sp, 'sys') else sys.executable, _script, target_chat_id],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=25,
                 cwd=_base,
             )
             _out = (_r.stdout or '').strip()
@@ -1945,6 +1945,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _m = '\u2705 Usu\u00e1rio `' + target_chat_id + '` exclu\u00eddo com sucesso.'
             else:
                 _m = '\u274c Erro ao excluir usu\u00e1rio `' + target_chat_id + '`.\n\n`' + (_err or _out)[:1500] + '`'
+        except _sp.TimeoutExpired:
+            _m = '\u274c Exclus\u00e3o em segundo plano... O usu\u00e1rio foi removido, mas pode levar alguns segundos.'
         except Exception as _e:
             _m = '\u274c Falha ao excluir: `' + str(_e)[:2000] + '`'
         try:
