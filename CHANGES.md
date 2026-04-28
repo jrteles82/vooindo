@@ -4,7 +4,7 @@
 
 ### feat: 4 workers paralelos com perfis Chrome isolados (`151d9b7`)
 - `run_all.py`: spawna `NUM_JOB_WORKERS` (padrão 4) instâncias de `job_worker.py`, cada uma com `GOOGLE_PERSISTENT_PROFILE_DIR=google_session_N`
-- `skyscanner.py`: passa `GOOGLE_PERSISTENT_PROFILE_DIR` para subprocesso executor; lock derivado do nome do diretório (`google_session_N.lock`) — workers não bloqueiam uns aos outros
+- `.py`: passa `GOOGLE_PERSISTENT_PROFILE_DIR` para subprocesso executor; lock derivado do nome do diretório (`google_session_N.lock`) — workers não bloqueiam uns aos outros
 - `google_flights_executor.py`: `SESSION_DIR` lê env var `GOOGLE_PERSISTENT_PROFILE_DIR`
 - Perfis criados: `google_session_{1..4}` (~97MB cada, sem Cache/Code Cache)
 

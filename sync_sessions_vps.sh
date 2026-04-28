@@ -9,7 +9,7 @@ set -e
 VPS_USER="teles"
 VPS_HOST="localhost"          # alterar para IP/host do VPS ao publicar
 VPS_PORT="22"
-BOT_PATH="/opt/skyscanner-bot"
+BOT_PATH="/opt/vooindo-bot"
 LOCAL_BOT_PATH="$(cd "$(dirname "$0")" && pwd)"
 NUM_PROFILES=4
 

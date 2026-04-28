@@ -1,8 +1,8 @@
 import json, re, time
 
-# This script replaces the GoogleFlightsScraper class in skyscanner.py with an advanced version.
+# This script replaces the GoogleFlightsScraper class in .py with an advanced version.
 
-with open('skyscanner.py', 'r') as f:
+with open('.py', 'r') as f:
     text = f.read()
 
 start_idx = text.find('class GoogleFlightsScraper:')
@@ -274,7 +274,7 @@ new_scraper = '''class GoogleFlightsScraper:
 '''
 
 new_text = text[:start_idx] + new_scraper + text[end_idx:]
-with open('skyscanner.py', 'w') as f:
+with open('.py', 'w') as f:
     f.write(new_text)
 
-print("Updated skyscanner.py")
+print("Updated .py")

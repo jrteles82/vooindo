@@ -24,7 +24,7 @@ processes = []
 _lock_handle = None
 START_DELAY_SECONDS = float(os.getenv('RUN_ALL_START_DELAY_SECONDS', '2'))
 RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '20'))
-NUM_JOB_WORKERS = int(os.getenv('NUM_JOB_WORKERS', '3'))
+NUM_JOB_WORKERS = int(os.getenv("NUM_JOB_WORKERS", "1"))  # 1 scheduled + 1 manual = 2 workers total
 
 
 def _find_stale_pids(script_names: list[str]) -> list[int]:

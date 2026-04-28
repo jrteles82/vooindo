@@ -27,7 +27,7 @@ O bot envia `⚠️ Sessão Google expirada` quando o Chrome não consegue busca
 
 **1. Renovar sessão localmente:**
 ```bash
-cd /home/teles/dev/python/skyscanner-bot
+cd /home/teles/dev/python/vooindo-bot
 source .venv/bin/activate
 python renew_google_session.py
 # Chrome abre → faz login na conta Google → pressiona Enter no terminal

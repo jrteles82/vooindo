@@ -1024,6 +1024,9 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 best_agency_price = best_agency[1]
                 best_agency_visible_price = best_agency[2]
                 best_agency_url = best_agency[4]
+            # Propaga nome da companhia aérea para best_vendor quando disponível
+            if not best_vendor and best_airline_vendor:
+                best_vendor = best_airline_vendor
             return {
                 "ok": final_price is not None,
                 "origin": origin,
@@ -1045,6 +1048,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 "best_airline_price": best_airline_price,
                 "best_airline_url": best_airline_url,
                 "best_airline_visible_price": best_airline_visible_price,
+                "airline": best_airline_vendor or "",
                 "best_agency_vendor": best_agency_vendor,
                 "best_agency_price": best_agency_price,
                 "best_agency_url": best_agency_url,

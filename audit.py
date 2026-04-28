@@ -9,7 +9,7 @@ Categorias
 ----------
   USER_ACTION  — comandos e botões acionados pelo usuário
   PAYMENT      — ciclo de vida de pagamentos PIX
-  SCRAPING     — buscas de voos (Google Flights, MaxMilhas)
+  SCRAPING     — buscas de voos (Google Flights, )
   AUTH         — sessão Google Flights (ok / expirada / renovada)
   ACCESS       — controle de acesso (liberado / bloqueado / expirado)
   ADMIN        — ações do administrador no painel

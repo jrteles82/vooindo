@@ -1,11 +1,12 @@
-#!/home/teles/dev/python/vooindo-bot/.venv/bin/python
+#!/home/teles/dev/python/skyscanner-bot/.venv/bin/python
 """
 selector_health.py — Verifica seletores Playwright do Google Flights,
 detecta quebras, avisa no Telegram e só altera após confirmação explícita.
 
 Fluxo de correção:
 1. heurísticas Python
-2. Deepseek (responsável principal)
+2. GPT
+3. Claude
 
 Se um não resolver, tenta o próximo.
 
@@ -88,7 +89,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "main_role",
         "selector": "[role='main']",
         "description": "Área principal da página de resultados",
-        "files": ["google_flights_executor.py", ".py", "update_scraper.py"],
+        "files": ["google_flights_executor.py", "skyscanner.py", "update_scraper.py"],
         "critical": True,
         "kind": "css",
     },
@@ -97,7 +98,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "flight_cards_listitem",
         "selector": "[role='main'] [role='listitem']",
         "description": "Cards de voo (listitem na área principal)",
-        "files": ["google_flights_executor.py", ".py", "update_scraper.py"],
+        "files": ["google_flights_executor.py", "skyscanner.py", "update_scraper.py"],
         "critical": True,
         "kind": "css",
     },
@@ -105,7 +106,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "flight_cards_li",
         "selector": "[role='main'] li",
         "description": "Items de voo como elemento li dentro da área principal",
-        "files": ["google_flights_executor.py", ".py"],
+        "files": ["google_flights_executor.py", "skyscanner.py"],
         "critical": False,
         "kind": "css",
     },
@@ -113,7 +114,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "flight_cards_jscontroller",
         "selector": "[role='main'] div[jscontroller]",
         "description": "Cards de voo com atributo jscontroller do Google",
-        "files": [".py", "update_scraper.py"],
+        "files": ["skyscanner.py", "update_scraper.py"],
         "critical": False,
         "kind": "css",
     },
@@ -129,7 +130,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "flight_jsname",
         "selector": "[jsname='v8pSFe']",
         "description": "Componente JS interno v8pSFe (painel de detalhes)",
-        "files": [".py"],
+        "files": ["skyscanner.py"],
         "critical": False,
         "kind": "css",
     },
@@ -138,7 +139,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "profile_conta_google",
         "selector": 'a[aria-label*="Conta do Google"]',
         "description": "Link da conta Google (interface PT-BR)",
-        "files": ["google_flights_executor.py", ".py", "renew_google_session.py"],
+        "files": ["google_flights_executor.py", "skyscanner.py", "renew_google_session.py"],
         "critical": False,
         "kind": "css",
     },
@@ -146,7 +147,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "profile_google_account",
         "selector": 'a[aria-label*="Google Account"]',
         "description": "Link da conta Google (interface EN)",
-        "files": ["google_flights_executor.py", ".py", "renew_google_session.py"],
+        "files": ["google_flights_executor.py", "skyscanner.py", "renew_google_session.py"],
         "critical": False,
         "kind": "css",
     },
@@ -154,7 +155,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "profile_data_ogsr",
         "selector": "[data-ogsr-up]",
         "description": "Atributo data-ogsr-up presente quando usuário está autenticado",
-        "files": ["google_flights_executor.py", ".py", "renew_google_session.py"],
+        "files": ["google_flights_executor.py", "skyscanner.py", "renew_google_session.py"],
         "critical": False,
         "kind": "css",
     },
@@ -163,7 +164,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "tab_melhor_opcao",
         "selector": "Melhor opção",
         "description": "Aba/botão 'Melhor opção' nos resultados",
-        "files": ["google_flights_executor.py", ".py"],
+        "files": ["google_flights_executor.py", "skyscanner.py"],
         "critical": True,
         "kind": "text",
     },
@@ -171,7 +172,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "tab_menores_precos",
         "selector": "Menores preços",
         "description": "Aba/botão 'Menores preços' nos resultados",
-        "files": ["update_scraper.py", ".py"],
+        "files": ["update_scraper.py", "skyscanner.py"],
         "critical": False,
         "kind": "text",
     },
@@ -179,7 +180,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "key": "tab_outros_voos",
         "selector": "Outros voos",
         "description": "Seção 'Outros voos' nos resultados",
-        "files": ["google_flights_executor.py", ".py"],
+        "files": ["google_flights_executor.py", "skyscanner.py"],
         "critical": False,
         "kind": "text",
     },
@@ -190,7 +191,7 @@ SELECTOR_REGISTRY: list[dict[str, Any]] = [
         "files": [
             "google_flights_executor.py",
             "google_flights_profile_debug.py",
-            ".py",
+            "skyscanner.py",
         ],
         "critical": False,
         "kind": "text",
@@ -300,44 +301,65 @@ def _autocorrect_via_python(page, entry: dict[str, Any]) -> str | None:
     return None
 
 
-def _autocorrect_via_deepseek(page, entry: dict[str, Any]) -> str | None:
-    """Usa Deepseek para sugerir correção de seletor."""
-    import requests  # noqa: PLC0415
-    api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+def _autocorrect_via_gpt(page, entry: dict[str, Any]) -> str | None:
+    try:
+        from openai import OpenAI  # noqa: PLC0415
+    except ImportError:
+        logger.warning("openai não instalado — GPT desabilitado")
+        return None
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
-        logger.warning("DEEPSEEK_API_KEY não configurado — Deepseek desabilitado")
+        logger.warning("OPENAI_API_KEY não configurado — GPT desabilitado")
         return None
     dom_html = _capture_dom_html(page)
     if not dom_html:
-        logger.error("Não foi possível capturar o DOM para Deepseek")
+        logger.error("Não foi possível capturar o DOM para GPT")
         return None
     prompt = _build_llm_prompt(entry, dom_html)
     try:
-        resp = requests.post(
-            "https://api.deepseek.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-                "messages": [
-                    {"role": "system", "content": "Você é um especialista em automação web com Playwright. Seja conciso."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 150,
-            },
-            timeout=60,
+        client = OpenAI(api_key=api_key)
+        response = client.responses.create(
+            model=os.getenv("SELECTOR_HEALTH_GPT_MODEL", "gpt-5-mini"),
+            input=prompt,
+            max_output_tokens=150,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        suggestion = data["choices"][0]["message"]["content"].strip().strip("\"'`")
-        logger.info("Deepseek sugeriu: '%s'", suggestion)
+        suggestion = (getattr(response, "output_text", "") or "").strip().strip("\"'`")
+        logger.info("GPT sugeriu: '%s'", suggestion)
         return suggestion or None
     except Exception as exc:
-        logger.error("Erro na chamada Deepseek API: %s", exc)
+        logger.error("Erro na chamada GPT API: %s", exc)
         return None
+
+
+def _autocorrect_via_claude(page, entry: dict[str, Any]) -> str | None:
+    try:
+        import anthropic  # noqa: PLC0415
+    except ImportError:
+        logger.warning("anthropic não instalado — Claude desabilitado")
+        return None
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("ANTHROPIC_API_KEY não configurado — Claude desabilitado")
+        return None
+    dom_html = _capture_dom_html(page)
+    if not dom_html:
+        logger.error("Não foi possível capturar o DOM para Claude")
+        return None
+    prompt = _build_llm_prompt(entry, dom_html)
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=os.getenv("SELECTOR_HEALTH_CLAUDE_MODEL", "claude-sonnet-4-6"),
+            max_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        suggestion = response.content[0].text.strip().strip("\"'`")
+        logger.info("Claude sugeriu: '%s'", suggestion)
+        return suggestion or None
+    except Exception as exc:
+        logger.error("Erro na chamada Claude API: %s", exc)
+        return None
+
 
 # ── aplica correção nos arquivos-fonte ────────────────────────────────────────
 
@@ -521,7 +543,8 @@ def run_health_check(url: str | None = None, dry_run: bool = False, approve_toke
                 source = None
                 for source_name, resolver in [
                     ("python", _autocorrect_via_python),
-                    ("deepseek", _autocorrect_via_deepseek),
+                    ("gpt", _autocorrect_via_gpt),
+                    ("claude", _autocorrect_via_claude),
                 ]:
                     logger.info("🔧  Tentando auto-correção para '%s' via %s…", key, source_name)
                     candidate = resolver(page, entry)

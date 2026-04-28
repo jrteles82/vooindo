@@ -40,7 +40,7 @@ journalctl -u vooindo.service --no-pager -l | rg "ALERT_ADMIN|JOB_RECOVERY|PROCE
 - Para renovar sessão:
 
 ```bash
-cd /home/teles/dev/python/skyscanner-bot
+cd /home/teles/dev/python/vooindo-bot
 source .venv/bin/activate
 python renew_google_session.py
 ```

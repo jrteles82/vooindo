@@ -149,14 +149,6 @@ def user_label(user_row) -> str:
 
 
 def _vendor_filter_label(filters: dict, show_result_type_filters: bool = True) -> str:
-    if not show_result_type_filters:
-        return ''
-    any_airline = bool(filters.get('any_airline', True))
-    agencies = bool(filters.get('agencies', False))
-    if any_airline and agencies:
-        return '🛫🏪 Filtro: Companhias aéreas + Agências'
-    if agencies:
-        return '🏪 Filtro: Agências'
     return '🛫 Filtro: Companhias aéreas'
 
 
@@ -190,10 +182,232 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
 
     filters = parse_airline_filters(airline_filters_json)
     show_result_type_filters = should_show_result_type_filters(conn)
-    should_split = not show_result_type_filters or (bool(filters.get('any_airline', True)) and bool(filters.get('agencies', False)))
-    allow_agencies = True if should_split else bool(filters.get('agencies', False))
     sources_with_filter = dict(sources)
-    sources_with_filter['allow_agencies'] = allow_agencies
+
+    parsed = run_scan_for_routes(routes, sources=sources_with_filter)
+    parsed = expand_rows_by_result_type(parsed, airline_filters_json, show_result_type_filters=show_result_type_filters)
+    filtered = filter_rows_by_max_price(parsed, max_price)
+    filtered = normalize_rows_for_airline_priority(filtered, airline_filters_json)
+    filtered = filter_rows_with_vendor(filtered)
+    filtered = filter_rows_by_airlines(filtered, airline_filters_json, show_result_type_filters=show_result_type_filters)
+    filtered = _merge_rows_for_combined_result_view(filtered)
+    if not filtered:
+        no_result_reason = 'timeout_executor' if _scan_failed_by_executor_timeout(parsed) else 'sem_resultado_filtrado'
+        if no_result_reason == 'timeout_executor':
+            logger.warning('[bot-scheduler] chat_id=%s | scan sem resultado por timeout do executor', chat_id)
+        loop.run_until_complete(_send_message(bot, chat_id, '⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+        if charge_now:
+            conn.execute(
+                sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = ?"),
+                (chat_id,)
+            )
+            conn.commit()
+        return False, no_result_reason, 0
+
+    sent_count = 0
+    image_path = build_scan_results_image(filtered, trigger='agendada')
+    if not image_path:
+        return False, 'sem_imagem', len(filtered)
+    try:
+        loop.run_until_complete(_send_photo(bot, chat_id, image_path))
+        links_msg = build_booking_links_message(filtered)
+        if links_msg:
+            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+        else:
+            loop.run_until_complete(_send_message(bot, chat_id, '🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+        sent_count = len(filtered)
+    finally:
+        try:
+            os.remove(image_path)
+        except OSError:
+            pass
+
+    return True, 'ok', sent_count
+import asyncio
+import json
+import os
+import random
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from pathlib import Path
+from threading import Lock
+
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import TelegramError
+from telegram.request import HTTPXRequest
+
+from app_logging import get_logger
+from audit import audit
+
+from access_policy import (
+    ensure_policy_schema,
+    ensure_user_access,
+    get_free_uses_limit,
+    is_active_access,
+    should_charge_user as ap_should_charge_user,
+    is_maintenance_mode,
+    is_exempt_from_maintenance,
+)
+from config import TOKEN, now_local, now_local_iso
+from db import connect as connect_db, now_expression, sql, DatabaseRateLimitError
+from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view
+from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
+
+# Número de workers paralelos para scheduler
+_NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '3'))
+
+logger = get_logger('bot_scheduler')
+
+_SCAN_INTERVAL_MINUTES = int(os.getenv("SCAN_INTERVAL_MINUTES", "60"))
+_DEFAULT_SEND_COOLDOWN_SECONDS = 30 * 60
+SEND_COOLDOWN_SECONDS = int(
+    os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
+)
+_METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
+
+
+def get_db():
+    return connect_db()
+
+
+def get_scan_interval_seconds(conn) -> int:
+    row = conn.execute(
+        sql("SELECT scan_interval_minutes FROM app_settings WHERE id = 1")
+    ).fetchone()
+    if row and row["scan_interval_minutes"] is not None:
+        return max(60, int(row["scan_interval_minutes"]) * 60)
+    return max(60, max(1, _SCAN_INTERVAL_MINUTES) * 60)
+
+
+def should_charge_user(conn, chat_id: str, access_row) -> bool:
+    return ap_should_charge_user(conn, chat_id, access_row)
+
+
+def iter_users(conn):
+    return conn.execute(
+        sql('''
+        SELECT bu.user_id, bu.chat_id, COALESCE(bu.first_name, '') AS first_name, COALESCE(bu.username, '') AS username,
+               COALESCE(bs.max_price, 1200) AS max_price,
+               COALESCE(bs.enable_google_flights, 1) AS enable_google_flights,
+               COALESCE(bs.alerts_enabled, 1) AS alerts_enabled,
+               COALESCE(bs.last_sent_at, '') AS last_sent_at,
+               COALESCE(bs.last_manual_sent_at, '') AS last_manual_sent_at,
+               COALESCE(bs.last_scheduled_sent_at, '') AS last_scheduled_sent_at,
+               COALESCE(bs.airline_filters_json, '') AS airline_filters_json
+        FROM bot_users bu
+        LEFT JOIN bot_settings bs ON bs.user_id = bu.user_id
+        WHERE bu.confirmed = 1 AND COALESCE(bu.blocked, 0) = 0
+        ORDER BY bu.user_id
+        ''')
+    ).fetchall()
+
+
+def was_sent_recently(last_sent_at: str, window_seconds: int = SEND_COOLDOWN_SECONDS) -> bool:
+    if not last_sent_at:
+        return False
+    try:
+        dt = datetime.fromisoformat(last_sent_at.replace(' ', 'T'))
+    except ValueError:
+        return False
+    now = now_local()
+    delta_seconds = (now - dt).total_seconds()
+    if delta_seconds < -60:
+        return False
+    return delta_seconds < max(60, window_seconds)
+
+
+def mark_sent(conn, user_id: int, send_type: str = 'scheduled'):
+    if send_type == 'manual':
+        conn.execute(
+            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
+            (user_id,),
+        )
+    else:
+        conn.execute(
+            sql(f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = ?"),
+            (user_id,),
+        )
+    conn.commit()
+
+
+async def _send_message(bot: Bot, chat_id: str, text: str, reply_markup=None, disable_web_page_preview: bool = False, parse_mode: str | None = None):
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup, disable_web_page_preview=disable_web_page_preview)
+
+
+def main_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🏠 Abrir menu principal', callback_data='menu:back')],
+    ])
+
+
+async def _send_photo(bot: Bot, chat_id: str, image_path: str):
+    with open(image_path, 'rb') as image_file:
+        await bot.send_photo(chat_id=chat_id, photo=image_file)
+
+
+def _send_links_message(bot: Bot, loop, chat_id: str, links_msg: str, reply_markup) -> None:
+    try:
+        loop.run_until_complete(_send_message(bot, chat_id, links_msg, reply_markup=reply_markup, disable_web_page_preview=True, parse_mode='HTML'))
+    except TelegramError as exc:
+        if 'parse' in str(exc).lower() or 'entities' in str(exc).lower():
+            logger.warning('HTML parse error ao enviar links, fallback para texto puro | chat_id=%s | erro=%s', chat_id, exc)
+            plain = re.sub(r'<[^>]+>', '', links_msg)
+            loop.run_until_complete(_send_message(bot, chat_id, plain, reply_markup=reply_markup, disable_web_page_preview=True))
+        else:
+            raise
+
+
+def user_label(user_row) -> str:
+    first_name = str(user_row['first_name'] or '').strip()
+    username = str(user_row['username'] or '').strip()
+    chat_id = str(user_row['chat_id'])
+    if username:
+        username = f'@{username.lstrip("@")} '
+    else:
+        username = ''
+    if first_name:
+        return f'{first_name} | {username}{chat_id}'.strip()
+    return f'{username}{chat_id}'.strip()
+
+
+
+def _vendor_filter_label(filters: dict, show_result_type_filters: bool = True) -> str:
+    return '🛫 Filtro: Companhias aéreas'
+
+
+def _scan_failed_by_executor_timeout(rows: list[dict]) -> bool:
+    if not rows:
+        return False
+    timeout_rows = 0
+    priced_rows = 0
+    for row in rows:
+        if isinstance(row.get('price'), (int, float)):
+            priced_rows += 1
+        notes = str(row.get('notes') or '').lower()
+        if 'executor timeout' in notes or 'timeout na página' in notes:
+            timeout_rows += 1
+    return timeout_rows > 0 and priced_rows == 0
+
+
+def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: float, sources: dict, airline_filters_json: str | None = None) -> tuple[bool, str, int]:
+    access = ensure_user_access(conn, chat_id)
+    charge_now = should_charge_user(conn, chat_id, access) and not is_active_access(access)
+    if charge_now:
+        free_uses = int(access['free_uses'] or 0)
+        free_uses_limit = get_free_uses_limit(conn)
+        if free_uses >= free_uses_limit:
+            logger.info('[bot-scheduler] chat_id=%s | sem envio agendado | acesso insuficiente', chat_id)
+            return False, 'bloqueado_por_monetizacao', 0
+
+    routes = _build_user_routes(conn, user_id, prune_expired=True)
+    if not routes:
+        return False, 'sem_rotas_ativas', 0
+
+    filters = parse_airline_filters(airline_filters_json)
+    show_result_type_filters = should_show_result_type_filters(conn)
+    sources_with_filter = dict(sources)
 
     parsed = run_scan_for_routes(routes, sources=sources_with_filter)
     parsed = expand_rows_by_result_type(parsed, airline_filters_json, show_result_type_filters=show_result_type_filters)
@@ -234,7 +448,6 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
             except OSError:
                 pass
     else:
-        result_type = 'agency' if bool(filters.get('agencies', False)) and not bool(filters.get('any_airline', True)) else 'airline'  # noqa: E501
         image_path = build_scan_results_image(filtered, trigger='agendada', result_type=result_type)
         if not image_path:
             return False, 'sem_imagem', len(filtered)
@@ -398,9 +611,16 @@ def main():
                     label = user_label(user)
                     chat_id = str(user['chat_id'])
                     user_id = int(user['user_id'])
+                    # Calcular custo (quantidade de rotas) para balanceamento inteligente
+                    routes_row = conn.execute(
+                        sql("SELECT COUNT(*) as c FROM user_routes WHERE user_id = ? AND active = 1"),
+                        (user_id,)
+                    ).fetchone()
+                    cost = int((routes_row['c'] if isinstance(routes_row, dict) else routes_row[0]) or 1)
+
                     conn.execute(
-                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload) VALUES (?, ?, 'scheduled', 'pending', ?)"),
-                        (user_id, chat_id, '{}'),
+                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (?, ?, 'scheduled', 'pending', ?, ?)"),
+                        (user_id, chat_id, '{}', cost),
                     )
                     conn.commit()
                     logger.info("[bot-scheduler] %s | job criado para worker", label)

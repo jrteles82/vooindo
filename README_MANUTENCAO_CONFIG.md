@@ -6,7 +6,7 @@ Documento enxuto com o que vale no projeto hoje.
 
 - `.env`: segredos e parâmetros de infraestrutura/execução.
 - `MySQL`: regras dinâmicas de negócio, filas, usuários, pagamentos, rotas e histórico.
-- código (`main.py`, `skyscanner.py`, `run_all.py`): comportamento operacional controlado por variáveis de ambiente.
+- código (`main.py`, `.py`, `run_all.py`): comportamento operacional controlado por variáveis de ambiente.
 
 ## Banco usado atualmente
 
@@ -43,7 +43,7 @@ Variáveis principais:
 - `SCAN_IMAGE_SCALE`
 - `SCAN_IMAGE_TARGET_WIDTH`
 - `PAYMENT_WEBHOOK_PORT`
-- `SKYSCANNER_SECRET_KEY`
+- `_SECRET_KEY`
 
 ## Onde ficam os dados dinâmicos
 
@@ -66,18 +66,18 @@ No MySQL:
 
 ### Validar sintaxe
 ```bash
-python3 -m py_compile main.py skyscanner.py job_worker.py bot_scheduler.py
+python3 -m py_compile main.py .py job_worker.py bot_scheduler.py
 ```
 
 ### Reiniciar serviço
 ```bash
-sudo systemctl restart skyscanner-bot.service
-systemctl status skyscanner-bot.service --no-pager --lines=20
+sudo systemctl restart vooindo-bot.service
+systemctl status vooindo-bot.service --no-pager --lines=20
 ```
 
 ### Logs
 ```bash
-sudo journalctl -u skyscanner-bot.service -f
+sudo journalctl -u vooindo-bot.service -f
 ```
 
 ## Observação sobre legado

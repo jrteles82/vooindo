@@ -25,6 +25,7 @@ from audit import audit
 from config import TOKEN, now_local
 from db import auto_pk_column, connect as connect_db, indexed_text_column, now_expression, sql, text_column, DatabaseRateLimitError
 from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
+from ai_assistant import generate_ai_message
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from google_session_sync import sync_current_worker_profile_from_base
 
@@ -159,7 +160,7 @@ def fetch_next_job(conn, pool='scheduled'):
             SELECT id
             FROM scan_jobs
             WHERE status = 'pending' AND {job_type_filter}
-            ORDER BY id
+            ORDER BY cost_score ASC, id ASC
             LIMIT 1
             FOR UPDATE
             """
@@ -171,7 +172,7 @@ def fetch_next_job(conn, pool='scheduled'):
             SELECT id
             FROM scan_jobs
             WHERE status = 'pending' AND {job_type_filter}
-            ORDER BY id
+            ORDER BY cost_score ASC, id ASC
             LIMIT 1
             """
         ).fetchone()
@@ -234,14 +235,6 @@ def _is_timeout_error(exc: BaseException) -> bool:
 
 
 def _vendor_filter_label(filters: dict, show_result_type_filters: bool = True) -> str:
-    if not show_result_type_filters:
-        return ''
-    any_airline = bool(filters.get('any_airline', True))
-    agencies = bool(filters.get('agencies', False))
-    if any_airline and agencies:
-        return '🛫🏪 Filtro: Companhias aéreas + Agências'
-    if agencies:
-        return '🏪 Filtro: Agências'
     return '🛫 Filtro: Companhias aéreas'
 
 
@@ -266,11 +259,14 @@ def get_user_settings(conn, user_id: int):
 async def _send_admin_alert(bot: Bot, message: str, reply_markup=None):
     if not ADMIN_CHAT_ID:
         return
-    try:
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message, parse_mode='Markdown',
-                               reply_markup=reply_markup)
-    except Exception as exc:
-        logger.warning('[ALERT_ADMIN][JOB_WORKER] Falha ao enviar alerta admin | erro=%s', exc)
+    # Tenta Markdown, fallback pra texto puro
+    for parse_mode in ('Markdown', None):
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message,
+                                   parse_mode=parse_mode, reply_markup=reply_markup)
+            break
+        except Exception:
+            continue
 
 
 def _alert_admin(bot: Bot, loop, message: str) -> None:
@@ -346,42 +342,15 @@ def _notify_session_expired(bot: Bot, loop, score: int = 0, parsed_rows: list | 
     if now - _session_alert_sent_at < _SESSION_ALERT_COOLDOWN:
         return
     _session_alert_sent_at = now
+    # Alerta removido conforme solicitado: score 1 não é mais considerado degradado
+    # pois o usuário não utiliza mais agências.
     if score == 1:
-        # Sessao pode estar OK mesmo com auth_score=1 se:
-        # 1) Alguma rota capturou agencia (ex: maxmilhas)
-        # 2) Qualquer rota capturou preco de vendor (operacional)
-        # auth_score=1 é falso positivo frequente do check_session_health
-        suppressed = False
-        if parsed_rows:
-            for r in parsed_rows:
-                notes = str(r.get('notes') or '')
-                has_bad_auth = 'auth_score=1' in notes or 'auth_score=0' in notes
-                agency_price = r.get('best_agency_price')
-                agency_vendor = r.get('best_agency_vendor') or ''
-                booking_opts = r.get('booking_options', 0) or 0
-                has_agency = (agency_price is not None and float(agency_price) > 0) or (agency_vendor.strip() and agency_vendor.strip().lower() != 'none') or booking_opts > 0
-                # Se alguma rota tem agencia, sessao ta OK
-                if has_agency:
-                    suppressed = True
-                    break
-                # Se tem preco de vendor (cia aerea), o scan funcionou
-                airline_price = r.get('best_airline_price')
-                airline_vendor = r.get('best_airline_vendor') or ''
-                has_airline_result = (airline_price is not None and float(airline_price) > 0) or (airline_vendor.strip() and airline_vendor.strip().lower() != 'none')
-                if has_airline_result:
-                    suppressed = True
-                    break
-        if suppressed:
-            return
-        msg = (
-            "⚠️ *Sessão Google degradada* \\(auth\\_score=1/2\\)\n\n"
-            "Agências não aparecem nos resultados\\. Renove a sessão:"
-        )
-    else:
-        msg = (
-            "🔴 *Sessão Google expirada* \\(auth\\_score=0/2\\)\n\n"
-            "O bot não consegue buscar voos\\. Renove a sessão:"
-        )
+        return
+
+    msg = (
+        "🔴 *Sessão Google expirada* \\(auth\\_score=0/2\\)\n\n"
+        "O bot não consegue buscar voos\\. Renove a sessão:"
+    )
     loop.run_until_complete(_send_admin_alert(bot, msg, reply_markup=_renovar_sessao_markup()))
 
 
@@ -420,57 +389,13 @@ def _row_debug_summary(row: dict) -> str:
     return f'{origin}->{destination} | cia={company} | vendor={vendor} | tipo={result_type} | preço={price_txt} | notes={notes or "-"}'
 
 
-def _log_raw_agency_diagnostics(job_id: int, parsed: list[dict]) -> None:
-    for idx, row in enumerate(parsed[:6], start=1):
-        booking_options_count = 0
-        booking_vendors: list[str] = []
-        raw_booking = row.get('booking_options_json')
-        if isinstance(raw_booking, str) and raw_booking.strip():
-            try:
-                decoded = json.loads(raw_booking)
-                if isinstance(decoded, list):
-                    booking_options_count = len(decoded)
-                    for item in decoded[:6]:
-                        if isinstance(item, dict):
-                            vendor = str(item.get('vendor') or '').strip()
-                            if vendor:
-                                booking_vendors.append(vendor)
-            except Exception:
-                booking_vendors.append('booking_options_json_decode_error')
-        logger.info(
-            '[job-worker][raw-agency] job_id=%s | row=%s | route=%s->%s | best_vendor=%s | best_vendor_price=%s | best_airline_vendor=%s | best_airline_price=%s | best_agency_vendor=%s | best_agency_price=%s | booking_options=%s | booking_vendors=%s',
-            job_id,
-            idx,
-            str(row.get('origin') or '').upper(),
-            str(row.get('destination') or '').upper(),
-            row.get('best_vendor'),
-            row.get('best_vendor_price'),
-            row.get('best_airline_vendor'),
-            row.get('best_airline_price'),
-            row.get('best_agency_vendor'),
-            row.get('best_agency_price'),
-            booking_options_count,
-            booking_vendors,
-        )
-
-
 def _log_filter_diagnostics(job_id: int, max_price: float | None, filters: dict, show_result_type_filters: bool,
                             parsed: list[dict], expanded: list[dict], filtered_price: list[dict],
                             filtered_normalized: list[dict], filtered_vendor: list[dict], filtered: list[dict]) -> None:
-    logger.info(
-        '[job-worker][filters] job_id=%s | max_price=%s | any_airline=%s | agencies=%s | show_result_type_filters=%s | parsed=%s | expanded=%s | after_price=%s | after_normalize=%s | after_vendor=%s | final=%s',
-        job_id,
-        max_price,
-        bool(filters.get('any_airline', True)),
-        bool(filters.get('agencies', False)),
-        show_result_type_filters,
-        len(parsed),
-        len(expanded),
-        len(filtered_price),
-        len(filtered_normalized),
-        len(filtered_vendor),
-        len(filtered),
-    )
+    logger.info('[job-worker][filters] job_id=%s | max_price=%s | any_airline=%s | type_filter=%s | parsed=%s | expanded=%s | price=%s | norm=%s | vendor=%s | final=%s',
+        job_id, max_price, bool(filters.get('any_airline', True)), show_result_type_filters,
+        len(parsed), len(expanded), len(filtered_price), len(filtered_normalized),
+        len(filtered_vendor), len(filtered))
 
     if filtered:
         sample = '; '.join(_row_debug_summary(row) for row in filtered[:3])
@@ -517,8 +442,9 @@ def _send_links_message(bot: Bot, loop, chat_id: str, links_msg: str, reply_mark
         ))
     except TelegramError as exc:
         if 'parse' in str(exc).lower() or 'entities' in str(exc).lower():
-            logger.warning('HTML parse error ao enviar links, fallback para texto puro | chat_id=%s | erro=%s', chat_id, exc)
-            plain = re.sub(r'<[^>]+>', '', links_msg)
+            logger.warning('HTML parse error ao enviar links, fallback para texto sem tags | chat_id=%s | erro=%s', chat_id, exc)
+            import re as _re
+            plain = _re.sub(r'<[^>]+>', '', links_msg)
             loop.run_until_complete(bot.send_message(
                 chat_id=chat_id, text=plain,
                 disable_web_page_preview=True, reply_markup=reply_markup,
@@ -588,22 +514,20 @@ def process_job(conn, bot: Bot, loop, job):
         airline_filters_json = ''
     filters = parse_airline_filters(airline_filters_json)
     show_result_type_filters = should_show_result_type_filters(conn)
-    should_split = not show_result_type_filters or (bool(filters.get('any_airline', True)) and bool(filters.get('agencies', False)))
-    allow_agencies = True if should_split else bool(filters.get('agencies', False))
-    logger.info('[job-worker] job_id=%s | iniciando scan | google=%s | allow_agencies=%s', job_id, bool(settings['enable_google_flights']), allow_agencies)
+    # Agências desativadas conforme solicitação
+    should_split = False
+
     is_manual_now = str(job.get('job_type') or '').strip().lower() == 'manual_now'
     
     parsed = run_scan_for_routes(
         routes,
         sources={
             'google_flights': bool(settings['enable_google_flights']),
-            'maxmilhas': False,
-            'allow_agencies': allow_agencies,
+            '': False,
         },
         fast_mode=is_manual_now
     )
     logger.info('[job-worker] job_id=%s | scan concluído | parsed=%s', job_id, len(parsed))
-    _log_raw_agency_diagnostics(job_id, parsed)
     if is_job_cancelled(conn, job_id):
         raise RuntimeError('cancelled_by_new_request')
     if _rows_have_auth_error(parsed):
@@ -638,44 +562,32 @@ def process_job(conn, bot: Bot, loop, job):
     is_scheduled_job = str(job.get('job_type') or '').strip().lower() == 'scheduled'
     image_trigger = 'agendada' if is_scheduled_job else 'manual-user'
     send_type = 'scheduled' if is_scheduled_job else 'manual'
+    image_path = None
     if split_blocks:
         image_path = build_scan_results_image(filtered, trigger=image_trigger)
-        if not image_path:
-            raise RuntimeError('Falha ao gerar print da consulta')
-        try:
-            if is_job_cancelled(conn, job_id):
-                raise RuntimeError('cancelled_by_new_request')
-            logger.info('[job-worker] job_id=%s | enviando imagem split', job_id)
-            send_photo(bot, loop, chat_id, image_path)
-            links_msg = build_booking_links_message(filtered)
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-            else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
-        finally:
-            try:
-                os.remove(image_path)
-            except OSError:
-                pass
     else:
-        image_path = build_scan_results_image(filtered, trigger=image_trigger, result_type='agency' if bool(filters.get('agencies', False)) and not bool(filters.get('any_airline', True)) else 'airline')
-        if not image_path:
-            raise RuntimeError('Falha ao gerar print da consulta')
+        image_path = build_scan_results_image(filtered, trigger=image_trigger)
+    if not image_path:
+        raise RuntimeError('Falha ao gerar print da consulta')
+    try:
+        if is_job_cancelled(conn, job_id):
+            raise RuntimeError('cancelled_by_new_request')
+        logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
+        send_photo(bot, loop, chat_id, image_path)
+        # Mensagem IA + links inline
         try:
-            if is_job_cancelled(conn, job_id):
-                raise RuntimeError('cancelled_by_new_request')
-            logger.info('[job-worker] job_id=%s | enviando imagem única', job_id)
-            send_photo(bot, loop, chat_id, image_path)
-            links_msg = build_booking_links_message(filtered, result_type='agency' if bool(filters.get('agencies', False)) and not bool(filters.get('any_airline', True)) else 'airline')
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+            ai_msg = generate_ai_message(filtered)
+            if ai_msg:
+                _send_links_message(bot, loop, chat_id, ai_msg, main_menu_markup())
             else:
                 loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
-        finally:
-            try:
-                os.remove(image_path)
-            except OSError:
-                pass
+        except Exception:
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+    finally:
+        try:
+            os.remove(image_path)
+        except OSError:
+            pass
     logger.info('[job-worker] job_id=%s | envio concluído | atualizando last_sent', job_id)
     if is_scheduled_job:
         try:

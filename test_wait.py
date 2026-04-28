@@ -3,7 +3,7 @@ import re
 import os
 from playwright.sync_api import sync_playwright
 import urllib.parse
-from skyscanner import GoogleFlightsScraper
+from  import GoogleFlightsScraper
 
 def test():
     q = "REC to PVH 2026-06-16 one way"

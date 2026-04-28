@@ -158,7 +158,7 @@ def run_keepalive() -> bool:
             "⚠️ *Sessão Google expirada*\n\n"
             "Keepalive detectou sessão inválida.\n"
             "Execute no servidor:\n"
-            "`cd /opt/skyscanner-bot && .venv/bin/python renew_google_session.py`"
+            "`cd /opt/vooindo-bot && .venv/bin/python renew_google_session.py`"
         )
         return False
 
