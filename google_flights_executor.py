@@ -552,12 +552,13 @@ def extract_vendor_from_body(body: str) -> str:
 
     Ou texto concatenado:
         Aerolineas ArgentinasCompanhia aérea
+        GolCompanhia
     """
     lines = [ln.strip() for ln in (body or '').splitlines() if ln.strip()]
     for i, line in enumerate(lines):
-        if re.search(r'Companhia\s*a[ée]rea', line, re.I):
+        if re.search(r'Companhia\s*a[ée]?rea?', line, re.I):
             # Tenta extrair da própria linha (antes de "Companhia")
-            before = re.sub(r'Companhia\s*a[ée]rea.*', '', line, flags=re.I).strip()
+            before = re.sub(r'Companhia\s*a[ée]?rea?.*', '', line, flags=re.I).strip()
             before = re.sub(r'R\$[\s\d.,]+', '', before).strip()
             if before and is_probable_airline_vendor(before):
                 return before
@@ -565,13 +566,23 @@ def extract_vendor_from_body(body: str) -> str:
             candidate = lines[i - 1] if i > 0 else ''
             if candidate:
                 candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
+                candidate = re.sub(r'Companhia.*', '', candidate, flags=re.I).strip()
                 if candidate and is_probable_airline_vendor(candidate):
                     return candidate
         # Padrão: nome em linha curta, logo acima de "Companhia" na linha seguinte
         if i + 1 < len(lines) and re.search(r'Companhia\s*a[ée]rea', lines[i + 1], re.I):
             candidate = line.strip()
             candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
+            candidate = re.sub(r'Companhia.*', '', candidate, flags=re.I).strip()
             if candidate and is_probable_airline_vendor(candidate):
+                return candidate
+    # Fallback final: qualquer linha com nome de companhia antes de "Companhia"
+    for line in lines:
+        # Procura padrão onde "Companhia" vem grudado no nome (sem espaço)
+        m = re.search(r'([A-Z][a-zA-ZÀ-ÿ]+)Companhia', line)
+        if m:
+            candidate = m.group(1).strip()
+            if is_probable_airline_vendor(candidate):
                 return candidate
     return ''
 
