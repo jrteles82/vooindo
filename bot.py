@@ -786,10 +786,9 @@ def force_reply_markup(placeholder: str) -> ForceReply:
 
 
 def clear_pending_input_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    if 'airport_stage' in context.user_data or 'origin' in context.user_data:
-        context.user_data.pop('airport_stage', None)
-        context.user_data.pop('origin', None)
-        context.user_data.pop('destination', None)
+    keys = ['airport_stage', 'origin', 'destination', 'outbound_date', 'inbound_date']
+    for k in keys:
+        context.user_data.pop(k, None)
 
 
 
