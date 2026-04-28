@@ -135,6 +135,34 @@ def get_db():
     return connect_db()
 
 
+def _new_lockfree_conn():
+    """Abre conexão MariaDB curta com autocommit=1 e lock_wait_timeout baixo,
+    ideal para UPDATEs que podem travar com workers."""
+    import pymysql
+    from urllib.parse import urlparse
+    url = urlparse(os.environ.get('MYSQL_URL', ''))
+    if not url.hostname:
+        with open('/opt/vooindo/.env') as f:
+            for line in f:
+                if '=' in line and not line.startswith('#'):
+                    k, v = line.strip().split('=', 1)
+                    os.environ[k] = v.strip("'\"")
+        url = urlparse(os.environ.get('MYSQL_URL', ''))
+    conn = pymysql.connect(
+        host=url.hostname or 'localhost',
+        port=url.port or 3306,
+        user=url.username or 'vooindobot',
+        password=url.password or '',
+        database=url.path.lstrip('/') or 'vooindo',
+        autocommit=True,
+        connect_timeout=5,
+        read_timeout=10,
+    )
+    with conn.cursor() as cur:
+        cur.execute("SET SESSION lock_wait_timeout = 3")
+    return conn
+
+
 def db_overload_message() -> str:
     return '⚠️ O banco atingiu o limite de conexões por hora no host MySQL. Tente novamente em alguns minutos.'
 
@@ -3202,16 +3230,19 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running_count = int((running_now['c'] if isinstance(running_now, dict) else running_now[0]) or 0)
     replaced_existing = False
     if running_count > 0:
+        # Usa conexão separada com autocommit=1 e lock_wait_timeout curto pra evitar lock com workers
         try:
-            conn.execute(
-                sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = ? AND status IN ('pending', 'running')"),
+            cancel_conn = _new_lockfree_conn()
+            cancel_cur = cancel_conn.cursor()
+            cancel_cur.execute("SET SESSION lock_wait_timeout = 3")
+            cancel_cur.execute(
+                "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
                 (user_id,),
             )
-            conn.commit()
+            cancel_conn.close()
             replaced_existing = True
         except Exception as exc:
             logger.warning('[agora] Erro ao cancelar jobs anteriores (concorrência): %s', exc)
-            conn.rollback()
 
     last_manual_row = conn.execute(
         sql("SELECT COALESCE(last_manual_sent_at, COALESCE(last_sent_at, '')) AS last_manual_sent_at FROM bot_settings WHERE user_id = ?"),
