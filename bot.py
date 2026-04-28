@@ -1473,6 +1473,7 @@ async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_pending_input_state(context)
     user = update.effective_user
     chat_id = str(update.effective_chat.id)
     first_name = user.first_name or 'telegram'
