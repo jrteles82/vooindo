@@ -3231,26 +3231,28 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text('\n🖼️ Consulta manual agora\n────────────────────────\n\nVocê não tem rotas ativas cadastradas.', reply_markup=main_menu_markup())
         return
 
-    running_now = conn.execute(
-        sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE user_id = ? AND status IN ('pending', 'running')"),
-        (user_id,),
-    ).fetchone()
-    running_count = int((running_now['c'] if isinstance(running_now, dict) else running_now[0]) or 0)
+    # Usa conexão separada com autocommit=True e timeout curto para operações em scan_jobs
+    # Isso evita lock wait timeout com workers que estão processando a mesma tabela
     replaced_existing = False
-    if running_count > 0:
-        # Tenta cancelar jobs anteriores com timeout curto
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SET SESSION lock_wait_timeout = 1")
-                cur.execute(
-                    "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
-                    (user_id,),
-                )
-            conn.commit()
-            replaced_existing = True
-        except Exception as exc:
-            logger.warning('[agora] Erro ao cancelar jobs anteriores (concorrência): %s', exc)
-            conn.rollback()
+    import pymysql
+    from urllib.parse import urlparse
+    _url = os.environ.get('MYSQL_URL', '')
+    _parsed = urlparse(_url)
+    _sconn = pymysql.connect(
+        host=_parsed.hostname or 'localhost', port=_parsed.port or 3306,
+        user=_parsed.username or 'vooindobot', password=_parsed.password or '',
+        database=_parsed.path.lstrip('/') or 'vooindo',
+        autocommit=True, connect_timeout=5,
+    )
+    _cur = _sconn.cursor()
+    _cur.execute("SET SESSION lock_wait_timeout = 1")
+    _cur.execute(
+        "UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'cancelled_by_new_request' WHERE user_id = %s AND status IN ('pending', 'running')",
+        (user_id,),
+    )
+    if _cur.rowcount > 0:
+        replaced_existing = True
+    _sconn.close()
 
     last_manual_row = conn.execute(
         sql("SELECT COALESCE(last_manual_sent_at, COALESCE(last_sent_at, '')) AS last_manual_sent_at FROM bot_settings WHERE user_id = ?"),
