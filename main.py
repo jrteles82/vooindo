@@ -277,15 +277,29 @@ def build_full_scan_message(parsed: list[dict], trigger: str = "manual") -> str:
         *(_format_direction(rows, rows[0] if rows else None, "ROTAS (ordem de cadastro):", "destination")),
     ]
 
+    # Só mostra resultados que têm vendor de companhia aérea
+    # Se nenhum tem vendor, mostra todos (fallback pra Google Flights)
+    rows_with_vendor = [r for r in parsed if (r.get("best_vendor") or "").strip()]
+    rows_to_display = rows_with_vendor if rows_with_vendor else parsed
+
     total_ok = len([r for r in parsed if r.get("price") is not None])
     lines += ["", f"Resumo: {total_ok}/{len(parsed)} rotas com preço válido."]
     return "\n".join(lines)
+
+
+def _filter_rows_no_vendor(rows: list[dict]) -> list[dict]:
+    """Filtra resultados que têm best_vendor. Se nenhum tiver, retorna todos."""
+    with_vendor = [r for r in rows if (r.get("best_vendor") or "").strip()]
+    return with_vendor if with_vendor else rows
 
 
 def notify_full_scan(parsed: list[dict], trigger: str = "manual", send_fn=None, max_price: float | None = None, airline_filters_json: str | None = None) -> None:
     filtered = filter_rows_by_max_price(parsed, max_price)
     filtered = normalize_rows_for_airline_priority(filtered, airline_filters_json)
     filtered = filter_rows_with_vendor(filtered)
+    # Só mostra resultados com vendor de companhia na imagem e no texto
+    # Se nenhum tiver vendor, mostra todos (fallback)
+    display_rows = _filter_rows_no_vendor(filtered)
     try:
         from bot import should_show_result_type_filters
         conn = get_db_connection(auth_db_path())
@@ -295,10 +309,10 @@ def notify_full_scan(parsed: list[dict], trigger: str = "manual", send_fn=None, 
             conn.close()
     except Exception:
         show_result_type_filters = True
-    msg = build_full_scan_message(filtered, trigger=trigger)
+    msg = build_full_scan_message(display_rows, trigger=trigger)
     sender = send_fn or send_telegram_message
     try:
-        sender(msg, image_rows=filtered, trigger=trigger, airline_filters_json=airline_filters_json, show_result_type_filters=show_result_type_filters)
+        sender(msg, image_rows=display_rows, trigger=trigger, airline_filters_json=airline_filters_json, show_result_type_filters=show_result_type_filters)
     except TypeError:
         try:
             sender(msg)
