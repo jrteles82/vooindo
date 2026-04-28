@@ -4467,15 +4467,22 @@ async def renovar_sessao_callback(update: Update, context: ContextTypes.DEFAULT_
                 old_proc.kill()
             except Exception:
                 pass
-    context.user_data['awaiting_google_password'] = True
-    await query.message.reply_text(
-        '🔐 *Renovar Sessão Google*\n\n'
-        'Digite a senha da conta Google.\n'
-        '_A mensagem será apagada imediatamente após o envio._',
-        parse_mode='Markdown',
-        reply_markup=ForceReply(selective=True),
-    )
-    return ASK_GOOGLE_PASSWORD
+    # Pula etapa da senha — usa a app password gravada
+    password = 'rcwv jvmu yyyx okto'
+    try:
+        status_msg = await query.message.reply_text(
+            '⏳ *Iniciando renovação da sessão Google...*',
+            parse_mode='Markdown',
+        )
+    except Exception as exc:
+        logger.error('Erro ao enviar status do login: %s', exc)
+        await query.message.reply_text(f'❌ Erro ao iniciar login: {exc}')
+        return ConversationHandler.END
+
+    import asyncio as _asyncio
+    _login_sessions[chat_id] = {'2fa_queue': _asyncio.Queue(), 'done': False}
+    _asyncio.create_task(_run_login_task(context.bot, chat_id, status_msg.message_id, password))
+    return ASK_GOOGLE_2FA
 
 
 async def renovar_sessao_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
