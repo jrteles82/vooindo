@@ -1133,21 +1133,22 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     def scaled5(value: int) -> int:
         return max(1, int(round(value * SCAN_IMAGE_SCALE * 3.6)))
 
-    title_font = _load_font(scaled5(22), bold=True)
-    header_font = _load_font(scaled5(16), bold=False)
-    body_font = _load_font(scaled5(14), bold=False)
-    price_font = _load_font(scaled5(12))
-    small_font = _load_font(scaled5(11))
+    # Fontes 20% menores
+    title_font = _load_font(scaled5(18), bold=True)
+    header_font = _load_font(scaled5(13), bold=True)
+    body_font = _load_font(scaled5(11), bold=False)
+    price_font = _load_font(scaled5(10))
+    small_font = _load_font(scaled5(9))
 
-    padding_x = scaled5(10)
-    padding_y = scaled5(7)
-    row_h = scaled5(36)
-    row_pair_h = row_h * 2
-    section_h = scaled5(10)
-    title_h = scaled5(26)
-    meta_h = scaled5(18)
-    col_widths = [scaled5(102), scaled5(90), scaled5(92)]
-    headers = ["Trecho", "Data", "Companhia"]
+    padding_x = scaled5(8)
+    padding_y = scaled5(5)
+    row_h = scaled5(28)
+    section_h = scaled5(2)
+    title_h = scaled5(22)
+    meta_h = scaled5(14)
+    # Colunas mais equilibradas: Trecho, Data, Preço/Companhia
+    col_widths = [scaled5(90), scaled5(75), scaled5(95)]
+    headers = ["Trecho", "Data", "Preço / Companhia"]
 
     split_combined = False
     height = (
@@ -1155,8 +1156,8 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         + title_h
         + meta_h
         + row_h
-        + sum(section_h + len(items) * ((row_pair_h if split_combined else row_h) + scaled5(10)) for _, items in groups)
-        + 24
+        + sum(section_h + len(items) * (row_h + 1) for _, items in groups)
+        + 12
     )
 
     table_w = sum(col_widths)
@@ -1167,16 +1168,18 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     colors = {
         "text": "#1f2937",
         "muted": "#6b7280",
-        "header_bg": "#eef2f7",
+        "header_bg": "#e2e8f0",
+        "header_text": "#1e293b",
         "section_bg": "#d8dee9",
         "section_return_bg": "#f4e7bd",
-        "border": "#d8dee9",
+        "border": "#d1d5db",
         "row_a": "#ffffff",
-        "row_b": "#ffffff",
+        "row_b": "#f9fafb",
         "price": "#0f8a5f",
+        "price_expensive": "#dc2626",
         "date_badge": "#dbeafe",
         "date_badge_return": "#fef3c7",
-        "result_line": "#e5e7eb",
+        "separator": "#e5e7eb",
         "card_shadow": "#e9edf3",
     }
 
@@ -1193,14 +1196,15 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     draw.text((x0 + max(0, (table_w - meta_w) / 2), y), meta_text, font=small_font, fill=colors["muted"])
     y += meta_h
 
+    # Cabeçalho da tabela
     x = x0
+    draw.rectangle([x0, y, x0 + table_w, y + row_h], fill=colors["header_bg"], outline=colors["border"])
     for idx, header in enumerate(headers):
         w = col_widths[idx]
-        draw.rectangle([x, y, x + w, y + row_h], fill=colors["header_bg"], outline=colors["border"])
         header_bbox = draw.textbbox((0, 0), header, font=header_font)
         header_w = header_bbox[2] - header_bbox[0]
         header_h = header_bbox[3] - header_bbox[1]
-        draw.text((x + (w - header_w) / 2, y + (row_h - header_h) / 2), header, font=header_font, fill=colors["text"])
+        draw.text((x + (w - header_w) / 2, y + (row_h - header_h) / 2), header, font=header_font, fill=colors["header_text"])
         x += w
     y += row_h
 
@@ -1210,104 +1214,100 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
             out = out[:-2].rstrip() + '…'
         return out
 
-    def _draw_route_and_date(base_y: int, draw_h: int, row: dict, section_title: str):
+    def _draw_route_cell(base_y: int, draw_h: int, row: dict):
         origin_txt = (row.get("origin") or "").upper()
         destination_txt = (row.get("destination") or "").upper()
         origin_color = _airport_code_color(origin_txt, colors["text"])
         destination_color = _airport_code_color(destination_txt, colors["text"])
-        origin_part = f"{origin_txt} → "
-        destination_part = destination_txt
-        origin_w = draw.textlength(origin_part, font=body_font)
-        destination_w = draw.textlength(destination_part, font=body_font)
-        route_w = origin_w + destination_w
-        route_x = x0 + max(0, (col_widths[0] - route_w) / 2)
-        route_bbox = draw.textbbox((0, 0), f"{origin_part}{destination_part}", font=body_font)
+        route_text = f"{origin_txt} → {destination_txt}"
+        route_bbox = draw.textbbox((0, 0), route_text, font=body_font)
+        route_w = route_bbox[2] - route_bbox[0]
         route_h = route_bbox[3] - route_bbox[1]
-        route_y = base_y + (draw_h - route_h) / 2 - scaled5(1)
-        draw.text((route_x, route_y), origin_part, font=body_font, fill=origin_color)
-        draw.text((route_x + origin_w, route_y), destination_part, font=body_font, fill=destination_color)
+        route_x = x0 + max(0, (col_widths[0] - route_w) / 2)
+        route_y = base_y + (draw_h - route_h) / 2 - 1
+        # Desenha origem e destino com cores diferentes
+        origin_w = draw.textlength(f"{origin_txt} → ", font=body_font)
+        draw.text((route_x, route_y), f"{origin_txt} → ", font=body_font, fill=origin_color)
+        draw.text((route_x + origin_w, route_y), destination_txt, font=body_font, fill=destination_color)
 
+    def _draw_date_cell(base_y: int, draw_h: int, row: dict):
         date_txt = format_date_display(str(row.get("outbound_date") or ""))
         date_col_x = x0 + col_widths[0]
-        badge_fill = colors["date_badge_return"] if section_title.startswith("VOLTAS") else colors["date_badge"]
         badge_bbox = draw.textbbox((0, 0), date_txt, font=small_font)
         badge_text_w = badge_bbox[2] - badge_bbox[0]
         badge_text_h = badge_bbox[3] - badge_bbox[1]
-        badge_h = scaled5(22)
-        badge_w = min(col_widths[1] - scaled5(12), badge_text_w + scaled5(18))
+        badge_h = scaled5(18)
+        badge_w = min(col_widths[1] - scaled5(8), badge_text_w + scaled5(12))
         date_x = date_col_x + max(0, (col_widths[1] - badge_w) / 2)
         badge_y = base_y + (draw_h - badge_h) / 2
-        draw.rounded_rectangle([date_x, badge_y, date_x + badge_w, badge_y + badge_h], radius=scaled5(8), fill=badge_fill)
+        draw.rounded_rectangle([date_x, badge_y, date_x + badge_w, badge_y + badge_h], radius=scaled5(6), fill=colors["date_badge"])
         text_x = date_x + (badge_w - badge_text_w) / 2 - badge_bbox[0]
         text_y = badge_y + (badge_h - badge_text_h) / 2 - badge_bbox[1]
         draw.text((text_x, text_y), date_txt, font=small_font, fill=colors["text"])
 
-    def _draw_result_cell(base_x: int, base_y: int, width: int, height: int, value: str, color: str) -> bool:
-        shown_value = (value or '').strip()
+    def _draw_price_cell(base_y: int, draw_h: int, row: dict):
+        vendor_txt = _price_vendor_display(row)
+        shown_value = (vendor_txt or '').strip()
         if not shown_value:
-            return False
+            return
         if ' • ' in shown_value:
             price_part, vendor_part = shown_value.split(' • ', 1)
         else:
             price_part, vendor_part = shown_value, ''
-        inner_width = max(10, width - scaled5(18))
+        cell_x = x0 + col_widths[0] + col_widths[1]
+        cell_w = col_widths[2]
+        inner_width = max(10, cell_w - scaled5(12))
         price_part = _truncate_text(price_part, price_font, inner_width)
         vendor_part = _truncate_text(vendor_part, small_font, inner_width) if vendor_part else ''
         price_bbox = draw.textbbox((0, 0), price_part, font=price_font)
-        price_w = price_bbox[2] - price_bbox[0]
         price_h = price_bbox[3] - price_bbox[1]
-        text_x = base_x + scaled5(8) + max(0, (inner_width - price_w) / 2)
+        text_x = cell_x + scaled5(6) + max(0, (inner_width - (price_bbox[2] - price_bbox[0])) / 2)
         if vendor_part:
             vendor_bbox = draw.textbbox((0, 0), vendor_part, font=small_font)
-            vendor_w = vendor_bbox[2] - vendor_bbox[0]
             vendor_h = vendor_bbox[3] - vendor_bbox[1]
-            gap = scaled5(4)
+            gap = 2
             total_h = price_h + gap + vendor_h
-            price_y = base_y + (height - total_h) / 2
+            price_y = base_y + (draw_h - total_h) / 2
             vendor_y = price_y + price_h + gap
-            vendor_x = base_x + scaled5(8) + max(0, (inner_width - vendor_w) / 2)
-            draw.text((text_x, price_y), price_part, font=price_font, fill=color)
-            draw.text((vendor_x, vendor_y), vendor_part, font=small_font, fill=color)
+            vendor_x = cell_x + scaled5(6) + max(0, (inner_width - (vendor_bbox[2] - vendor_bbox[0])) / 2)
+            draw.text((text_x, price_y), price_part, font=price_font, fill=colors["price"])
+            draw.text((vendor_x, vendor_y), vendor_part, font=small_font, fill=colors["muted"])
         else:
-            price_y = base_y + (height - price_h) / 2
-            draw.text((text_x, price_y), price_part, font=price_font, fill=color)
-        return True
+            price_y = base_y + (draw_h - price_h) / 2
+            draw.text((text_x, price_y), price_part, font=price_font, fill=colors["price"])
 
     for group_idx, (title, items) in enumerate(groups):
-        section_bg = colors["section_return_bg"] if title.startswith("VOLTAS") else colors["section_bg"]
-        draw.rectangle([x0, y, x0 + table_w, y + section_h], fill=section_bg, outline=colors["border"])
-        y += section_h
+        if group_idx > 0:
+            # Pequeno espaçamento entre grupos
+            y += 2
 
         for item_idx, row in enumerate(items):
             fill = colors["row_a"] if item_idx % 2 == 0 else colors["row_b"]
-            route_color = _airport_code_color(str(row.get("origin") or '').upper(), colors["border"])
-            draw_h = row_h
 
-            card_top = y
-            card_bottom = y + draw_h
-            draw.rounded_rectangle([x0, card_top, x0 + table_w, card_bottom], radius=scaled5(10), fill=fill, outline=colors["border"])
-            _draw_route_and_date(y, draw_h, row, title)
+            # Desenha a linha da tabela
+            draw.rectangle([x0, y, x0 + table_w, y + row_h], fill=fill, outline=colors["border"])
 
-            company_x = x0 + col_widths[0] + col_widths[1]
-            draw.line([company_x, card_top + scaled5(8), company_x, card_bottom - scaled5(8)], fill=colors['border'], width=1)
+            # Linha separadora horizontal entre linhas (exceto após a última)
+            if item_idx < len(items) - 1:
+                draw.line([x0, y + row_h, x0 + table_w, y + row_h], fill=colors["separator"], width=1)
 
-            vendor_txt = _price_vendor_display(row)
-            _draw_result_cell(company_x, y, col_widths[2], draw_h, vendor_txt, colors['price'])
+            # Linhas verticais separando colunas
+            sep_x1 = x0 + col_widths[0]
+            sep_x2 = x0 + col_widths[0] + col_widths[1]
+            draw.line([sep_x1, y, sep_x1, y + row_h], fill=colors["border"], width=1)
+            draw.line([sep_x2, y, sep_x2, y + row_h], fill=colors["border"], width=1)
 
-            y += draw_h + scaled5(10)
+            _draw_route_cell(y, row_h, row)
+            _draw_date_cell(y, row_h, row)
+            _draw_price_cell(y, row_h, row)
 
-        if group_idx != len(groups) - 1:
-            y += scaled5(4)
+            y += row_h + 1
+
     final_height = y + padding_y
     cropped = image.crop((0, 0, width, final_height))
 
-    safe_max_width = 920 if is_manual_user and row_count <= 1 else 980
-    if is_manual_user and row_count <= 1:
-        if cropped.width < safe_max_width:
-            ratio = safe_max_width / float(cropped.width)
-            safe_height = max(1, int(cropped.height * ratio))
-            cropped = cropped.resize((safe_max_width, safe_height), Image.LANCZOS)
-    elif cropped.width > safe_max_width:
+    safe_max_width = 780 if is_manual_user and row_count <= 1 else 840
+    if cropped.width > safe_max_width:
         ratio = safe_max_width / float(cropped.width)
         safe_height = max(1, int(cropped.height * ratio))
         cropped = cropped.resize((safe_max_width, safe_height), Image.LANCZOS)
