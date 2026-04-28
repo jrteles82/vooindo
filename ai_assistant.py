@@ -264,11 +264,6 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
         else:
             lines.append(f'✈️ {link_text}')
 
-        lines.append(f'{vendor} • {price_str}')
-
-        # Dica da IA
-        dica = dicas[i] if i < len(dicas) else '📌 Preço dentro do esperado.'
-        lines.append(dica)
         lines.append('')
 
     result = '\n'.join(lines).strip()
