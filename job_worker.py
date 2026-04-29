@@ -275,6 +275,9 @@ def fail_job(conn, job_id: int, error_message: str):
         )
     finally:
         _cap.close()
+    
+    # Dispara AutoRepair em background (não bloqueia o worker)
+    _trigger_autorepair(job_id, error_message)
 
 
 def retry_job(conn, job_id: int) -> int:
@@ -923,3 +926,44 @@ if __name__ == '__main__':
     except BaseException:
         logger.exception('[job-worker][TOP_LEVEL_FATAL] falha fatal no topo do processo | pid=%s', os.getpid())
         raise
+
+
+def _trigger_autorepair(job_id: int, error_message: str):
+    """Dispara AutoRepair em thread separada (não bloqueia o worker)."""
+    import threading
+    t = threading.Thread(target=_run_autorepair, args=(job_id, error_message), daemon=True)
+    t.start()
+
+
+def _run_autorepair(job_id: int, error_message: str):
+    """Executa o reparo e retry."""
+    import sys, os, importlib.util
+    spec = importlib.util.spec_from_file_location('autorepair.strategies', '/opt/vooindo/autorepair/strategies.py')
+    if not spec or not spec.loader:
+        return
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    
+    result = mod.run_repair(job_id, error_message)
+    logger.info('[autorepair] job=%s resultado: %s', job_id, result)
+    
+    if result.get('repaired'):
+        # Tenta retry imediato
+        try:
+            from db import connect as db_connect, sql
+            conn = db_connect()
+            c = conn.cursor()
+            c.execute(sql("SELECT user_id, chat_id, retry_count FROM scan_jobs WHERE id = %s"), (job_id,))
+            orig = c.fetchone()
+            if orig and (orig['retry_count'] or 0) < 3:
+                c.execute(sql("UPDATE scan_jobs SET retry_count = retry_count + 1 WHERE id = %s"), (job_id,))
+                now = __import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                c.execute(sql("""
+                    INSERT INTO scan_jobs (user_id, chat_id, job_type, status, created_at, cost_score)
+                    VALUES (%s, %s, 'manual_now', 'pending', %s, 0)
+                """), (orig['user_id'], orig['chat_id'], now))
+                logger.info('[autorepair] retry criado: job %s → novo #%s', job_id, c.lastrowid)
+                conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error('[autorepair] erro no retry: %s', e)

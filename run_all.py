@@ -197,6 +197,8 @@ def main():
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
         # Monitor automático de ciclos — detecta falhas, aplica retry, notifica admin
         {'cmd': [py, str(BASE_DIR / 'cycle_monitor_auto.py')]},
+        # AutoRepair — diagnóstico + reparo autônomo + retry
+        {'cmd': [py, '-m', 'autorepair.engine']},
     ]
 
     # Delay entre workers: 3s (antes 5s) para subirem mais rápido mas sem race condition
