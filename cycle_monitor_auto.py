@@ -55,7 +55,7 @@ NON_RETRYABLE = [
 ]
 
 # Limites
-MAX_JOB_RUNNING_MIN = 12           # Se job fica >12min running, alerta
+MAX_JOB_RUNNING_MIN = 8            # Se job fica >8min running, alerta + reset
 MAX_PENDING_STALE_MIN = 20         # Job pending >20min sem worker pegar
 EXPECTED_TIME_PER_ROTA_MIN = 2     # ~2min por rota (com Chrome)
 WARN_TIME_PER_ROTA_MIN = 4         # >4min por rota = lento
@@ -305,6 +305,26 @@ def check_workers_and_ram(state: dict) -> list:
 
     return alerts
 
+def check_semaphore_orphan(state: dict) -> list:
+    """Se semáforo > 0 mas nenhum Chrome vivo, reseta."""
+    alerts = []
+    try:
+        lock = pathlib.Path('/tmp/vooindo_chrome_semaphore.lock')
+        if lock.exists():
+            val = lock.read_text().strip()
+            if val.isdigit() and int(val) > 0:
+                r = subprocess.run(['pgrep', '-c', '-f', 'chrome-headless|chromium'],
+                                  capture_output=True, text=True, timeout=5)
+                chrome_count = int(r.stdout.strip()) if r.stdout.strip().isdigit() else 0
+                if chrome_count == 0:
+                    lock.write_text('0')
+                    alerts.append('🔧 Semáforo Chrome resetado (nenhum Chrome vivo)')
+                    log.warning('[watchdog] semáforo resetado')
+    except Exception as e:
+        log.warning(f'[watchdog] erro: {e}')
+    return alerts
+
+
 def check_pending_stale() -> list:
     """Jobs pending há mais de 20 min."""
     stale = _pending_jobs_since(MAX_PENDING_STALE_MIN)
@@ -383,9 +403,11 @@ def run_cycle_scan(state: dict):
             err = (j['error_message'] or '')[:45]
             report_parts.append(f"  ❌ #{j['id']} user={j['user_id']}: {err}")
 
-    # 7. Workers e RAM
+    # 7. Workers, RAM e semáforo
     infra_alerts = check_workers_and_ram(state)
+    sem_alerts = check_semaphore_orphan(state)
     report_parts.extend(infra_alerts)
+    report_parts.extend(sem_alerts)
 
     # 8. Jobs pending órfãos
     stale_pending = check_pending_stale()
