@@ -18,6 +18,7 @@ from access_policy import (
     get_free_uses_limit,
     is_active_access,
     is_maintenance_mode,
+    set_maintenance_mode,
     is_exempt_from_maintenance,
     should_charge_user,
 )
@@ -822,6 +823,26 @@ def main():
                     retry_job(conn, int(job['id']))
                     logger.warning('[JOB_RETRY] %s no job %s, reagendando (tentativa 1)', error_text[:50], job['id'])
                     continue
+                # Renovação automática de sessão Google
+                if error_text in ('sessao_google_invalida_aguardando_renovacao',) and not _GOOGLE_SESSION_INVALID:
+                    logger.warning('[JOB_RETRY] sessao_google_invalida detectada no job %s, iniciando renovação automática...', job['id'])
+                    _GOOGLE_SESSION_INVALID = True  # Evita loop infinito
+                    try:
+                        import subprocess as _sp
+                        _renew = _sp.run(
+                            [sys.executable, '/opt/vooindo/renew_google_session.py'],
+                            capture_output=True, text=True, timeout=120,
+                        )
+                        if _renew.returncode == 0:
+                            logger.info('[JOB_RETRY] Renovação automática OK | job %s, re-agendando', job['id'])
+                            _GOOGLE_SESSION_INVALID = False
+                            set_maintenance_mode(conn, False)
+                            retry_job(conn, int(job['id']))
+                            continue
+                        else:
+                            logger.error('[JOB_RETRY] Renovação automática FALHOU rc=%s | stderr=%s', _renew.returncode, _renew.stderr[:200])
+                    except Exception as _exc:
+                        logger.error('[JOB_RETRY] Erro na renovação automática: %s', _exc)
                 fail_job(conn, int(job['id']), error_text)
                 if _is_timeout_error(exc):
                     _alert_admin(
