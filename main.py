@@ -565,7 +565,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 2  # Máximo de 2 browsers por vez (Firefox ~400MB cada)
+_CHROME_MAX_CONCURRENT = 1  # Máximo de 1 navegador por vez (estável 3.9GB RAM)
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
