@@ -892,29 +892,41 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if proxy_user and proxy_pass:
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
-        context = p.chromium.launch_persistent_context(
-            str(SESSION_DIR),
-            headless=HEADLESS,
-            slow_mo=SLOW_MO,
-            locale="pt-BR",
-            user_agent=USER_AGENT,
-            proxy=proxy_settings if proxy_settings else None,
-            viewport={"width": 1280, "height": 900},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-infobars",
-                "--ignore-certifcate-errors",
-                "--remote-debugging-port=0",
-                "--disable-extensions",
-                "--disable-component-extensions-with-background-pages",
-                "--disable-software-rasterizer",
-                "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
-            ],
-        )
+        # Browser toggle: FIREFOX=1 usa Firefox (mais leve), padrão é Chromium
+        _browser_engine = os.environ.get('BROWSER', 'chrome').strip().lower()
+        if _browser_engine == 'firefox':
+            context = p.firefox.launch_persistent_context(
+                str(SESSION_DIR),
+                headless=HEADLESS,
+                slow_mo=SLOW_MO,
+                locale="pt-BR",
+                proxy=proxy_settings if proxy_settings else None,
+                viewport={"width": 1280, "height": 900},
+            )
+        else:
+            context = p.chromium.launch_persistent_context(
+                str(SESSION_DIR),
+                headless=HEADLESS,
+                slow_mo=SLOW_MO,
+                locale="pt-BR",
+                user_agent=USER_AGENT,
+                proxy=proxy_settings if proxy_settings else None,
+                viewport={"width": 1280, "height": 900},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-infobars",
+                    "--ignore-certifcate-errors",
+                    "--remote-debugging-port=0",
+                    "--disable-extensions",
+                    "--disable-component-extensions-with-background-pages",
+                    "--disable-software-rasterizer",
+                    "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
+                ],
+            )
         configure_context_routing(context)
         page = context.pages[0] if context.pages else context.new_page()
         Stealth().apply_stealth_sync(page)

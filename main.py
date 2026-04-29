@@ -683,6 +683,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env = os.environ.copy()
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
+                env["BROWSER"] = os.environ.get("BROWSER", "chrome")
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:
