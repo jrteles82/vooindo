@@ -114,9 +114,9 @@ def get_panel_text(chat_id: str) -> str:
     panel_text = (
         f"{DEFAULT_PANEL_TITLE}\n"
         f"{PANEL_DIVIDER}\n"
-        f"🤖 *Automático:* buscas a cada {interval_minutes} min\n"
-        "🖼️ *Manual:* print imediato\n\n"
-        "_SELECIONE UMA DAS OPÇÕES ABAIXO:_"
+        f"🤖 <b>Automático:</b> buscas a cada {interval_minutes} min\n"
+        "🖼️ <b>Manual:</b> print imediato\n\n"
+        "<i>SELECIONE UMA DAS OPÇÕES ABAIXO:</i>"
     )
 
     if not row:
@@ -130,7 +130,7 @@ def get_panel_text(chat_id: str) -> str:
 
     msg_text = panel_text
     if routes_count == 0:
-        msg_text += "\n\n⚠️ *Atenção:* Você ainda não tem nenhuma rota cadastrada.\nClique em *➕ Adicionar nova rota* abaixo para começar."
+        msg_text += "\n\n⚠️ <b>Atenção:</b> Você ainda não tem nenhuma rota cadastrada.\nClique em <b>➕ Adicionar nova rota</b> abaixo para começar."
     return msg_text
 
 
@@ -1558,14 +1558,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not confirmed:
         await update.message.reply_text(
             '👋 Olá! Para começar a usar o bot, confirme seu cadastro com o botão abaixo.',
-            parse_mode='Markdown',
             reply_markup=start_markup(),
         )
         return
 
     await update.message.reply_text(
         get_panel_text(chat_id),
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=full_menu_markup(chat_id),
     )
 
@@ -1575,13 +1574,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         has_routes = (row_routes['total'] if isinstance(row_routes, dict) else row_routes[0]) > 0
         if not has_routes:
             await update.message.reply_text(
-                '🎉 *Seja bem-vindo ao bot de voos!*\n────────────────────────\n\n'
+                '🎉 <b>Seja bem-vindo ao bot de voos!</b>\n────────────────────────\n\n'
                 'Aqui você acompanha rotas e recebe notificações quando encontrarmos oportunidades.\n\n'
-                '👇 *Primeiros passos:*\n'
-                '1️⃣ Clique em *✈️ Cadastrar rota* no menu acima\n'
+                '👇 <b>Primeiros passos:</b>\n'
+                '1️⃣ Clique em <b>✈️ Cadastrar rota</b> no menu acima\n'
                 '2️⃣ Informe: origem, destino, data de ida e volta (se quiser)\n'
                 '3️⃣ Pronto! Você receberá alertas automáticos 🚀',
-                parse_mode='Markdown',
+                parse_mode='HTML',
             )
 
 
@@ -2984,7 +2983,7 @@ async def addrota_cancel_callback(update: Update, context: ContextTypes.DEFAULT_
     chat_id = str(query.message.chat.id)
     await query.edit_message_text('❌ Cadastro de rota cancelado.')
     await query.message.reply_text('✅ Cancelado. Ignore a resposta anterior, se ela ainda aparecer aberta no Telegram.', reply_markup=ReplyKeyboardRemove())
-    await query.message.reply_text(get_panel_text(chat_id), parse_mode='Markdown', reply_markup=full_menu_markup(chat_id))
+    await query.message.reply_text(get_panel_text(chat_id), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
     return ConversationHandler.END
 
 
@@ -3090,7 +3089,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if route_id_str == 'cancel_list':
         conn.close()
         await query.edit_message_text('❌ Remoção cancelada.')
-        await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='Markdown', reply_markup=full_menu_markup(chat_id))
+        await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
         return
     
     if route_id_str.startswith('confirm_'):
@@ -3148,7 +3147,7 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     elif route_id_str.startswith('cancel_'):
         conn.close()
         await query.edit_message_text('❌ Remoção cancelada.')
-        await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='Markdown', reply_markup=full_menu_markup(chat_id))
+        await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
         return
 
     route_id = int(route_id_str)
