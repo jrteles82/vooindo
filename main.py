@@ -564,6 +564,70 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
     return [routes[i * chunk_size:(i + 1) * chunk_size] for i in range(chunks)]
 
 
+_CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
+_CHROME_MAX_CONCURRENT = 2  # Máximo de 2 Chromes simultâneos no servidor (3.9GB RAM)
+
+
+class ChromeSemaphore:
+    """Semáforo baseado em lockfile para limitar Chromes simultâneos."""
+    _lock_path = "/tmp/vooindo_chrome_semaphore.lock"
+
+    @classmethod
+    def acquire(cls, timeout: float = 300.0) -> bool:
+        """Tenta adquirir slot. Retorna True se conseguiu dentro do timeout."""
+        import fcntl, os, time
+        end = time.monotonic() + timeout
+        lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            while time.monotonic() < end:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                try:
+                    content = os.read(lock_fd, 32).decode().strip()
+                    current = int(content) if content else 0
+                    if current < _CHROME_MAX_CONCURRENT:
+                        os.lseek(lock_fd, 0, os.SEEK_SET)
+                        os.write(lock_fd, str(current + 1).encode())
+                        os.ftruncate(lock_fd, os.lseek(lock_fd, 0, os.SEEK_CUR))
+                        os.fsync(lock_fd)
+                        return True
+                finally:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                time.sleep(0.5)
+            return False
+        finally:
+            os.close(lock_fd)
+
+    @classmethod
+    def release(cls):
+        """Libera slot."""
+        import fcntl, os
+        try:
+            lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                content = os.read(lock_fd, 32).decode().strip()
+                current = max(0, (int(content) if content else 0) - 1)
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                os.write(lock_fd, str(current).encode())
+                os.ftruncate(lock_fd, os.lseek(lock_fd, 0, os.SEEK_CUR))
+                os.fsync(lock_fd)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+        except Exception:
+            pass
+
+    @classmethod
+    def reset(cls):
+        """Zera contagem (chamado na inicialização)."""
+        import os
+        try:
+            with open(cls._lock_path, 'w') as f:
+                f.write('0')
+        except Exception:
+            pass
+
+
 def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | None = None, fast_mode: bool = False):
     if not routes:
         return []
@@ -616,45 +680,102 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
                 
+                # Semáforo: espera até 300s por um slot Chrome
+                slot_got = ChromeSemaphore.acquire(timeout=300.0)
+                if not slot_got:
+                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                       outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                       price=None, notes="chrome_semaphore_timeout: nenhum slot disponível em 300s")
                 try:
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
-                    if proc.returncode == 0:
+                finally:
+                    ChromeSemaphore.release()
+
+                if proc.returncode == 0:
+                    try:
+                        data = json.loads(proc.stdout)
+                        if data.get("ok"):
+                            return FlightResult(
+                                site="google_flights",
+                                origin=r.origin,
+                                destination=r.destination,
+                                outbound_date=r.outbound_date,
+                                inbound_date=r.inbound_date,
+                                trip_type=r.trip_type,
+                                price=data.get("price"),
+                                currency="BRL",
+                                url=data.get("url", ""),
+                                booking_url=data.get("booking_url", ""),
+                                notes=" | ".join(data.get("notes", [])),
+                                best_vendor=data.get("best_vendor", ""),
+                                best_vendor_price=data.get("best_vendor_price"),
+                                booking_options_json=json.dumps(data.get("booking_options", []), ensure_ascii=False),
+                                price_insight=data.get("price_insight", ""),
+                                best_airline_vendor=data.get("best_airline_vendor"),
+                                best_airline_price=data.get("best_airline_price"),
+                                best_airline_url=data.get("best_airline_url"),
+                                best_airline_visible_price=data.get("best_airline_visible_price")
+                            )
+                        else:
+                            err_from_json = data.get("message") or data.get("error") or "unknown_executor_error"
+                            return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"executor_error: {err_from_json}")
+                    except Exception as e:
+                        return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"json_decode_error: {str(e)} | raw={proc.stdout[:100]}")
+
+                err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
+                result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
+
+                # Retry automático para proc_error_rc1: pode ser OOM que matou o Chrome
+                # Depois de liberar o slot, outro processo tende a ter RAM livre
+                if proc.returncode == 1 and "no_stderr" in result.notes:
+                    import random
+                    retry_delay = random.uniform(5.0, 15.0)
+                    time.sleep(retry_delay)
+                    slot_got = ChromeSemaphore.acquire(timeout=120.0)
+                    if slot_got:
                         try:
-                            data = json.loads(proc.stdout)
-                            if data.get("ok"):
-                                return FlightResult(
-                                    site="google_flights",
-                                    origin=r.origin,
-                                    destination=r.destination,
-                                    outbound_date=r.outbound_date,
-                                    inbound_date=r.inbound_date,
-                                    trip_type=r.trip_type,
-                                    price=data.get("price"),
-                                    currency="BRL",
-                                    url=data.get("url", ""),
-                                    booking_url=data.get("booking_url", ""),
-                                    notes=" | ".join(data.get("notes", [])),
-                                    best_vendor=data.get("best_vendor", ""),
-                                    best_vendor_price=data.get("best_vendor_price"),
-                                    booking_options_json=json.dumps(data.get("booking_options", []), ensure_ascii=False),
-                                    price_insight=data.get("price_insight", ""),
-                                    best_airline_vendor=data.get("best_airline_vendor"),
-                                    best_airline_price=data.get("best_airline_price"),
-                                    best_airline_url=data.get("best_airline_url"),
-                                    best_airline_visible_price=data.get("best_airline_visible_price")
-                                )
+                            retry_proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+                            if retry_proc.returncode == 0:
+                                try:
+                                    data = json.loads(retry_proc.stdout)
+                                    if data.get("ok"):
+                                        result = FlightResult(
+                                            site="google_flights",
+                                            origin=r.origin, destination=r.destination,
+                                            outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                            trip_type=r.trip_type,
+                                            price=data.get("price"), currency="BRL",
+                                            url=data.get("url", ""),
+                                            booking_url=data.get("booking_url", ""),
+                                            notes="retry OK | " + " | ".join(data.get("notes", [])),
+                                            best_vendor=data.get("best_vendor", ""),
+                                            best_vendor_price=data.get("best_vendor_price"),
+                                            booking_options_json=json.dumps(data.get("booking_options", []), ensure_ascii=False),
+                                            price_insight=data.get("price_insight", ""),
+                                            best_airline_vendor=data.get("best_airline_vendor"),
+                                            best_airline_price=data.get("best_airline_price"),
+                                            best_airline_url=data.get("best_airline_url"),
+                                            best_airline_visible_price=data.get("best_airline_visible_price")
+                                        )
+                                except Exception:
+                                    pass
                             else:
-                                err_from_json = data.get("message") or data.get("error") or "unknown_executor_error"
-                                return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"executor_error: {err_from_json}")
+                                err_msg2 = retry_proc.stderr.strip() if retry_proc.stderr else "no_stderr"
+                                result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                                    outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                    price=None, notes=f"proc_error_rc{retry_proc.returncode}: {err_msg2[:200]} (retry)")
+                        except subprocess.TimeoutExpired:
+                            result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                                outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                price=None, notes="timeout_expired (retry)")
                         except Exception as e:
-                            return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"json_decode_error: {str(e)} | raw={proc.stdout[:100]}")
-                    
-                    err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
-                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
-                except subprocess.TimeoutExpired:
-                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes="timeout_expired")
-                except Exception as e:
-                    return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"exception: {str(e)}")
+                            result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                                outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                price=None, notes=f"exception: {str(e)} (retry)")
+                        finally:
+                            ChromeSemaphore.release()
+
+                return result
 
             if source_flags.get("google_flights", True):
                 for i, route in enumerate(routes):

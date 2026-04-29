@@ -871,6 +871,9 @@ def main():
 
 if __name__ == '__main__':
     try:
+        # Zera contagem do semáforo de Chromes na inicialização
+        from main import ChromeSemaphore
+        ChromeSemaphore.reset()
         logger.info('[job-worker] bootstrap | pid=%s | argv=%s', os.getpid(), sys.argv)
         main()
     except SystemExit as exc:

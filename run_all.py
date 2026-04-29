@@ -165,6 +165,13 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     _fix_google_session_permissions()
 
+    # Zera contagem do semáforo de Chromes
+    try:
+        with open('/tmp/vooindo_chrome_semaphore.lock', 'w') as f:
+            f.write('0')
+    except Exception:
+        pass
+
     py = str(BASE_DIR / '.venv' / 'bin' / 'python')
 
     def _worker_env(worker_index: int) -> dict:
@@ -189,6 +196,9 @@ def main():
         {'cmd': [py, str(BASE_DIR / 'payment_monitor.py')]},
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
     ]
+
+    # Delay entre workers: 3s (antes 5s) para subirem mais rápido mas sem race condition
+    START_DELAY_SECONDS = 3
 
     script_names = list({Path(child['cmd'][-1]).name for child in children})
     kill_stale_processes(script_names)
