@@ -702,16 +702,31 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 finally:
                     # Mata Chrome orphan após cada execução pra liberar RAM
                     try:
-                        # Mata TODOS os processos Chrome (incluindo sandbox e GPU)
-                        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=5)
-                    except Exception:
-                        pass
-                    time.sleep(0.5)
-                    try:
-                        subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=3)
-                    except Exception:
-                        pass
-                    time.sleep(0.3)
+                        # Mata só os processos Chrome orphan (sem pai python)
+                        import psutil, signal as _signal
+                        _current_pid = os.getpid()
+                        try:
+                            for _proc in psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
+                                _name = (_proc.info.get('name') or '').lower()
+                                _cmd = ' '.join(_proc.info.get('cmdline') or [])
+                                if 'chrome' not in _name and 'chrom' not in _cmd:
+                                    continue
+                                # Não mata Chrome que tem o atual python como ancestral
+                                _pp = _proc.info['ppid']
+                                _is_child = False
+                                while _pp > 1:
+                                    if _pp == _current_pid:
+                                        _is_child = True
+                                        break
+                                    try:
+                                        _pp = psutil.Process(_pp).ppid()
+                                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                        break
+                                if not _is_child and _proc.info['pid'] != _current_pid:
+                                    _proc.kill()
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
                     ChromeSemaphore.release()
 
                 if proc.returncode == 0:
