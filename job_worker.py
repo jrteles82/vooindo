@@ -624,8 +624,17 @@ def process_job(conn, bot: Bot, loop, job):
     if not filtered:
         price_filtered_out = bool(expanded) and not filtered_price and max_price is not None
         if price_filtered_out:
-            mensagem = f'⚠️ Encontramos voos, mas todos ficaram acima do seu teto atual de R$ {max_price:,.0f}.'.replace(',', '.')
-            error_msg = 'Consulta acima do teto configurado'
+            # Verificar se realmente há resultados com preço abaixo do teto (evita falso positivo com cache velho)
+            real_prices = [r.get('price') for r in expanded if isinstance(r.get('price'), (int, float))]
+            min_real = min(real_prices) if real_prices else None
+            if min_real is not None and min_real <= max_price:
+                # Há sim resultados abaixo do teto — foi filtro de vendor/vendor vazio
+                mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
+                error_msg = 'Consulta sem resultados filtrados'
+                logger.warning('[job-worker] job_id=%s | falso positivo acima do teto evitado | min_price=%s max_price=%s', job_id, min_real, max_price)
+            else:
+                mensagem = f'⚠️ Encontramos voos, mas todos ficaram acima do seu teto atual de R$ {max_price:,.0f}.'.replace(',', '.')
+                error_msg = 'Consulta acima do teto configurado'
         else:
             mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
             error_msg = 'Consulta sem resultados filtrados'
