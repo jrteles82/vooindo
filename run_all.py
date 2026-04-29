@@ -144,10 +144,26 @@ def _send_admin_alert_sync(message: str) -> None:
         logger.warning('[ALERT_ADMIN][RUN_ALL] Falha ao enviar alerta admin do run_all | erro=%s', exc)
 
 
+def _fix_google_session_permissions():
+    """Corrige permissão da google_session para ubuntu:ubuntu automaticamente."""
+    sess_dir = BASE_DIR / 'google_session'
+    if not sess_dir.is_dir():
+        return
+    try:
+        st = sess_dir.stat()
+        if st.st_uid != os.geteuid() or st.st_gid != os.getegid():
+            import subprocess as _sp
+            _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(sess_dir)], capture_output=True, timeout=5)
+            logger.info('[session_watchdog] google_session permissions fixed → ubuntu:ubuntu')
+    except Exception as exc:
+        logger.warning('[session_watchdog] Falha ao verificar permissão google_session: %s', exc)
+
+
 def main():
     acquire_single_instance_lock()
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    _fix_google_session_permissions()
 
     py = str(BASE_DIR / '.venv' / 'bin' / 'python')
 
@@ -186,8 +202,15 @@ def main():
         if index < len(children) - 1:
             time.sleep(max(0.0, START_DELAY_SECONDS))
 
+    _last_session_check = time.monotonic()
+    _check_interval = 300  # 5 minutos
+
     while True:
         time.sleep(2)
+        # Verificar permissão da google_session periodicamente
+        if time.monotonic() - _last_session_check > _check_interval:
+            _fix_google_session_permissions()
+            _last_session_check = time.monotonic()
         for i, proc in enumerate(processes):
             code = proc.poll()
             if code is None:
