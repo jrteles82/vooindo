@@ -152,7 +152,7 @@ def _send_telegram(text: str):
         admin = None
         conn = db_connect()
         c = conn.cursor()
-        c.execute(sql("SELECT chat_id FROM users WHERE id = 2"))
+        c.execute(sql("SELECT chat_id FROM admins WHERE active = 1 LIMIT 1"))
         r = c.fetchone()
         if r: admin = r['chat_id']
         conn.close()
