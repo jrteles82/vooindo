@@ -623,8 +623,6 @@ class ChromeSemaphore:
             while time.monotonic() < end:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 try:
-                    # Watchdog: verifica lock abandonado antes de ler contagem
-                    cls._stale_watchdog()
                     os.lseek(lock_fd, 0, os.SEEK_SET)
                     content = os.read(lock_fd, 32).decode().strip()
                     current = int(content) if content else 0
@@ -864,7 +862,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         if on_row:
                             on_row(len(results_all), total, row)
                 except Exception as e:
-                    logger.error(f"Erro crítico ao processar futuro de busca: {e}")
+                    logger.error(f"Erro crítico ao processar futuro de busca: {e}", exc_info=True)
                         
         return results_all
     finally:
