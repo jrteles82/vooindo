@@ -568,6 +568,15 @@ _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
 _CHROME_MAX_CONCURRENT = 1  # Máximo de 1 Chrome por vez (3.9GB RAM, sem swap confiável)
 
 
+# Conjunto de aeroportos brasileiros para timeout dinâmico
+_BR_CODES: set[str] = {
+    'AJU','BEL','BHZ','BSB','BVB','CGB','CGH','CGR','CNF','CWB',
+    'FLN','FOR','GIG','GRU','IGU','IOS','JOI','JPA','LDB','MAO',
+    'MCZ','MGF','NAT','NVT','PET','POA','PVH','RAO','REC','SDU',
+    'SJP','SLZ','SSA','STM','THE','UDI','VIX'
+}
+
+
 class ChromeSemaphore:
     """Semáforo baseado em lockfile para limitar Chromes simultâneos."""
     _lock_path = "/tmp/vooindo_chrome_semaphore.lock"
@@ -676,6 +685,8 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
                 
+                # Timeout dinâmico: 240s pra rotas internacionais (mais scrolls, mais lento)
+                intl_timeout = 240 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 180
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
@@ -687,8 +698,14 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                        outbound_date=r.outbound_date, inbound_date=r.inbound_date,
                        price=None, notes="chrome_semaphore_timeout: nenhum slot disponível em 300s")
                 try:
-                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=intl_timeout, env=env)
                 finally:
+                    # Mata Chrome orphan após cada execução pra liberar RAM
+                    try:
+                        subprocess.run(['pkill', '-f', 'chrome-headless.*google_session'], capture_output=True, timeout=5)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
                     ChromeSemaphore.release()
 
                 if proc.returncode == 0:
