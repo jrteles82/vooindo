@@ -892,8 +892,17 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if proxy_user and proxy_pass:
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
-        # Browser toggle: FIREFOX=1 usa Firefox (mais leve), padrão é Chromium
+        # Browser toggle: lê do BD (app_config) primeiro, fallback pra env
         _browser_engine = os.environ.get('BROWSER', 'chrome').strip().lower()
+        try:
+            from db import connect as _db_connect, get_config
+            _db = _db_connect()
+            _cfg = get_config(_db, 'browser', '')
+            if _cfg in ('chrome', 'firefox'):
+                _browser_engine = _cfg
+            _db.close()
+        except Exception:
+            pass
         if _browser_engine == 'firefox':
             context = p.firefox.launch_persistent_context(
                 str(SESSION_DIR),

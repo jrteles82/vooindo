@@ -251,6 +251,23 @@ def results_route_index_sql() -> str:
     return "CREATE INDEX IF NOT EXISTS idx_results_route ON scan_results(route, captured_at)"
 
 
+def get_config(conn, chave: str, default: str = "") -> str:
+    """Lê uma config da tabela app_config."""
+    cur = conn.cursor()
+    cur.execute(sql("SELECT valor FROM app_config WHERE chave = ?"), (chave,))
+    row = cur.fetchone()
+    if row:
+        return row["valor"] if isinstance(row, dict) else row[0]
+    return default
+
+
+def set_config(conn, chave: str, valor: str) -> None:
+    """Define ou atualiza uma config na tabela app_config."""
+    cur = conn.cursor()
+    cur.execute(sql("INSERT INTO app_config (chave, valor) VALUES (?, ?) ON DUPLICATE KEY UPDATE valor = ?"), (chave, valor, valor))
+    conn.commit()
+
+
 def is_missing_column_error(exc: Exception) -> bool:
     msg = str(exc)
     return 'Unknown column' in msg or 'duplicate column' in msg.lower()
