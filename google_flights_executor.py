@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from db import connect as connect_db, sql
 
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).with_name(".playwright-browsers")))
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path.home() / ".cache/ms-playwright"))
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright

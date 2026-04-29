@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Configura path dos browsers antes de importar playwright
 BASE_DIR = Path(__file__).resolve().parent
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BASE_DIR / ".playwright-browsers"))
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BASE_DIR / ".cache/ms-playwright"))
 
 # Flush imediato em cada print para bot ler linha a linha
 _real_print = print

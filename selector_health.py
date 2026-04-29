@@ -33,7 +33,7 @@ import hashlib
 
 os.environ.setdefault(
     "PLAYWRIGHT_BROWSERS_PATH",
-    str(Path(__file__).with_name(".playwright-browsers")),
+    str(Path(__file__).with_name(".cache/ms-playwright")),
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
