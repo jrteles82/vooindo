@@ -220,6 +220,10 @@ def sql(query: str) -> str:
 
     This allows existing code using sql('... ? ...') to work unchanged.
     """
+    import re
+    # Só traduz se a query tiver placeholders ? e nenhum %s ainda
+    if '?' in query and '%s' not in query:
+        return query.replace('?', '%s')
     return query
 
 

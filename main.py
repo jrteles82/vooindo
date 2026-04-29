@@ -470,9 +470,9 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
         if not available_profiles:
              available_profiles = [str(CONFIG.get("google_persistent_profile_dir"))]
         
-        # Limitar workers pelo número de perfis e capacidade do servidor (max 2 paralelos)
-        # IMPORTANTE: Sempre usamos ao menos 1 worker no Pool para rodar Playwright fora do loop asyncio do worker
-        max_workers = max(1, min(len(variants_to_search), len(available_profiles), 2))
+        # Limitar workers: 1 por job worker (já temos 4 workers no total rodando simultaneamente)
+        # Cada worker tem seu próprio perfil de sessão, então não precisa paralelizar internamente.
+        max_workers = 1
         
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = []
@@ -577,7 +577,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     except (TypeError, ValueError):
         requested_workers = 2
     
-    worker_count = max(1, min(len(routes), requested_workers, 2)) # Limite de 2 paralelos para evitar sobrecarga
+    # Já temos 4 job_workers rodando em paralelo (cada um com Chrome próprio).
+    # Cada job_worker processa suas rotas UMA POR VEZ pra não sobrecarregar a sessão.
+    # Com Chrome headless em 1 core, 1 subprocesso por vez é mais rápido que 2 brigando.
+    worker_count = 1
     
     source_flags = sources or {"google_flights": True}
     
