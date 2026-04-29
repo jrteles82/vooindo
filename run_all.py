@@ -181,8 +181,9 @@ def main():
         # 2 workers para jobs agendados (automáticos) — 1 core, 3.8GB RAM
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(1)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(2)},
-        # 1 worker exclusivo para jobs manuais
+        # 2 workers exclusivos para jobs manuais
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(1)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(2)},
         {'cmd': [py, str(BASE_DIR / 'payment_monitor.py')]},
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
     ]
