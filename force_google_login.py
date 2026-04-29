@@ -80,6 +80,11 @@ for f in SESSION_DIR.glob('Singleton*'):
 for f in SESSION_DIR.glob('.com.google.Chrome*'):
     f.unlink(missing_ok=True)
 
+# Corrigir permissão — Playwright roda como ubuntu, sessão pode ser root
+import subprocess as _sp
+_sp.run(['chown', '-R', 'ubuntu:ubuntu', str(SESSION_DIR)], capture_output=True)
+print(f"Permissões corrigidas: {SESSION_DIR} → ubuntu:ubuntu")
+
 # Sincronizar para workers escravos
 print("Sincronizando para workers...")
 sys.path.insert(0, '/opt/vooindo')

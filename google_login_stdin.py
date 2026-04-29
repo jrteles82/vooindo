@@ -318,6 +318,11 @@ try:
                 print('STATUS:STEP:Sessão sincronizada para workers.')
             except Exception as e:
                 print(f'STATUS:STEP:Aviso: sync falhou: {e}')
+        
+        # Garantir permissão ubuntu em toda a sessão
+        import subprocess as _sp
+        _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(SESSION_DIR)], capture_output=True)
+        print('STATUS:STEP:Permissões corrigidas para ubuntu:ubuntu.')
 
         print(f'STATUS:AUTH_SCORE:{score}')
 
