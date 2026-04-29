@@ -793,14 +793,34 @@ def main():
                 finish_job(conn, int(job['id']))
             except BaseException as exc:
                 error_text = str(exc)
+                retry_count = int(job.get('retry_count') or 0)
                 should_retry = False
-                if _is_timeout_error(exc) and int(job.get('retry_count') or 0) == 0:
-                    should_retry = True
-                elif 'Permission denied' in error_text and int(job.get('retry_count') or 0) == 0:
-                    should_retry = True
+                # Retry pra erros técnicos (se ainda não retentou)
+                # Só retenta erros técnicos: OOM, timeout, parsed=0
+                # NÃO retenta: filtro de preço, usuário bloqueado, etc.
+                _retryable_errors = {
+                    'proc_error_rc1',
+                    'proc_error_rc1: no_stderr',
+                    'proc_error_rc1: no_stderr (retry)',
+                    'timeout_expired',
+                    'timeout_expired (retry)',
+                    'Consulta sem preço ou link confiável',
+                }
+                # 'Consulta sem resultados filtrados' só retenta se parsed > 0 (crashou no filtro)
+                _retryable_sem_resultados = ('Consulta sem resultados filtrados' in error_text)
+                if retry_count == 0:
+                    if _is_timeout_error(exc):
+                        should_retry = True
+                    elif 'Permission denied' in error_text:
+                        should_retry = True
+                    elif any(e in error_text for e in _retryable_errors):
+                        should_retry = True
+                    elif _retryable_sem_resultados:
+                        # parsed=0 ou crash no filtro — vale tentar de novo
+                        should_retry = True
                 if should_retry:
                     retry_job(conn, int(job['id']))
-                    logger.warning('[JOB_RETRY] %s no job %s, reagendando (tentativa 1)', 'timeout' if _is_timeout_error(exc) else 'permission_denied', job['id'])
+                    logger.warning('[JOB_RETRY] %s no job %s, reagendando (tentativa 1)', error_text[:50], job['id'])
                     continue
                 fail_job(conn, int(job['id']), error_text)
                 if _is_timeout_error(exc):

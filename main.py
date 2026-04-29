@@ -565,8 +565,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 1  # Máximo de 1 Chrome por vez (3.9GB RAM, sem swap confiável)
-
+_CHROME_MAX_CONCURRENT = 1  # Máximo de 1 Chrome por vez (3.9GB RAM)
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -685,11 +684,12 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
                 
-                # Timeout dinâmico: 240s pra rotas internacionais (mais scrolls, mais lento)
-                intl_timeout = 240 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 180
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
+                
+                # Timeout dinâmico: 240s pra rotas internacionais (mais scrolls, mais lento)
+                intl_timeout = 240 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 180
                 
                 # Semáforo: espera até 300s por um slot Chrome
                 slot_got = ChromeSemaphore.acquire(timeout=300.0)
@@ -700,33 +700,30 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 try:
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=intl_timeout, env=env)
                 finally:
-                    # Mata Chrome orphan após cada execução pra liberar RAM
+                    # Mata Chrome orphan (sem pai python atual) pra liberar RAM entre rotas
+                    import psutil as _psutil, os as _os
+                    _current_pid = _os.getpid()
                     try:
-                        # Mata só os processos Chrome orphan (sem pai python)
-                        import psutil, signal as _signal
-                        _current_pid = os.getpid()
-                        try:
-                            for _proc in psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
-                                _name = (_proc.info.get('name') or '').lower()
-                                _cmd = ' '.join(_proc.info.get('cmdline') or [])
-                                if 'chrome' not in _name and 'chrom' not in _cmd:
-                                    continue
-                                # Não mata Chrome que tem o atual python como ancestral
-                                _pp = _proc.info['ppid']
-                                _is_child = False
-                                while _pp > 1:
-                                    if _pp == _current_pid:
-                                        _is_child = True
-                                        break
-                                    try:
-                                        _pp = psutil.Process(_pp).ppid()
-                                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                                        break
-                                if not _is_child and _proc.info['pid'] != _current_pid:
-                                    _proc.kill()
-                        except Exception:
-                            pass
-                        time.sleep(0.5)
+                        for _proc in _psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
+                            _name = (_proc.info.get('name') or '').lower()
+                            _cmd = ' '.join(_proc.info.get('cmdline') or [])
+                            if 'chrome' not in _name and 'chrom' not in _cmd:
+                                continue
+                            _pp = _proc.info['ppid']
+                            _is_child = False
+                            while _pp > 1:
+                                if _pp == _current_pid:
+                                    _is_child = True
+                                    break
+                                try:
+                                    _pp = _psutil.Process(_pp).ppid()
+                                except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                                    break
+                            if not _is_child and _proc.info['pid'] != _current_pid:
+                                _proc.kill()
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
                     ChromeSemaphore.release()
 
                 if proc.returncode == 0:
@@ -764,7 +761,6 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
 
                 # Retry automático para proc_error_rc1: pode ser OOM que matou o Chrome
-                # Depois de liberar o slot, outro processo tende a ter RAM livre
                 if proc.returncode == 1 and "no_stderr" in result.notes:
                     import random
                     retry_delay = random.uniform(5.0, 15.0)
@@ -772,7 +768,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     slot_got = ChromeSemaphore.acquire(timeout=120.0)
                     if slot_got:
                         try:
-                            retry_proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env)
+                            retry_proc = subprocess.run(cmd, capture_output=True, text=True, timeout=intl_timeout, env=env)
                             if retry_proc.returncode == 0:
                                 try:
                                     data = json.loads(retry_proc.stdout)
