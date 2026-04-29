@@ -892,31 +892,11 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if proxy_user and proxy_pass:
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
-        # Browser toggle: lê do BD (app_config) primeiro, fallback pra env
-        _browser_engine = os.environ.get('BROWSER', 'chrome').strip().lower()
-        try:
-            from db import connect as _db_connect, get_config
-            _db = _db_connect()
-            _cfg = get_config(_db, 'browser', '')
-            if _cfg in ('chrome', 'firefox'):
-                _browser_engine = _cfg
-            _db.close()
-        except Exception:
-            pass
-        if _browser_engine == 'firefox':
-            context = p.firefox.launch_persistent_context(
-                str(SESSION_DIR),
-                headless=HEADLESS,
-                slow_mo=SLOW_MO,
-                locale="pt-BR",
-                proxy=proxy_settings if proxy_settings else None,
-                viewport={"width": 1280, "height": 900},
-            )
-        else:
-            context = p.chromium.launch_persistent_context(
-                str(SESSION_DIR),
-                headless=HEADLESS,
-                slow_mo=SLOW_MO,
+        # Apenas Chrome (Firefox removido — instável com recursos do VPS)
+        context = p.chromium.launch_persistent_context(
+            str(SESSION_DIR),
+            headless=HEADLESS,
+            slow_mo=SLOW_MO,
                 locale="pt-BR",
                 user_agent=USER_AGENT,
                 proxy=proxy_settings if proxy_settings else None,

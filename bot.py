@@ -36,7 +36,7 @@ from config import (
 )
 
 PANEL_RESTART_COMMAND = os.getenv('RESTART_COMMAND', '').strip()
-from db import auto_pk_column, connect as connect_db, get_config, id_ref_column, indexed_text_column, insert_ignore_sql, is_missing_column_error, set_config, sql, text_column, upsert_payment_sql, DatabaseRateLimitError
+from db import auto_pk_column, connect as connect_db, id_ref_column, indexed_text_column, insert_ignore_sql, is_missing_column_error, sql, text_column, upsert_payment_sql, DatabaseRateLimitError
 from app_logging import setup_logging
 from audit import audit
 from notif import get_notif_settings, push_admin_notif, NOTIF_LABELS
@@ -1117,14 +1117,6 @@ def admin_notif_markup(notif_settings: dict) -> InlineKeyboardMarkup:
 
 def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_result_type_filters: bool = True, admin_unread_support: int = 0) -> InlineKeyboardMarkup:
     settings = settings_row or {}
-    _browser = 'chrome'
-    try:
-        _conn_b = connect_db()
-        _browser = get_config(_conn_b, 'browser', 'chrome')
-        _conn_b.close()
-    except Exception:
-        pass
-    _browser_label = 'Firefox 🦊' if _browser == 'firefox' else 'Chrome'
     test_mode_on = bool(int(settings.get('test_mode', 0) or 0)) if isinstance(settings, dict) else False
     charge_global_on = bool(int(settings.get('charge_global', 0) or 0)) if isinstance(settings, dict) else False
     charge_admin_on = bool(int(settings.get('charge_admin_only', 0) or 0)) if isinstance(settings, dict) else False
@@ -1154,7 +1146,6 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
         [InlineKeyboardButton('🔄 Reiniciar serviço', callback_data='painel:restart_service')],
         [InlineKeyboardButton('🔐 Renovar Sessão Google', callback_data='painel:renovar_sessao')],
         [InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho')],
-        [InlineKeyboardButton('🖥️ Nav: ' + _browser_label, callback_data='painel:toggle_browser')],
         [InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
         [InlineKeyboardButton('🏠 Menu principal', callback_data='menu:back')],
     ])
@@ -2622,25 +2613,6 @@ LIMIT 15
             )
         if should_exit:
             raise SystemExit(0)
-
-    elif action == 'toggle_browser':
-        await query.answer()
-        current = get_config(conn, 'browser', 'chrome')
-        new_browser = 'firefox' if current == 'chrome' else 'chrome'
-        set_config(conn, 'browser', new_browser)
-        settings = get_monetization_settings(conn)
-        maintenance_on = is_maintenance_mode(conn)
-        show_result_type_filters = should_show_result_type_filters(conn)
-        texto = (
-            '🛠 *Painel Administrativo*\n\n'
-            f"🧪 Modo teste: {'ATIVADO ✅' if int(settings['test_mode']) == 1 else 'DESATIVADO ❌'}\n"
-            f"🌐 Cobrança geral: {'ATIVA ✅' if int(settings['charge_global']) == 1 else 'DESATIVADA ❌'}\n"
-            f"👤 Cobrança só admin: {'ATIVA ✅' if int(settings['charge_admin_only']) == 1 else 'DESATIVADA ❌'}\n"
-            f"🔧 Manutenção: {'ATIVA ✅' if maintenance_on else 'DESATIVADA ❌'}\n"
-            f"🎛 Exibir filtros Companhia/Agências: {'SIM ✅' if show_result_type_filters else 'NÃO ❌'}\n"
-            f'🖥️ Navegador alterado para *{new_browser.title()}*'
-        )
-        await query.edit_message_text(texto, parse_mode='Markdown', reply_markup=admin_panel_markup(settings, maintenance_on, show_result_type_filters, get_support_badges(conn, chat_id, admin=True)[0]))
 
     elif action == 'back':
         await query.answer()

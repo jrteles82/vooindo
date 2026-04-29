@@ -257,24 +257,16 @@ def apply_retries(jobs: list) -> list:
     return retried
 
 def do_fallback(state: dict) -> bool:
-    """Fallback: Chrome + semáforo 1 + restart."""
+    """Fallback: garante Chrome + semáforo 1 + restart."""
     try:
-        conn = db_connect()
-        cur_browser = get_config(conn, 'browser', 'chrome')
-        changed = False
-        if cur_browser == 'firefox':
-            set_config(conn, 'browser', 'chrome')
-            log.warning("[fallback] firefox → chrome")
-            changed = True
-        conn.close()
-        if changed:
-            state['fallback_browser'] = True
-            state['fallback_semaphore'] = True
-            _save_state(state)
-            subprocess.run(['sudo', 'systemctl', 'restart', 'vooindo.service'],
-                          capture_output=True, timeout=30)
-            log.warning("[fallback] serviço reiniciado")
-        return changed
+        log.warning("[fallback] garantindo Chrome + semáforo 1, reiniciando serviço")
+        state['fallback_browser'] = True
+        state['fallback_semaphore'] = True
+        _save_state(state)
+        subprocess.run(['sudo', 'systemctl', 'restart', 'vooindo.service'],
+                      capture_output=True, timeout=30)
+        log.warning("[fallback] serviço reiniciado")
+        return True
     except Exception as e:
         log.error(f"[fallback] erro: {e}")
         return False

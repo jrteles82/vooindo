@@ -597,7 +597,7 @@ class ChromeSemaphore:
                     current = int(content) if content else 0
                     if current > 0:
                         import subprocess
-                        pg = subprocess.run(['pgrep', '-c', '-f', 'firefox|chrome-headless|chromium'],
+                        pg = subprocess.run(['pgrep', '-c', '-f', 'chrome-headless|chromium'],
                                             capture_output=True, text=True, timeout=5)
                         alive = int(pg.stdout.strip()) if pg.stdout.strip().isdigit() else 0
                         if alive == 0:
@@ -720,7 +720,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env = os.environ.copy()
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
-                env["BROWSER"] = os.environ.get("BROWSER", "chrome")
+                # Chrome é o único navegador suportado
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:
