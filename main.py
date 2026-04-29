@@ -702,10 +702,16 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 finally:
                     # Mata Chrome orphan após cada execução pra liberar RAM
                     try:
-                        subprocess.run(['pkill', '-f', 'chrome-headless.*google_session'], capture_output=True, timeout=5)
+                        # Mata TODOS os processos Chrome (incluindo sandbox e GPU)
+                        subprocess.run(['pkill', '-9', '-f', 'chrome'], capture_output=True, timeout=5)
                     except Exception:
                         pass
                     time.sleep(0.5)
+                    try:
+                        subprocess.run(['pkill', '-9', '-f', 'chromium'], capture_output=True, timeout=3)
+                    except Exception:
+                        pass
+                    time.sleep(0.3)
                     ChromeSemaphore.release()
 
                 if proc.returncode == 0:
