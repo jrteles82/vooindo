@@ -581,15 +581,51 @@ class ChromeSemaphore:
     _lock_path = "/tmp/vooindo_chrome_semaphore.lock"
 
     @classmethod
+    def _stale_watchdog(cls):
+        """Verifica se o lock está abandonado (nenhum processo com lock adquirido há mais de 10 min)."""
+        import os, time, fcntl
+        try:
+            lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                now = time.time()
+                st = os.fstat(lock_fd)
+                mtime = st.st_mtime  # última modificação = última escrita
+                if now - mtime > 600:  # 10 minutos sem alteração
+                    # Verifica se há processos Chrome/Firefox vivos
+                    content = os.read(lock_fd, 32).decode().strip()
+                    current = int(content) if content else 0
+                    if current > 0:
+                        import subprocess
+                        pg = subprocess.run(['pgrep', '-c', '-f', 'firefox|chrome-headless|chromium'],
+                                            capture_output=True, text=True, timeout=5)
+                        alive = int(pg.stdout.strip()) if pg.stdout.strip().isdigit() else 0
+                        if alive == 0:
+                            os.lseek(lock_fd, 0, os.SEEK_SET)
+                            os.write(lock_fd, b'0')
+                            os.ftruncate(lock_fd, os.lseek(lock_fd, 0, os.SEEK_CUR))
+                            os.fsync(lock_fd)
+                            import logging
+                            logging.getLogger().warning("[semaphore] watchdog: lock abandonado resetado para 0")
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+        except Exception:
+            pass
+
+    @classmethod
     def acquire(cls, timeout: float = 300.0) -> bool:
         """Tenta adquirir slot. Retorna True se conseguiu dentro do timeout."""
-        import fcntl, os, time
+        import fcntl, os, time, logging
         end = time.monotonic() + timeout
         lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
             while time.monotonic() < end:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 try:
+                    # Watchdog: verifica lock abandonado antes de ler contagem
+                    cls._stale_watchdog()
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
                     content = os.read(lock_fd, 32).decode().strip()
                     current = int(content) if content else 0
                     if current < _CHROME_MAX_CONCURRENT:
@@ -601,6 +637,7 @@ class ChromeSemaphore:
                 finally:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 time.sleep(0.5)
+            logging.getLogger().warning(f"[semaphore] timeout de {timeout}s aguardando slot")
             return False
         finally:
             os.close(lock_fd)
