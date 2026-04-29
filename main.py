@@ -565,7 +565,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 2  # Máximo de 2 Chromes simultâneos no servidor (3.9GB RAM)
+_CHROME_MAX_CONCURRENT = 1  # Máximo de 1 Chrome por vez (3.9GB RAM, sem swap confiável)
 
 
 class ChromeSemaphore:
