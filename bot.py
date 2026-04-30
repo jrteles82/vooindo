@@ -3861,7 +3861,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             panel_text = get_panel_text(chat_id)
             await query.message.reply_text(
                 panel_text,
-                parse_mode='Markdown',
+                parse_mode='HTML',
                 reply_markup=full_menu_markup(chat_id),
             )
         elif action == 'back':
@@ -3872,7 +3872,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             panel_text = get_panel_text(chat_id)
             await query.message.reply_text(
                 panel_text,
-                parse_mode='Markdown',
+                parse_mode='HTML',
                 reply_markup=full_menu_markup(chat_id),
             )
         else:

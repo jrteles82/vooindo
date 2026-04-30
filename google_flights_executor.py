@@ -424,7 +424,7 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
 
     def _add(vendor: str, price: float, is_airline: bool) -> None:
         # Limpeza agressiva do nome do vendor
-        vendor = re.sub(r"Companhia\s*a[ée]rea", "", vendor, flags=re.I).strip(" :-\n")
+        vendor = re.sub(r"Companhia[ns]?\s+a[ée]rea[ns]?", "", vendor, flags=re.I).strip(" :-\n")
         if not vendor or price <= 0:
             return
         key = (vendor.lower()[:40], round(price), is_airline)
@@ -435,14 +435,14 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
     for i, line in enumerate(lines):
         # Método 1: "Reserve com [a] Vendor"
         m = re.search(
-            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia\s*a[ée]rea|$)",
+            r"(?:Reserve com(?: a)?|Reservar com(?: a)?|Comprar com(?: a)?|Vendido por)\s*(.+?)(?:\s*Companhia[ns]?\s+a[ée]rea[ns]?|$)",
             line, re.I
         )
         if m:
-            vendor = re.sub(r"Companhia\s*a[ée]rea\s*$", "", m.group(1).strip(), flags=re.I).strip()
-            is_airline = bool(re.search(r"Companhia\s*a[ée]rea", line, re.I))
+            vendor = re.sub(r"Companhia[ns]?\s+a[ée]rea[ns]?\s*$", "", m.group(1).strip(), flags=re.I).strip()
+            is_airline = bool(re.search(r"Companhia[ns]?\s+a[ée]rea[ns]?", line, re.I))
             if not is_airline and i + 1 < len(lines):
-                is_airline = bool(re.search(r"Companhia\s*a[ée]rea", lines[i + 1], re.I))
+                is_airline = bool(re.search(r"Companhia[ns]?\s+a[ée]rea[ns]?", lines[i + 1], re.I))
             if not is_airline:
                 is_airline = is_probable_airline_vendor(vendor)
             price = _parse_price_near(i)
@@ -450,8 +450,8 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
                 _add(vendor, price, is_airline)
             continue
 
-        if re.search(r"Companhia\s*a[ée]rea", line, re.I):
-            m2 = re.search(r"^(.+?)Companhia\s*a[ée]rea", line, re.I)
+        if re.search(r"Companhia[ns]?\s+a[ée]rea[ns]?", line, re.I):
+            m2 = re.search(r"^(.+?)Companhia[ns]?\s+a[ée]rea[ns]?", line, re.I)
             vendor = m2.group(1).strip() if m2 else (lines[i - 1] if i > 0 else "")
             if vendor:
                 price = _parse_price_near(i)
@@ -573,9 +573,9 @@ def extract_vendor_from_body(body: str) -> str:
     """
     lines = [ln.strip() for ln in (body or '').splitlines() if ln.strip()]
     for i, line in enumerate(lines):
-        if re.search(r'Companhia\s*a[ée]?rea?', line, re.I):
+        if re.search(r'Companhia[ns]?\s+a[ée]rea[ns]?', line, re.I):
             # Tenta extrair da própria linha (antes de "Companhia")
-            before = re.sub(r'Companhia\s*a[ée]?rea?.*', '', line, flags=re.I).strip()
+            before = re.sub(r'Companhia[ns]?\s+a[ée]rea[ns]?.*', '', line, flags=re.I).strip()
             before = re.sub(r'R\$[\s\d.,]+', '', before).strip()
             if before and is_probable_airline_vendor(before):
                 return before
@@ -583,33 +583,76 @@ def extract_vendor_from_body(body: str) -> str:
             candidate = lines[i - 1] if i > 0 else ''
             if candidate:
                 candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
-                candidate = re.sub(r'Companhia.*', '', candidate, flags=re.I).strip()
+                candidate = re.sub(r'Companhia[ns]?\s+a[ée]rea[ns]?.*', '', candidate, flags=re.I).strip()
                 if candidate and is_probable_airline_vendor(candidate):
                     return candidate
         # Padrão: nome em linha curta, logo acima de "Companhia" na linha seguinte
-        if i + 1 < len(lines) and re.search(r'Companhia\s*a[ée]rea', lines[i + 1], re.I):
+        if i + 1 < len(lines) and re.search(r'Companhia[ns]?\s+a[ée]rea[ns]?', lines[i + 1], re.I):
             candidate = line.strip()
             candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
-            candidate = re.sub(r'Companhia.*', '', candidate, flags=re.I).strip()
+            candidate = re.sub(r'Companhia[ns]?\s+a[ée]rea[ns]?.*', '', candidate, flags=re.I).strip()
             if candidate and is_probable_airline_vendor(candidate):
                 return candidate
     # Fallback final: qualquer linha com nome de companhia antes de "Companhia"
     for line in lines:
         # Procura padrão onde "Companhia" vem grudado no nome (pode ser multi-palavra)
         # Ex: "Aerolineas ArgentinasCompanhia aérea"
-        m = re.search(r'((?:[A-Z][a-zA-ZÀ-ÿ]+\s+)*[A-Z][a-zA-ZÀ-ÿ]+)Companhia', line)
+        m = re.search(r'((?:[A-Z][a-zA-ZÀ-ÿ]+\s+)*[A-Z][a-zA-ZÀ-ÿ]+)Companhia[ns]?\s+a?', line)
         if m:
             candidate = m.group(1).strip()
             if is_probable_airline_vendor(candidate):
                 return candidate
         # Fallback mais agressivo: tudo antes de "Companhia"
-        m = re.search(r'(.+?)Companhia', line)
+        m = re.search(r'(.+?)Companhia[ns]?\s+a?', line)
         if m:
             candidate = m.group(1).strip()
             # Remove preço se tiver na mesma linha
             candidate = re.sub(r'R\$[\s\d.,]+', '', candidate).strip()
             if candidate and is_probable_airline_vendor(candidate):
                 return candidate
+
+    # Fallback extra: procurar nomes de companhias no texto SEM precisar de "Companhia"
+    # Isso captura cards que só mostram "LATAM" ou "Gol" na linha do preço
+    for i, line in enumerate(lines):
+        has_price = bool(re.search(r'R\$[\s\d.,]+', line))
+        low = line.lower()
+        best_match = None
+        best_match_len = 999
+        for token, canonical in _AIRLINE_TOKENS:
+            if token in low:
+                # Pega o token mais curto que casa (evita "latam airlines brasil" quando "latam" serve)
+                if len(token) < best_match_len:
+                    best_match = token
+                    best_match_len = len(token)
+        if best_match:
+            short_name = best_match.upper() if len(best_match) <= 6 else best_match.title()
+            if has_price:
+                return short_name
+            # Busca preço num raio maior (o card pode ter texto quebrado em várias linhas)
+            for j in range(1, 15):
+                if i + j < len(lines) and bool(re.search(r'R\$[\s\d.,]+', lines[i + j])):
+                    return short_name
+            for j in range(1, 10):
+                if i - j >= 0 and bool(re.search(r'R\$[\s\d.,]+', lines[i - j])):
+                    return short_name
+    
+    # Último recurso: procurar nome de companhia perto de "Companhias aéreas" no plural
+    for i, line in enumerate(lines):
+        if 'companhia' in line.lower() or 'companhias' in line.lower():
+            # Pega o que vem depois de qualquer texto que não seja o nome
+            before = re.sub(r'Companhi[as].*', '', line, flags=re.I).strip()
+            before = re.sub(r'R\$[\s\d.,]+', '', before).strip()
+            # Remove números, símbolos
+            before = re.sub(r'[.,\-]+', ' ', before).strip()
+            # Pega a última palavra (provavelmente o nome da cia)
+            words = before.split()
+            for w in reversed(words):
+                if len(w) >= 3 and w[0].isupper():
+                    for token, canonical in _AIRLINE_TOKENS:
+                        if token in w.lower():
+                            return canonical
+                    if w.lower() in _INTL_AIRLINE_KEYWORDS:
+                        return w.title()
     return ''
 
 

@@ -100,6 +100,7 @@ ERROR_STRATEGIES = {
     'stale_running_recovered': [],  # job já foi recuperado pelo recovery system, sem ação
     'cancelled_by_new_request': [],  # não é erro técnico (ignora)
     'usuario_bloqueado': [],  # não é erro técnico (ignora: bloqueado, teto, sem preço)
+    'process_killed': [],  # SIGTERM/SIGKILL durante restart, não precisa reparar
 }
 
 def classify_error(error_message: str) -> list:
@@ -128,6 +129,8 @@ def classify_error(error_message: str) -> list:
         categories.append('cancelled_by_new_request')
     if 'bloqueado' in error_lower:
         categories.append('usuario_bloqueado')
+    if error_message.strip() in ('143',):
+        categories.append('process_killed')
     if 'sem preço' in error_lower or 'sem_preco' in error_lower or 'sem preco' in error_lower or 'sem pre' in error_lower:
         categories.append('usuario_bloqueado')  # trata como não-técnico
     if 'acima do teto' in error_lower or 'acima do limite' in error_lower:
@@ -144,7 +147,7 @@ def run_repair(job_id: int, error_message: str) -> dict:
         return {'repaired': False, 'action': 'unknown_error', 'notify': True}
     
     # Se só tem erros não-técnicos, não repara
-    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'job_timeout_300s'}
+    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'job_timeout_300s', 'process_killed'}
     if all(c in nonttechnical for c in categories):
         return {'repaired': False, 'action': 'not_technical', 'notify': False}
     
