@@ -87,21 +87,6 @@ def repair_chrome_crash(ctx: dict) -> bool:
     """Chrome crashou (rc=1 no_stderr): mata órfãos e limpa cache."""
     return repair_oom(ctx)
 
-
-def repair_sem_preco(ctx: dict) -> bool:
-    """Rota sem preço: limpa cache e reseta semáforo, depois retenta."""
-    try:
-        subprocess.run(['sync'], timeout=5)
-        with open('/proc/sys/vm/drop_caches', 'w') as f:
-            f.write('3')
-        subprocess.run(['pkill', '-9', '-f', 'chrome-headless'], capture_output=True, timeout=5)
-        time.sleep(2)
-        logger.warning('[repair] sem_preco: cache limpo + Chrome kill + retry programado')
-        return True
-    except Exception as e:
-        logger.error(f'[repair] falha sem_preco: {e}')
-        return False
-
 # ─── Mapa erro → estratégia ─────────────────────────────────────────
 
 ERROR_STRATEGIES = {
@@ -111,9 +96,10 @@ ERROR_STRATEGIES = {
     'deadlock': [repair_deadlock_semaphore, repair_stale_workers],
     'mysql_timeout': [repair_mysql_timeout],
     'OOM': [repair_oom, repair_stale_workers],
-    'cancelled_by_new_request': [],  # não é erro técnico
-    'usuario_bloqueado': [],  # não é erro técnico
-    'sem_preco': [repair_sem_preco],  # retenta rota que não carregou preço
+    'job_timeout_300s': [repair_chrome_crash],  # watchdog matou, limpa Chrome e semáforo
+    'stale_running_recovered': [],  # job já foi recuperado pelo recovery system, sem ação
+    'cancelled_by_new_request': [],  # não é erro técnico (ignora)
+    'usuario_bloqueado': [],  # não é erro técnico (ignora: bloqueado, teto, sem preço)
 }
 
 def classify_error(error_message: str) -> list:
@@ -134,12 +120,18 @@ def classify_error(error_message: str) -> list:
         categories.append('OOM')
     if 'deadlock' in error_lower:
         categories.append('deadlock')
+    if 'job_timeout' in error_lower:
+        categories.append('job_timeout_300s')
+    if 'stale_running' in error_lower:
+        categories.append('stale_running_recovered')
     if 'cancelled' in error_lower:
         categories.append('cancelled_by_new_request')
     if 'bloqueado' in error_lower:
         categories.append('usuario_bloqueado')
     if 'sem preço' in error_lower or 'sem_preco' in error_lower or 'sem preco' in error_lower or 'sem pre' in error_lower:
-        categories.append('sem_preco')
+        categories.append('usuario_bloqueado')  # trata como não-técnico
+    if 'acima do teto' in error_lower or 'acima do limite' in error_lower:
+        categories.append('usuario_bloqueado')  # trata como não-técnico
     return categories
 
 def run_repair(job_id: int, error_message: str) -> dict:
@@ -152,7 +144,7 @@ def run_repair(job_id: int, error_message: str) -> dict:
         return {'repaired': False, 'action': 'unknown_error', 'notify': True}
     
     # Se só tem erros não-técnicos, não repara
-    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado'}
+    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'job_timeout_300s'}
     if all(c in nonttechnical for c in categories):
         return {'repaired': False, 'action': 'not_technical', 'notify': False}
     

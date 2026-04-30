@@ -265,6 +265,18 @@ def finish_job(conn, job_id: int):
         _cap.close()
 
 
+def warn_job(conn, job_id: int, message: str):
+    """Marca job como done com mensagem (filtro de preço, sem resultados — não é erro)."""
+    _cap = _make_cap_conn()
+    try:
+        _cap.cursor().execute(
+            f"UPDATE scan_jobs SET status = 'done', finished_at = {now_expression()}, error_message = %s WHERE id = %s",
+            (message[:500], job_id),
+        )
+    finally:
+        _cap.close()
+
+
 def fail_job(conn, job_id: int, error_message: str):
     """Marca job como error usando conexão separada autocommit."""
     _cap = _make_cap_conn()
@@ -296,6 +308,9 @@ def is_job_cancelled(conn, job_id: int) -> bool:
         return True
     status = str(row['status'] if isinstance(row, dict) else row[0] or '')
     error_message = str(row['error_message'] if isinstance(row, dict) else row[1] or '')
+    # watchdog que marcou job_timeout_300s não é cancelamento real — scan pode ter completado
+    if 'job_timeout_300s' in error_message:
+        return False
     return status != 'running' or error_message == 'cancelled_by_new_request'
 
 
@@ -558,10 +573,22 @@ def process_job(conn, bot: Bot, loop, job):
     _JOB_TIMEOUT = 120 + max(0, _route_count - 1) * 120 + 60  # mínimo 180s, ~120s por rota extra
     _wd_fired = [False]
     _wd_job_id = [job_id]
+    _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
     def _job_watchdog():
         import time as _t
         _t.sleep(_JOB_TIMEOUT)
         _jid = _wd_job_id[0]
+        # Se o scan já retornou dados (parsed > 0), watchdog só limpa processos sem marcar erro
+        if _wd_scan_done[0]:
+            try:
+                import subprocess as _sp
+                _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
+                import main as _main
+                _main.ChromeSemaphore.reset()
+            except:
+                pass
+            logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss (scan já completou, só limpou processos)', _jid, _JOB_TIMEOUT)
+            return
         # Só age se o job AINDA estiver running (não foi finalizado naturalmente)
         try:
             from db import connect as _db, sql as _sql
@@ -658,7 +685,12 @@ def process_job(conn, bot: Bot, loop, job):
         )
     )
     parsed = _loop.run_until_complete(_future)
-    logger.info('[job-worker] job_id=%s | scan concluído | parsed=%s', job_id, len(parsed))
+    # Se o scan retornou dados, avisa o watchdog pra não marcar como erro
+    if parsed:
+        _wd_scan_done[0] = True
+        logger.info('[job-worker] job_id=%s | scan concluído | parsed=%s | watchdog liberado', job_id, len(parsed))
+    else:
+        logger.info('[job-worker] job_id=%s | scan concluído | parsed=0', job_id)
     if is_job_cancelled(conn, job_id):
         raise RuntimeError('cancelled_by_new_request')
     if _rows_have_auth_error(parsed):
@@ -703,14 +735,27 @@ def process_job(conn, bot: Bot, loop, job):
                 (chat_id,)
             )
             conn.commit()
-        raise RuntimeError(error_msg)
+        # Filtro de preço não é erro — marca como done com mensagem
+        warn_job(conn, job_id, error_msg)
+        audit.scraping("scan_agendado_concluido" if str(job.get('job_type') or '').strip().lower() == 'scheduled' else "scan_manual_concluido",
+                       chat_id=chat_id, user_id=user_id,
+                       duration_ms=_t.elapsed(),
+                       payload={"job_id": job['id'], "resultados": len(filtered), "rotas": len(routes), "warning": error_msg})
+        logger.info('[job-worker] job_id=%s | fim (filtrado) | %s | duração_ms=%s', job_id, error_msg, _t.elapsed())
+        return
 
     if not _rows_have_displayable_result(filtered):
         mensagem = '⚠️ Encontramos a rota, mas sem preço ou link confiável no momento. Tente novamente em alguns minutos.'
         if not is_dry_run:
             loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
         logger.warning('[job-worker] job_id=%s | resultados sem preço/link utilizável após filtros', job_id)
-        raise RuntimeError('Consulta sem preço ou link confiável')
+        warn_job(conn, job_id, 'Consulta sem preço ou link confiável')
+        audit.scraping("scan_agendado_concluido" if str(job.get('job_type') or '').strip().lower() == 'scheduled' else "scan_manual_concluido",
+                       chat_id=chat_id, user_id=user_id,
+                       duration_ms=_t.elapsed(),
+                       payload={"job_id": job['id'], "resultados": len(filtered), "rotas": len(routes), "warning": 'sem_preco'})
+        logger.info('[job-worker] job_id=%s | fim (sem preço) | duração_ms=%s', job_id, _t.elapsed())
+        return
 
     split_blocks = should_split
     is_scheduled_job = str(job.get('job_type') or '').strip().lower() == 'scheduled'
@@ -858,10 +903,8 @@ def main():
             recovered_running_ids, expired_pending_ids = recover_stale_jobs(conn)
             if recovered_running_ids:
                 logger.warning('[JOB_RECOVERY] startup/loop recovery | scan_jobs travados recuperados: %s', recovered_running_ids)
-                _alert_admin(bot, loop, f"⚠️ Jobs travados recuperados no worker: {recovered_running_ids}")
             if expired_pending_ids:
                 logger.warning('[JOB_RECOVERY] startup/loop recovery | scan_jobs pendentes expirados: %s', expired_pending_ids)
-                _alert_admin(bot, loop, f"⚠️ Jobs pendentes expirados no worker: {expired_pending_ids}")
 
             # Sync de perfil desabilitado — workers usam sessão base diretamente (run_all.py)
             pass
@@ -889,6 +932,8 @@ def main():
                     'timeout_expired',
                     'timeout_expired (retry)',
                     'Consulta sem preço ou link confiável',
+                    'cancelled_by_new_request',  # scan pode ter dados, vale retry
+                    'job_timeout_300s',  # watchdog matou, mas scan pode ter completado
                 }
                 # 'Consulta sem resultados filtrados' só retenta se parsed > 0 (crashou no filtro)
                 _retryable_sem_resultados = ('Consulta sem resultados filtrados' in error_text)

@@ -648,6 +648,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.id IN ({placeholders}) AND j.status = 'error'
+              AND COALESCE(j.error_message, '') NOT IN ('stale_running_recovered', 'stale_pending_expired')
               AND j.user_id NOT IN (
                   SELECT DISTINCT user_id FROM scan_jobs
                   WHERE id IN ({placeholders}) AND status = 'done'
@@ -682,10 +683,26 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             lines.append(f"  {names}")
             lines.append('')
 
-        if not_received:
-            lines.append(f"❌ NÃO RECEBERAM ({len(not_received)})")
-            for r in not_received:
+        # Separa erros reais de filtro de preço
+        real_errors = []
+        price_filtered = []
+        for r in not_received:
+            err = (r['erro'] or '').strip()
+            if err == 'Consulta acima do teto configurado':
+                price_filtered.append(r)
+            else:
+                real_errors.append(r)
+        
+        if real_errors:
+            lines.append(f"❌ NÃO RECEBERAM ({len(real_errors)})")
+            for r in real_errors:
                 lines.append(f"  {(r['first_name'] or '---')}: {(r['erro'] or 'erro')[:80]}")
+            lines.append('')
+        
+        if price_filtered:
+            lines.append(f"⚠️ ACIMA DO TETO ({len(price_filtered)})")
+            for r in price_filtered:
+                lines.append(f"  {(r['first_name'] or '---')}: preço acima do limite configurado")
             lines.append('')
 
         if job_durations:
