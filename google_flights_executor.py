@@ -1070,12 +1070,23 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             best_airline = None
             best_agency = None
             price_insight = ""
-            if overall_min is not None:
-                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, overall_min, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                booking_followed = followed
-            elif summary_price is not None:
-                followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, summary_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                booking_followed = followed
+            _booking_price = overall_min if overall_min is not None else summary_price
+            if _booking_price is not None:
+                try:
+                    followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                    booking_followed = followed
+                except Exception as _be:
+                    # Booking crashou mas já temos dados do card principal — retorna parcial
+                    notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                    # Tenta extrair vendor do body salvo antes do crash
+                    if not best_vendor and cards_body:
+                        card_vendor = extract_vendor_from_body(cards_body)
+                        if card_vendor:
+                            best_vendor = card_vendor
+                            notes.append(f'vendor_from_crash_fallback={best_vendor}')
+                    if best_vendor and _booking_price:
+                        best_vendor_price = _booking_price
+                        visible_card_price = _booking_price
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)

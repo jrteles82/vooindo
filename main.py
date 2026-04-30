@@ -817,6 +817,44 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     finally:
                         ChromeSemaphore.release()
 
+                # Último recurso: se todos os retries falharam, tenta minimal scraper (sem stealth)
+                if result.price is None:
+                    try:
+                        _minimal_cmd = [python_path, '/opt/vooindo/minimal_flights_scraper.py', r.origin, r.destination, r.outbound_date]
+                        if r.inbound_date:
+                            _minimal_cmd.append(r.inbound_date)
+                        _minimal_env = env.copy()
+                        _minimal_env['GOOGLE_PERSISTENT_PROFILE_DIR'] = profile
+                        logger.warning('[scraper] fallback minimal_scraper para %s->%s', r.origin, r.destination)
+                        _slot_got = ChromeSemaphore.acquire(timeout=90.0)
+                        if _slot_got:
+                            try:
+                                _mp = subprocess.run(_minimal_cmd, capture_output=True, text=True, timeout=intl_timeout, env=_minimal_env)
+                                if _mp.returncode == 0:
+                                    _md = json.loads(_mp.stdout)
+                                    if _md.get("ok"):
+                                        result = FlightResult(
+                                            site="google_flights",
+                                            origin=r.origin, destination=r.destination,
+                                            outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                            trip_type=r.trip_type,
+                                            price=_md.get("price"),
+                                            currency="BRL",
+                                            url=_md.get("url", ""),
+                                            notes="minimal_scraper_fallback | " + " | ".join(_md.get("notes", [])),
+                                            best_vendor=_md.get("best_vendor", ""),
+                                            best_vendor_price=_md.get("best_vendor_price"),
+                                            price_insight=_md.get("price_insight", ""),
+                                        )
+                                        logger.warning('[scraper] minimal_scraper OK para %s->%s | preco=%s vendor=%s', r.origin, r.destination, result.price, result.best_vendor)
+                            except Exception as _me:
+                                logger.warning('[scraper] minimal_scraper falhou: %s', _me)
+                            finally:
+                                ChromeSemaphore.release()
+                                time.sleep(0.5)
+                    except Exception as _me:
+                        logger.warning('[scraper] minimal_scraper exception: %s', _me)
+
                 return result
 
             if source_flags.get("google_flights", True):

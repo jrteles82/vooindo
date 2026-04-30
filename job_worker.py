@@ -704,7 +704,7 @@ def process_job(conn, bot: Bot, loop, job):
     filtered_vendor = filter_rows_with_vendor(filtered_normalized)
     filtered_airlines = filter_rows_by_airlines(filtered_vendor, airline_filters_json, show_result_type_filters=show_result_type_filters)
     filtered = _merge_rows_for_combined_result_view(filtered_airlines) if should_split else filtered_airlines
-    # Remove resultados inúteis: sem preço E sem vendor válido (ex: Chrome crashou na rota)
+    # Remove resultados que não tem preço nem vendor (Chrome crashou sem dados parciais)
     _useful = []
     for _r in filtered:
         _has_price = isinstance(_r.get('price'), (int, float)) or isinstance(_r.get('best_vendor_price'), (int, float))
