@@ -548,8 +548,14 @@ def process_job(conn, bot: Bot, loop, job):
     job_id = int(job['id'])
     job_type = str(job.get('job_type') or '')
 
-    # Watchdog: aborta job se demorar >300s (5 min)
-    _JOB_TIMEOUT = 300
+    # Watchdog: timeout dinâmico baseado no número de rotas
+    # Cada rota leva ~90s no modo fast, ~150s no modo normal
+    # Fórmula: 120s (fixo) + (num_rotas - 1) * 120s + 60s margem
+    try:
+        _route_count = len(_build_user_routes(conn, user_id))
+    except Exception:
+        _route_count = 1
+    _JOB_TIMEOUT = 120 + max(0, _route_count - 1) * 120 + 60  # mínimo 180s, ~120s por rota extra
     _wd_fired = [False]
     _wd_job_id = [job_id]
     def _job_watchdog():
