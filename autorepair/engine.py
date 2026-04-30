@@ -79,8 +79,7 @@ def notify_admin(chat_id: str, message: str):
         if admin and admin['chat_id']:
             # Insere notificação via bot (o bot lê dessa tabela ou envia direto)
             # Por enquanto, loga e envia via support_messages
-            from bot import ADMIN_CHAT_ID
-            actual_chat_id = ADMIN_CHAT_ID or admin['chat_id']
+            actual_chat_id = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '0') or '1748352987'
             logger.info(f'[notify] NOTIFICACAO para {actual_chat_id}: {message[:200]}')
             # Tenta enviar via telegram se possível
             try:
