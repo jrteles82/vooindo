@@ -547,6 +547,48 @@ def process_job(conn, bot: Bot, loop, job):
     chat_id = str(job['chat_id'])
     job_id = int(job['id'])
     job_type = str(job.get('job_type') or '')
+
+    # Watchdog: aborta job se demorar >300s (5 min)
+    _JOB_TIMEOUT = 300
+    _wd_fired = [False]
+    _wd_job_id = [job_id]
+    def _job_watchdog():
+        import time as _t
+        _t.sleep(_JOB_TIMEOUT)
+        _jid = _wd_job_id[0]
+        # Só age se o job AINDA estiver running (não foi finalizado naturalmente)
+        try:
+            from db import connect as _db, sql as _sql
+            _c = _db()
+            _row = _c.cursor().execute(_sql("SELECT status FROM scan_jobs WHERE id = %s"), (_jid,)).fetchone()
+            _status = _row['status'] if isinstance(_row, dict) else _row[0] if _row else 'done'
+            _c.close()
+            if _status not in ('pending', 'running'):
+                return  # Já foi finalizado, watchdog não precisa agir
+        except:
+            pass
+        _wd_fired[0] = True
+        try:
+            import subprocess as _sp
+            _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
+            import main as _main
+            _main.ChromeSemaphore.reset()
+        except:
+            pass
+        # Marca job como erro
+        try:
+            from db import connect as _db, sql as _sql
+            _c = _db()
+            _c.cursor().execute(_sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'job_timeout_300s' WHERE id = %s AND status IN ('pending', 'running')"), (_jid,))
+            _c.commit()
+            _c.close()
+        except:
+            pass
+        logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss | Chrome morto + semáforo resetado', _jid, _JOB_TIMEOUT)
+    import threading as _th
+    _tw = _th.Thread(target=_job_watchdog, daemon=True)
+    _tw.start()
+
     _t = audit.timer()
     logger.info('[job-worker] job_id=%s | user_id=%s | chat_id=%s | tipo=%s | início', job_id, user_id, chat_id, job_type)
     audit.system("job_iniciado", chat_id=chat_id, user_id=user_id,
@@ -592,6 +634,11 @@ def process_job(conn, bot: Bot, loop, job):
 
     import functools
     is_manual_now = str(job.get('job_type') or '').strip().lower() == 'manual_now'
+    
+    # dry_run: executa o scan sem enviar nada para o usuário (testes)
+    is_dry_run = str(job.get('payload') or '').strip() == 'dry_run'
+    if is_dry_run:
+        logger.info('[job-worker] job_id=%s | DRY RUN — executando scan sem envio', job_id)
     
     # Roda scan em thread separada para evitar conflito sync/async do Playwright
     _loop = asyncio.get_event_loop()
@@ -642,7 +689,8 @@ def process_job(conn, bot: Bot, loop, job):
         else:
             mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
             error_msg = 'Consulta sem resultados filtrados'
-        loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
+        if not is_dry_run:
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
         if charge_now:
             conn.execute(
                 sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
@@ -653,7 +701,8 @@ def process_job(conn, bot: Bot, loop, job):
 
     if not _rows_have_displayable_result(filtered):
         mensagem = '⚠️ Encontramos a rota, mas sem preço ou link confiável no momento. Tente novamente em alguns minutos.'
-        loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
+        if not is_dry_run:
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
         logger.warning('[job-worker] job_id=%s | resultados sem preço/link utilizável após filtros', job_id)
         raise RuntimeError('Consulta sem preço ou link confiável')
 
@@ -674,46 +723,71 @@ def process_job(conn, bot: Bot, loop, job):
             image_path = None
         else:
             raise RuntimeError('Falha ao gerar print da consulta')
-    try:
-        if is_job_cancelled(conn, job_id):
-            raise RuntimeError('cancelled_by_new_request')
-        if image_path:
-            logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
-            send_photo(bot, loop, chat_id, image_path)
-        # Mensagem IA + links inline
-        try:
-            ai_msg = generate_ai_message(filtered)
-            if ai_msg:
-                _send_links_message(bot, loop, chat_id, ai_msg, main_menu_markup())
-            else:
-                links_msg = build_booking_links_message(filtered)
-                if links_msg:
-                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-                else:
-                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
-        except Exception:
-            links_msg = build_booking_links_message(filtered)
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-            else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
-    finally:
+    if is_dry_run:
+        logger.info('[job-worker] job_id=%s | DRY RUN — imagem gerada, descartando sem envio', job_id)
         if image_path:
             try:
                 os.remove(image_path)
             except OSError:
                 pass
-    logger.info('[job-worker] job_id=%s | envio concluído | atualizando last_sent', job_id)
-    if is_scheduled_job:
-        try:
-            mark_sent(conn, user_id, send_type='scheduled')
-        except TypeError:
-            mark_sent(conn, user_id)
     else:
         try:
-            mark_sent(conn, user_id, send_type='manual')
-        except TypeError:
-            mark_sent(conn, user_id)
+            if is_job_cancelled(conn, job_id):
+                raise RuntimeError('cancelled_by_new_request')
+            if image_path:
+                logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
+                send_photo(bot, loop, chat_id, image_path)
+            # Mensagem IA + links inline
+            try:
+                ai_msg = generate_ai_message(filtered)
+                if ai_msg:
+                    _send_links_message(bot, loop, chat_id, ai_msg, main_menu_markup())
+                else:
+                    links_msg = build_booking_links_message(filtered)
+                    if links_msg:
+                        _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                    else:
+                        loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+            except Exception:
+                links_msg = build_booking_links_message(filtered)
+                if links_msg:
+                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                else:
+                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+        finally:
+            if image_path:
+                try:
+                    os.remove(image_path)
+                except OSError:
+                    pass
+        logger.info('[job-worker] job_id=%s | envio concluído | atualizando last_sent', job_id)
+        if is_scheduled_job:
+            try:
+                mark_sent(conn, user_id, send_type='scheduled')
+            except TypeError:
+                mark_sent(conn, user_id)
+        else:
+            try:
+                mark_sent(conn, user_id, send_type='manual')
+            except TypeError:
+                mark_sent(conn, user_id)
+
+    # dry_run: sempre atualiza last_sent
+    if is_dry_run:
+        # Dry run: não envia nada, só marca como done
+        logger.info('[job-worker] job_id=%s | DRY RUN — IMAGEM GERADA mas não enviada (%s results)', job_id, len(filtered))
+    else:
+        logger.info('[job-worker] job_id=%s | envio concluído | atualizando last_sent', job_id)
+        if is_scheduled_job:
+            try:
+                mark_sent(conn, user_id, send_type='scheduled')
+            except TypeError:
+                mark_sent(conn, user_id)
+        else:
+            try:
+                mark_sent(conn, user_id, send_type='manual')
+            except TypeError:
+                mark_sent(conn, user_id)
     if charge_now:
         conn.execute(
             sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
@@ -913,22 +987,11 @@ def main():
             raise
 
 
-if __name__ == '__main__':
-    try:
-        # Zera contagem do semáforo de Chromes na inicialização
-        from main import ChromeSemaphore
-        ChromeSemaphore.reset()
-        logger.info('[job-worker] bootstrap | pid=%s | argv=%s', os.getpid(), sys.argv)
-        main()
-    except SystemExit as exc:
-        logger.exception('[job-worker][SYSTEM_EXIT] encerrando com SystemExit | pid=%s | code=%s', os.getpid(), getattr(exc, 'code', None))
-        raise
-    except BaseException:
-        logger.exception('[job-worker][TOP_LEVEL_FATAL] falha fatal no topo do processo | pid=%s', os.getpid())
-        raise
-
-
 def _trigger_autorepair(job_id: int, error_message: str):
+    """Dispara AutoRepair em thread separada (não bloqueia o worker)."""
+    import threading
+    t = threading.Thread(target=_run_autorepair, args=(job_id, error_message), daemon=True)
+    t.start()
     """Dispara AutoRepair em thread separada (não bloqueia o worker)."""
     import threading
     t = threading.Thread(target=_run_autorepair, args=(job_id, error_message), daemon=True)
@@ -967,3 +1030,18 @@ def _run_autorepair(job_id: int, error_message: str):
             conn.close()
         except Exception as e:
             logger.error('[autorepair] erro no retry: %s', e)
+
+
+if __name__ == '__main__':
+    try:
+        # Zera contagem do semáforo de Chromes na inicialização
+        from main import ChromeSemaphore
+        ChromeSemaphore.reset()
+        logger.info('[job-worker] bootstrap | pid=%s | argv=%s', os.getpid(), sys.argv)
+        main()
+    except SystemExit as exc:
+        logger.exception('[job-worker][SYSTEM_EXIT] encerrando com SystemExit | pid=%s | code=%s', os.getpid(), getattr(exc, 'code', None))
+        raise
+    except BaseException:
+        logger.exception('[job-worker][TOP_LEVEL_FATAL] falha fatal no topo do processo | pid=%s', os.getpid())
+        raise

@@ -1630,7 +1630,7 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(
             get_panel_text(chat_id),
-            parse_mode='Markdown',
+            parse_mode='HTML',
             reply_markup=full_menu_markup(chat_id),
         )
     except Exception as exc:
@@ -3641,7 +3641,8 @@ async def alerts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.message.reply_text(texto)
         await query.message.reply_text(
-            get_panel_text(chat_id).replace('*', '') + f"\n\n🔔 Estado atual dos alertas: {estado_atual}",
+            get_panel_text(chat_id) + f"\n\n🔔 Estado atual dos alertas: {estado_atual}",
+            parse_mode='HTML',
             reply_markup=full_menu_markup(chat_id),
         )
         return ConversationHandler.END
@@ -3655,7 +3656,7 @@ async def alerts_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as exc:
             logger.warning('menu:back falhou ao limpar reply markup | chat_id=%s | erro=%s', chat_id, exc)
         try:
-            await query.message.reply_text(get_panel_text(str(query.message.chat.id)).replace('*', ''), reply_markup=full_menu_markup(chat_id))
+            await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
             logger.info('menu:back respondeu com painel principal | chat_id=%s', chat_id)
         except Exception as exc:
             logger.exception('menu:back falhou ao responder painel | chat_id=%s | erro=%s', chat_id, exc)
