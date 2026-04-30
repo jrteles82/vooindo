@@ -704,6 +704,16 @@ def process_job(conn, bot: Bot, loop, job):
     filtered_vendor = filter_rows_with_vendor(filtered_normalized)
     filtered_airlines = filter_rows_by_airlines(filtered_vendor, airline_filters_json, show_result_type_filters=show_result_type_filters)
     filtered = _merge_rows_for_combined_result_view(filtered_airlines) if should_split else filtered_airlines
+    # Remove resultados inúteis: sem preço E sem vendor válido (ex: Chrome crashou na rota)
+    _useful = []
+    for _r in filtered:
+        _has_price = isinstance(_r.get('price'), (int, float)) or isinstance(_r.get('best_vendor_price'), (int, float))
+        _has_vendor = str(_r.get('best_vendor') or _r.get('site') or '').strip() not in ('', 'google_flights', 'google', '-', 'N/D')
+        if _has_price or _has_vendor:
+            _useful.append(_r)
+    if len(_useful) != len(filtered):
+        logger.info('[job-worker] job_id=%s | removidos %s resultados inúteis (crash/pending)', job_id, len(filtered) - len(_useful))
+    filtered = _useful
     logger.info('[job-worker] job_id=%s | pós-filtros | filtered=%s | split=%s', job_id, len(filtered), should_split)
     _log_filter_diagnostics(job_id, max_price, filters, show_result_type_filters, parsed, expanded, filtered_price, filtered_normalized, filtered_vendor, filtered)
 
