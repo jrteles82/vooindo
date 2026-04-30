@@ -55,9 +55,9 @@ def extract_vendor_and_price(body: str) -> tuple[str | None, float | None]:
     for token, canonical in _AIRLINE_TOKENS:
         for i, line in enumerate(lines):
             low = line.lower()
-            if token in low and any(c.isupper() for c in line[:10]):
-                # Procura preço perto (até 10 linhas)
-                for j in range(-10, 11):
+            if token in low:
+                # Procura preço perto (até 15 linhas)
+                for j in range(-15, 16):
                     idx = i + j
                     if 0 <= idx < len(lines):
                         prices = parse_prices(lines[idx])
@@ -70,10 +70,34 @@ def extract_vendor_and_price(body: str) -> tuple[str | None, float | None]:
     if results:
         results.sort(key=lambda x: x[1])
         return results[0]
-    # Fallback: qualquer preço > 300
+    
+    # Fallback 2: qualquer linha com nome de cia perto de preço (sem token)
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if re.search(r'R\$[\s\d.,]+', line):
+            # Esta linha tem preço - procura nome de cia nas redondezas
+            for j in range(max(0,i-10), min(len(lines),i+11)):
+                ln = lines[j].lower()
+                for token, canonical in _AIRLINE_TOKENS:
+                    if token in ln:
+                        prices = parse_prices(line)
+                        if prices and prices[0] >= 300:
+                            return (canonical, prices[0])
+    
+    # Fallback 3: qualquer preço > 300
     all_prices = [p for p in parse_prices(body) if p >= 300]
     if all_prices:
-        return (None, min(all_prices))
+        price = min(all_prices)
+        # Tenta achar vendor próximo a esse preço
+        for i, line in enumerate(lines):
+            low = line.lower()
+            if str(price)[:4] in line:
+                for j in range(max(0,i-10), min(len(lines),i+11)):
+                    ln = lines[j].lower()
+                    for token, canonical in _AIRLINE_TOKENS:
+                        if token in ln:
+                            return (canonical, price)
+        return (None, price)
     return (None, None)
 
 

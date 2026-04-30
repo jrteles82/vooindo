@@ -196,7 +196,7 @@ def main():
         {'cmd': [py, str(BASE_DIR / 'payment_monitor.py')]},
         {'cmd': [py, str(BASE_DIR / 'payment_webhook.py')]},
         # Monitor automático de ciclos — detecta falhas, aplica retry, notifica admin
-        {'cmd': [py, str(BASE_DIR / 'cycle_monitor_auto.py')]},
+        # {'cmd': [py, str(BASE_DIR / 'cycle_monitor_auto.py')]},  # desligado: só quer relatório final
         # AutoRepair — diagnóstico + reparo autônomo + retry
         {'cmd': [py, '-m', 'autorepair.engine']},
     ]
