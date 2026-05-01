@@ -103,7 +103,7 @@ def parse_price(text: str) -> float | None:
 
 
 def _valid_price(value) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+    return float(value) if isinstance(value, (int, float)) and value >= 100 else None
 
 
 def extract_section(text: str, start_label: str, end_label: str | None = None) -> str:
