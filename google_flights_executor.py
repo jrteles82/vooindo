@@ -1218,7 +1218,17 @@ def main(argv: list[str]) -> int:
     renewed = False
     for attempt in range(1 + max_retries):
         try:
-            result = run(origin, destination, outbound_date, inbound_date)
+            # Timeout global de 150s por tentativa via signal.alarm
+            import signal as _sig
+            def _timeout_handler(_signum, _frame):
+                raise TimeoutError('scan_timeout_150s')
+            _sig.signal(_sig.SIGALRM, _timeout_handler)
+            _sig.alarm(150)
+            try:
+                result = run(origin, destination, outbound_date, inbound_date)
+            finally:
+                _sig.alarm(0)
+            
             last_result = result
             if result.get("ok") and _has_valid_vendor(result) and result.get("price") is not None:
                 # Tudo certo: preço + vendor identificados
@@ -1229,6 +1239,8 @@ def main(argv: list[str]) -> int:
             notes.append(f'retry_{attempt+1}_ok={result.get("ok")}_vendor={result.get("best_vendor", "")}_price={result.get("price")}')
             result['notes'] = notes
         except PlaywrightTimeoutError as exc:
+            last_result = {"ok": False, "error": "timeout", "message": str(exc)}
+        except TimeoutError as exc:
             last_result = {"ok": False, "error": "timeout", "message": str(exc)}
         except Exception as exc:
             last_result = {"ok": False, "error": exc.__class__.__name__, "message": str(exc)}

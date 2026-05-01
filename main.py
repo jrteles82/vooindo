@@ -689,8 +689,8 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
                 
-                # Timeout dinâmico: 240s pra rotas internacionais (mais scrolls, mais lento)
-                intl_timeout = 240 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 180
+                # Timeout: 150s nacionais, 200s internacionais
+                intl_timeout = 200 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 150
                 
                 # Semáforo: espera até 300s por um slot Chrome
                 slot_got = ChromeSemaphore.acquire(timeout=300.0)
