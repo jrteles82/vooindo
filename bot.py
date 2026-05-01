@@ -969,9 +969,7 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
 
     keyboard = [
         [InlineKeyboardButton('🖼️ Gerar consulta manual agora', callback_data='menu:agora')],
-        [InlineKeyboardButton('📋 Ver minhas rotas ativas', callback_data='menu:minhasrotas')],
-        [InlineKeyboardButton('➕ Adicionar nova rota', callback_data='menu:addrota')],
-        [InlineKeyboardButton('➖ Remover rota cadastrada', callback_data='menu:removerrota')],
+        [InlineKeyboardButton('🛫 Minhas Rotas', callback_data='menu:minhasrotas')],
         [InlineKeyboardButton('⚙️ Filtro de consultas', callback_data='menu:limite')],
         [InlineKeyboardButton('🔔 Desativar alertas' if alerts_enabled else '🔕 Ativar alertas', callback_data='menu:togglealerts')],
     ]
@@ -1368,6 +1366,21 @@ def removerrota_list_markup(rows) -> InlineKeyboardMarkup:
             label += f" | {format_date_br(row['inbound_date'])}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"removerrota:{row['id']}")])
     keyboard.append([InlineKeyboardButton('❌ Cancelar remoção', callback_data='removerrota:cancel_list')])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def rotas_management_markup(rows: list) -> InlineKeyboardMarkup:
+    """Teclado com cada rota + ações no final (Adicionar/Voltar)."""
+    keyboard = []
+    for row in rows:
+        label = f"{airport_label(row['origin'])} → {airport_label(row['destination'])}"
+        if row.get('outbound_date'):
+            label += f"  |  {format_date_br(row['outbound_date'])}"
+        keyboard.append([InlineKeyboardButton(f'🗑 {label}', callback_data=f'removerrota:{row["id"]}')])
+    keyboard.append([
+        InlineKeyboardButton('➕ Nova rota', callback_data='menu:addrota'),
+        InlineKeyboardButton('🔙 Voltar', callback_data='menu:back'),
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -2688,8 +2701,7 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '3. Aguarde as notificações automáticas\n'
         '4. Quando quiser, rode uma consulta manual\n\n'
         '*Comandos principais*\n'
-        '/addrota — cadastrar nova rota\n'
-        '/minhasrotas — ver rotas ativas\n'
+        '/minhasrotas — gerenciar suas rotas\n'
         '/agora — gerar consulta manual\n'
         '/limite — ajustar filtro de preço\n'
         '/manual — ver dúvidas frequentes\n'
@@ -2716,7 +2728,7 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id_by_chat(conn, chat_id)
     rows = conn.execute(
         sql('''
-        SELECT origin, destination, outbound_date, inbound_date, active
+        SELECT id, origin, destination, outbound_date, inbound_date, active
         FROM user_routes
         WHERE user_id = %s AND active = 1
         ORDER BY outbound_date, origin, destination
@@ -2734,7 +2746,7 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f'Você ainda não tem rotas ativas.\n'
             f'💰 Limite atual: *{limite_txt}*',
             parse_mode='Markdown',
-            reply_markup=main_menu_markup(),
+            reply_markup=rotas_management_markup([]),
         )
         return
 
@@ -2743,22 +2755,20 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '📋 *Minhas rotas*',
         '────────────────────────',
         '',
-        f'💰 *Limite de alerta:* R$ {limite_txt}',
-        f'🧭 *Total de rotas:* {len(rows)}',
+        f'💰 *Limite:* R$ {limite_txt}',
+        f'🧭 *Total:* {len(rows)} rota{"s" if len(rows) != 1 else ""}',
         '',
     ]
-    for idx, row in enumerate(rows, start=1):
+    for row in rows:
         origem = airport_label(row['origin'])
         destino = airport_label(row['destination'])
-        linhas.append(f'*Rota {idx}*')
         linhas.append(f'🛫 {origem} → {destino}')
-        linhas.append(f'📅 Ida: {format_date_br(row["outbound_date"])}')
+        data_text = f'📅 {format_date_br(row["outbound_date"])}'
         if row['inbound_date']:
-            linhas.append(f'📅 Volta: {format_date_br(row["inbound_date"])}')
-        if idx != len(rows):
-            linhas.append('')
+            data_text += f' → {format_date_br(row["inbound_date"])}'
+        linhas.append(data_text)
 
-    await update.message.reply_text('\n'.join(linhas), parse_mode='Markdown', reply_markup=main_menu_markup())
+    await update.message.reply_text('\n'.join(linhas), parse_mode='Markdown', reply_markup=rotas_management_markup(rows))
 
 
 async def fontes(update: Update, context: ContextTypes.DEFAULT_TYPE):
