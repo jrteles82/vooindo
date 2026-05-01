@@ -744,12 +744,6 @@ def require_confirmation(conn, chat_id: str):
     row = get_bot_user_by_chat(conn, chat_id)
     if not row:
         return '⚠️ Use /start para iniciar seu cadastro.'
-    try:
-        blocked = int(row['blocked'] or 0)
-    except Exception:
-        blocked = 0
-    if blocked and not is_test_user(conn, chat_id):
-        return '🚫 Sua conta foi suspensa. Entre em contato com o suporte.'
     if int(row['confirmed']) != 1:
         return '⚠️ Confirme seu cadastro primeiro para liberar as funções. Use o botão em /start.'
     return None
