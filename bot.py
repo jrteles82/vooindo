@@ -1127,23 +1127,27 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
     if admin_unread_support:
         atendimento_label += f' ({admin_unread_support})'
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('👤 Ver Usuários', callback_data='painel:usuarios')],
-        [InlineKeyboardButton('🧭 Trechos dos usuários', callback_data='painel:usuarios_trechos')],
-        [InlineKeyboardButton('💰 Ver Vendas', callback_data='painel:vendas')],
-        [InlineKeyboardButton('⚙️ Planos', callback_data='painel:planos')],
-        [InlineKeyboardButton(modo_teste_label, callback_data='painel:modo_teste')],
-        [InlineKeyboardButton(manut_label, callback_data='painel:manutencao')],
+        # Gestão
+        [InlineKeyboardButton('👤 Usuários', callback_data='painel:usuarios'),
+         InlineKeyboardButton('🧭 Trechos', callback_data='painel:usuarios_trechos')],
+        [InlineKeyboardButton('💰 Vendas', callback_data='painel:vendas'),
+         InlineKeyboardButton('⚙️ Planos', callback_data='painel:planos')],
+        # Toggles
+        [InlineKeyboardButton(manut_label, callback_data='painel:manutencao'),
+         InlineKeyboardButton(modo_teste_label, callback_data='painel:modo_teste')],
+        [InlineKeyboardButton(cobranca_global_label, callback_data='painel:cobranca_global'),
+         InlineKeyboardButton(cobranca_admin_label, callback_data='painel:cobranca_admin')],
         [InlineKeyboardButton(filtros_label, callback_data='painel:toggle_result_type_filters')],
-        [InlineKeyboardButton(cobranca_global_label, callback_data='painel:cobranca_global')],
-        [InlineKeyboardButton(cobranca_admin_label, callback_data='painel:cobranca_admin')],
-        [InlineKeyboardButton('💳 Gerar Pix', callback_data='painel:pix')],
-        [InlineKeyboardButton('🔔 Notificações', callback_data='painel:notificacoes')],
-        [InlineKeyboardButton('📣 Enviar aviso para todos', callback_data='painel:broadcast')],
-        [InlineKeyboardButton('📅 Status Agendador', callback_data='painel:scheduler_status')],
-        [InlineKeyboardButton('🔄 Reiniciar serviço', callback_data='painel:restart_service')],
-        [InlineKeyboardButton('🔐 Renovar Sessão Google', callback_data='painel:renovar_sessao')],
-        [InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho')],
-        [InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
+        # Ações
+        [InlineKeyboardButton('💳 Pix', callback_data='painel:pix'),
+         InlineKeyboardButton('🔔 Notificações', callback_data='painel:notificacoes')],
+        [InlineKeyboardButton('📣 Broadcast', callback_data='painel:broadcast'),
+         InlineKeyboardButton('📅 Agendador', callback_data='painel:scheduler_status')],
+        [InlineKeyboardButton('🔄 Reiniciar', callback_data='painel:restart_service'),
+         InlineKeyboardButton('🔐 Renovar Google', callback_data='painel:renovar_sessao')],
+        [InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho'),
+         InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
+        # Voltar
         [InlineKeyboardButton('🏠 Menu principal', callback_data='menu:back')],
     ])
 
@@ -1374,8 +1378,8 @@ def rotas_management_markup(rows: list) -> InlineKeyboardMarkup:
     keyboard = []
     if rows:
         keyboard.append([
-            InlineKeyboardButton('➖ Remover rota', callback_data='menu:removerrota'),
             InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota'),
+            InlineKeyboardButton('➖ Remover rota', callback_data='menu:removerrota'),
         ])
     else:
         keyboard.append([InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota')])
@@ -2991,7 +2995,8 @@ async def addrota_cancel_callback(update: Update, context: ContextTypes.DEFAULT_
     chat_id = str(query.message.chat.id)
     await query.edit_message_text('❌ Cadastro de rota cancelado.')
     await query.message.reply_text('✅ Cancelado. Ignore a resposta anterior, se ela ainda aparecer aberta no Telegram.', reply_markup=ReplyKeyboardRemove())
-    await query.message.reply_text(get_panel_text(chat_id), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
+    fake_update = Update(update.update_id, message=query.message)
+    await minhas_rotas(fake_update, context)
     return ConversationHandler.END
 
 
@@ -3097,7 +3102,8 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if route_id_str == 'cancel_list':
         conn.close()
         await query.edit_message_text('❌ Remoção cancelada.')
-        await query.message.reply_text(get_panel_text(str(query.message.chat.id)), parse_mode='HTML', reply_markup=full_menu_markup(chat_id))
+        fake_update = Update(update.update_id, message=query.message)
+        await minhas_rotas(fake_update, context)
         return
     
     if route_id_str.startswith('confirm_'):
