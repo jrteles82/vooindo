@@ -1170,22 +1170,32 @@ def _has_valid_vendor(result: dict) -> bool:
 
 
 def _try_renew_session(profile_dir: str | None = None) -> bool:
-    """Tenta renovar a sessão Google via renew_google_session.py."""
+    """Tenta renovar a sessão Google usando google_login_stdin.py."""
     import subprocess
     import sys as _sys
-    # Procura o script em lugares comuns
-    script = '/opt/vooindo/renew_google_session.py'
+    script = '/opt/vooindo/google_login_stdin.py'
     if not os.path.exists(script):
         return False
     try:
+        app_password = 'rcwv jvmu yyyx okto'
         env = os.environ.copy()
         if profile_dir:
             env['GOOGLE_PERSISTENT_PROFILE_DIR'] = profile_dir
         proc = subprocess.run(
-            [_sys.executable, script],
+            [_sys.executable, script, '--email', 'vooindo.bot@gmail.com'],
+            input=app_password + '\n',
             env=env, capture_output=True, timeout=120, text=True
         )
         if proc.returncode == 0:
+            # Desativa manutenção após renovar
+            try:
+                from db import connect as _db_connect
+                from access_policy import set_maintenance_mode
+                _conn = _db_connect()
+                set_maintenance_mode(_conn, False)
+                _conn.close()
+            except Exception:
+                pass
             return True
         return False
     except Exception:
