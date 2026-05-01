@@ -1611,14 +1611,17 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
 
     def _build_lines(block_rows: list[dict]) -> list[str]:
         from html import escape
+        from urllib.parse import quote as url_quote
         lines = []
         for row in block_rows:
             url = str(row.get("booking_url") or row.get("url") or "").strip()
-            if not url:
-                continue
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date = str(row.get("outbound_date") or "")
+            # Fallback: monta link pro Google Flights
+            if not url:
+                trip_str = f'{origin} to {destination} {date}'
+                url = f'https://www.google.com/travel/flights/search?q={url_quote(trip_str)}&hl=pt-BR&gl=BR&curr=BRL'
             try:
                 date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
             except Exception:

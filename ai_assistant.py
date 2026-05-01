@@ -257,6 +257,12 @@ def generate_ai_message(rows: list[dict], force: bool = False) -> Optional[str]:
         dest_city = _city_name(dest)
         link_text = f'{origin_city} → {dest_city} em {date_fmt}'
 
+        # Fallback: se não tiver booking_url, monta link pro Google Flights
+        if not booking_url:
+            from urllib.parse import quote
+            trip_str = f'{origin} to {dest} {date}'
+            booking_url = f'https://www.google.com/travel/flights/search?q={quote(trip_str)}&hl=pt-BR&gl=BR&curr=BRL'
+
         if booking_url:
             # Usa HTML <a> que é mais tolerante com URLs complexas
             safe_url = booking_url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
