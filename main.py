@@ -1628,6 +1628,14 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                 pass
             label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
             lines.append(f"• <a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
+            # Inclui price_insight formatado quando disponível
+            insight = row.get('price_insight', '').strip()
+            if insight:
+                insight = re.sub(r'aEconômica', 'a Econômica', insight, flags=re.I)
+                if "Os voos mais baratos" in insight and "O preço normal para" in insight:
+                    insight = re.sub(r"O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?\s*", "", insight, flags=re.I).strip()
+                if insight:
+                    lines.append(f'<i>{escape(insight)}</i>')
         return lines
 
     lines = _build_lines(rows)
