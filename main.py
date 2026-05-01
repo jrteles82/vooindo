@@ -398,6 +398,7 @@ def _result_to_row(result: FlightResult, price_band: str) -> dict:
         "best_vendor": getattr(result, "best_vendor", ""),
         "best_vendor_price": getattr(result, "best_vendor_price", None),
         "visible_card_price": getattr(result, "visible_card_price", None),
+        "airline": getattr(result, "airline", "") or "",
         "final_price_source": extract_final_price_source(result.notes),
         "price_insight": getattr(result, "price_insight", ""),
         "best_airline_vendor": getattr(result, "best_airline_vendor", None),
@@ -565,7 +566,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 2  # 2 Chromes simultâneos (VPS 8GB / 2 vCPU)
+_CHROME_MAX_CONCURRENT = 3  # 3 Chromes simultâneos (3 scheduled workers)
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -636,7 +637,7 @@ class ChromeSemaphore:
             pass
 
 
-def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | None = None, fast_mode: bool = False):
+def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | None = None, fast_mode: bool = False, allow_agencies: bool | None = None, skip_booking: bool = False):
     if not routes:
         return []
 
@@ -683,6 +684,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env = os.environ.copy()
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
+                if allow_agencies is not None:
+                    env["GOOGLE_FLIGHTS_ALLOW_AGENCIES"] = "1" if allow_agencies else "0"
+                if skip_booking:
+                    env["GOOGLE_FLIGHTS_SKIP_BOOKING"] = "1"
                 # Chrome é o único navegador suportado
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]

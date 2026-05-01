@@ -37,6 +37,7 @@ if os.getenv("GOOGLE_FLIGHTS_SHORT_TIMEOUT"):
 SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
 BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "3000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}
+SKIP_BOOKING = os.getenv("GOOGLE_FLIGHTS_SKIP_BOOKING", "0").strip().lower() in {"1", "true", "yes", "on"}
 MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "5"))
 MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "12"))
 MAX_CARDS_STEP = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_STEP", "1"))
@@ -367,6 +368,26 @@ def extract_continuar_link(page, vendor: str) -> str:
         return str(result or "").strip()
     except Exception:
         return ""
+
+
+def _extract_price_insight_from_body(body: str) -> str:
+    """Extrai dicas de previsão de preço do body da página principal."""
+    if not body:
+        return ""
+    body_clean = body.replace('\n', ' ')
+    m_range = re.search(r"(Os voos mais baratos para viagens semelhantes.*?custam R\$\s*[\d\.]+\s*a\s*[\d\.]+\.)", body_clean, flags=re.I)
+    m_normal = re.search(r"(O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?)", body_clean, flags=re.I)
+    parts = []
+    if m_normal:
+        parts.append(m_normal.group(1).strip())
+    if m_range:
+        parts.append(m_range.group(1).strip())
+    if parts:
+        return " ".join(parts)
+    m_fallback = re.search(r"(O preço normal para[\s\S]+?custam R\$[\s\S]+?[\d\.]+)", body_clean, flags=re.I)
+    if m_fallback:
+        return m_fallback.group(1).strip()
+    return ""
 
 
 def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, float | None, list[dict], str]:
@@ -1071,22 +1092,38 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             best_agency = None
             price_insight = ""
             _booking_price = overall_min if overall_min is not None else summary_price
-            if _booking_price is not None:
-                try:
-                    followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                    booking_followed = followed
-                except Exception as _be:
-                    # Booking crashou mas já temos dados do card principal — retorna parcial
-                    notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
-                    # Tenta extrair vendor do body salvo antes do crash
-                    if not best_vendor and cards_body:
-                        card_vendor = extract_vendor_from_body(cards_body)
-                        if card_vendor:
-                            best_vendor = card_vendor
-                            notes.append(f'vendor_from_crash_fallback={best_vendor}')
-                    if best_vendor and _booking_price:
-                        best_vendor_price = _booking_price
-                        visible_card_price = _booking_price
+            if SKIP_BOOKING:
+                # Modo rápido: pula navegação do booking, usa dados da página principal
+                notes.append('skip_booking=True')
+                if cards_body:
+                    card_vendor = extract_vendor_from_body(cards_body)
+                    if card_vendor:
+                        best_vendor = card_vendor
+                        notes.append(f'vendor_from_card_summary={best_vendor}')
+                    price_insight = _extract_price_insight_from_body(cards_body)
+                    if price_insight:
+                        notes.append('price_insight_from_main_page')
+                if best_vendor and _booking_price:
+                    best_vendor_price = _booking_price
+                    visible_card_price = _booking_price
+                    final_price_source = 'summary_fast'
+            else:
+                if _booking_price is not None:
+                    try:
+                        followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                        booking_followed = followed
+                    except Exception as _be:
+                        # Booking crashou mas já temos dados do card principal — retorna parcial
+                        notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                        # Tenta extrair vendor do body salvo antes do crash
+                        if not best_vendor and cards_body:
+                            card_vendor = extract_vendor_from_body(cards_body)
+                            if card_vendor:
+                                best_vendor = card_vendor
+                                notes.append(f'vendor_from_crash_fallback={best_vendor}')
+                        if best_vendor and _booking_price:
+                            best_vendor_price = _booking_price
+                            visible_card_price = _booking_price
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)

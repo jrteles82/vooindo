@@ -24,7 +24,7 @@ processes = []
 _lock_handle = None
 START_DELAY_SECONDS = float(os.getenv('RUN_ALL_START_DELAY_SECONDS', '2'))
 RESTART_GRACE_SECONDS = float(os.getenv('RUN_ALL_RESTART_GRACE_SECONDS', '120'))
-NUM_JOB_WORKERS = int(os.getenv("NUM_JOB_WORKERS", "1"))  # 1 scheduled + 1 manual = 2 workers total
+NUM_JOB_WORKERS = int(os.getenv("NUM_JOB_WORKERS", "1"))  # 3 scheduled + 2 manual = 5 workers total
 
 
 def _find_stale_pids(script_names: list[str]) -> list[int]:
@@ -188,8 +188,10 @@ def main():
         # Workers de job — cada um com perfil DEDICADO para não conflitar
         # Perfil 1 = google_session, Perfil 2 = google_session_2
         # Perfil 3 = google_session_3, Perfil 4 = google_session_4
+        # Perfil 5 = google_session_5
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(1)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(2)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(5)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(3)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(4)},
         # Workers de integração e suporte

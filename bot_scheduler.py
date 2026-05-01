@@ -200,7 +200,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
     show_result_type_filters = should_show_result_type_filters(conn)
     sources_with_filter = dict(sources)
 
-    parsed = run_scan_for_routes(routes, sources=sources_with_filter)
+    parsed = run_scan_for_routes(routes, sources=sources_with_filter, allow_agencies=False, skip_booking=True)
     parsed = expand_rows_by_result_type(parsed, airline_filters_json, show_result_type_filters=show_result_type_filters)
     filtered = filter_rows_by_max_price(parsed, max_price)
     filtered = normalize_rows_for_airline_priority(filtered, airline_filters_json)
@@ -437,12 +437,14 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
     show_result_type_filters = should_show_result_type_filters(conn)
     sources_with_filter = dict(sources)
 
-    parsed = run_scan_for_routes(routes, sources=sources_with_filter)
+    parsed = run_scan_for_routes(routes, sources=sources_with_filter, allow_agencies=False, skip_booking=True)
     parsed = expand_rows_by_result_type(parsed, airline_filters_json, show_result_type_filters=show_result_type_filters)
     filtered = filter_rows_by_max_price(parsed, max_price)
     filtered = normalize_rows_for_airline_priority(filtered, airline_filters_json)
     filtered = filter_rows_with_vendor(filtered)
     filtered = filter_rows_by_airlines(filtered, airline_filters_json, show_result_type_filters=show_result_type_filters)
+    should_split = False
+    result_type = None
     filtered = _merge_rows_for_combined_result_view(filtered) if should_split else filtered
     if not filtered:
         no_result_reason = 'timeout_executor' if _scan_failed_by_executor_timeout(parsed) else 'sem_resultado_filtrado'

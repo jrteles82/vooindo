@@ -974,7 +974,6 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton('➖ Remover rota cadastrada', callback_data='menu:removerrota')],
         [InlineKeyboardButton('⚙️ Filtro de consultas', callback_data='menu:limite')],
         [InlineKeyboardButton('🔔 Desativar alertas' if alerts_enabled else '🔕 Ativar alertas', callback_data='menu:togglealerts')],
-        [InlineKeyboardButton('🧹 Limpar mensagens anteriores', callback_data='menu:clear_confirm')],
     ]
     if show_payments:
         keyboard.append([InlineKeyboardButton('💳 Meus pagamentos', callback_data='menu:pagamentos')])
