@@ -3267,9 +3267,11 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
         f"✅ *Rota cadastrada*\n{airport_label(context.user_data['origin'])} → {airport_label(context.user_data['destination'])} | {format_date_br(context.user_data['outbound_date'])}" +
         (f" | {format_date_br(inbound_date)}" if inbound_date else ''),
         parse_mode='Markdown',
-        reply_markup=main_menu_markup(),
     )
     context.user_data.clear()
+    # Mostra a lista de rotas atualizada
+    fake_update = Update(update.update_id, message=msg_target)
+    await minhas_rotas(fake_update, context)
     return ConversationHandler.END
 
 
@@ -3439,8 +3441,9 @@ async def removerrota_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await query.message.reply_text(
                 '✅ Não há mais rotas ativas para remover.',
-                reply_markup=full_menu_markup(chat_id),
             )
+            fake_update = Update(update.update_id, message=query.message)
+            await minhas_rotas(fake_update, context)
         return
         
     elif route_id_str.startswith('cancel_'):
