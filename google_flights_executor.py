@@ -429,14 +429,22 @@ def extract_booking_options(page, allow_agencies: bool = False) -> tuple[str, fl
 
     def _parse_price_near(start_i: int, window: int = 12) -> float | None:
         reserve_pattern = re.compile(r"(?:Reserve com|Reservar com|Comprar com|Vendido por)", re.I)
+        installment_pattern = re.compile(r"\d+\s*x\s*(?:de\s*)?R\$", re.I)
         end = min(len(lines), start_i + window)
         for j in range(start_i, end):
             if j > start_i and reserve_pattern.search(lines[j]):
                 break
+            # Pula linhas que contêm texto de parcelamento ("10x de R$" ou "12x R$")
+            if installment_pattern.search(lines[j]):
+                continue
             p = re.search(r"R\$\s*([\d\.]+(?:,\d{2})?)", lines[j])
             if p:
                 try:
-                    return float(p.group(1).replace('.', '').replace(',', '.'))
+                    price = float(p.group(1).replace('.', '').replace(',', '.'))
+                    # Pula preços que parecem parcelas (< 300 reais)
+                    if price < 300:
+                        continue
+                    return price
                 except Exception:
                     pass
         return None

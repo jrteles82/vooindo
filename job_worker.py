@@ -549,7 +549,7 @@ def mark_sent(conn, user_id: int):
         _cap.close()
 
 
-def process_job(conn, bot: Bot, loop, job):
+def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     global _GOOGLE_SESSION_INVALID
 
     # Sincronizar cookies do profile mestre para este worker (se for escravo)
@@ -570,7 +570,7 @@ def process_job(conn, bot: Bot, loop, job):
         _route_count = len(_build_user_routes(conn, user_id))
     except Exception:
         _route_count = 1
-    _JOB_TIMEOUT = 60 + max(0, _route_count - 2) * 90 + 30  # min 90s, ~90s por rota extra (2 Chromes simultâneos + timeout 150s no executor)
+    _JOB_TIMEOUT = max(120, 60 + _route_count * 60)  # min 120s, ~60s por rota com skip_booking (dá folga pra retry)
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
@@ -682,6 +682,8 @@ def process_job(conn, bot: Bot, loop, job):
             routes,
             sources={'google_flights': bool(settings['enable_google_flights']), '': False},
             fast_mode=is_manual_now,
+            skip_booking=False,
+            allow_agencies=(pool != 'scheduled'),
         )
     )
     parsed = _loop.run_until_complete(_future)
@@ -926,7 +928,7 @@ def main():
                 continue
             _current_job_id = int(job['id'])
             try:
-                process_job(conn, bot, loop, job)
+                process_job(conn, bot, loop, job, pool=pool)
                 finish_job(conn, int(job['id']))
             except BaseException as exc:
                 error_text = str(exc)
