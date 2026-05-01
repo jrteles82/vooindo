@@ -1373,11 +1373,13 @@ def rotas_management_markup(rows: list) -> InlineKeyboardMarkup:
     """Teclado com ações no final (Adicionar/Remover/Voltar)."""
     keyboard = []
     if rows:
-        keyboard.append([InlineKeyboardButton('➖ Remover rota', callback_data='menu:removerrota')])
-    keyboard.append([
-        InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota'),
-        InlineKeyboardButton('🔙 Voltar', callback_data='menu:back'),
-    ])
+        keyboard.append([
+            InlineKeyboardButton('➖ Remover rota', callback_data='menu:removerrota'),
+            InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota'),
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota')])
+    keyboard.append([InlineKeyboardButton('🔙 Voltar', callback_data='menu:back')])
     return InlineKeyboardMarkup(keyboard)
 
 
