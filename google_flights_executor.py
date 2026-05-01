@@ -1185,25 +1185,20 @@ def main(argv: list[str]) -> int:
         try:
             result = run(origin, destination, outbound_date, inbound_date)
             last_result = result
-            if result.get("ok") and _has_valid_vendor(result):
+            if result.get("ok") and _has_valid_vendor(result) and result.get("price") is not None:
+                # Tudo certo: preço + vendor identificados
                 print(json.dumps(result, ensure_ascii=False))
                 return 0
-            if result.get("ok"):
-                # resultado ok mas sem vendor — faz retry
-                if 'notes' not in result:
-                    result['notes'] = []
-                result['notes'].append(f'vendor_retry_{attempt+1}_vendor_invalid={result.get("best_vendor", "")}')
-                continue
-            # Se não ok, tenta de novo
-            if 'notes' not in result:
-                result['notes'] = []
-            result['notes'].append(f'general_retry_{attempt+1}_not_ok=True')
+            # Faltou preço ou vendor — faz retry
+            notes = result.get('notes', [])
+            notes.append(f'retry_{attempt+1}_ok={result.get("ok")}_vendor={result.get("best_vendor", "")}_price={result.get("price")}')
+            result['notes'] = notes
         except PlaywrightTimeoutError as exc:
             last_result = {"ok": False, "error": "timeout", "message": str(exc)}
         except Exception as exc:
             last_result = {"ok": False, "error": exc.__class__.__name__, "message": str(exc)}
     
-    # Último resultado (com ou sem vendor)
+    # Último resultado (com ou sem vendor/preço)
     print(json.dumps(last_result, ensure_ascii=False))
     return 0 if last_result and last_result.get("ok") else 1
 
