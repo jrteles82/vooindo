@@ -1370,15 +1370,12 @@ def removerrota_list_markup(rows) -> InlineKeyboardMarkup:
 
 
 def rotas_management_markup(rows: list) -> InlineKeyboardMarkup:
-    """Teclado com cada rota + ações no final (Adicionar/Voltar)."""
+    """Teclado com ações no final (Adicionar/Remover/Voltar)."""
     keyboard = []
-    for row in rows:
-        label = f"{airport_label(row['origin'])} → {airport_label(row['destination'])}"
-        if row.get('outbound_date'):
-            label += f"  |  {format_date_br(row['outbound_date'])}"
-        keyboard.append([InlineKeyboardButton(f'🗑 {label}', callback_data=f'removerrota:{row["id"]}')])
+    if rows:
+        keyboard.append([InlineKeyboardButton('➖ Remover rota', callback_data='menu:removerrota')])
     keyboard.append([
-        InlineKeyboardButton('➕ Nova rota', callback_data='menu:addrota'),
+        InlineKeyboardButton('➕ Adicionar rota', callback_data='menu:addrota'),
         InlineKeyboardButton('🔙 Voltar', callback_data='menu:back'),
     ])
     return InlineKeyboardMarkup(keyboard)
