@@ -807,6 +807,45 @@ def clear_pending_input_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
+def _render_user_list(conn) -> tuple[str, InlineKeyboardMarkup]:
+    """Retorna (texto, markup) com a lista de usuários para o painel."""
+    users = conn.execute(
+        sql("""
+        SELECT b.user_id, b.chat_id, b.first_name, b.username, b.confirmed,
+               COALESCE(b.blocked, 0) AS blocked,
+               COALESCE(b.is_test_user, 0) AS is_test_user,
+               ua.status, ua.expires_at, ua.free_uses, ua.total_paid,
+               bs.max_price
+        FROM bot_users b
+        LEFT JOIN user_access ua ON ua.chat_id = b.chat_id
+        LEFT JOIN bot_settings bs ON bs.user_id = b.user_id
+        ORDER BY COALESCE(NULLIF(TRIM(b.first_name), ''), NULLIF(TRIM(b.username), ''), b.chat_id) ASC
+        LIMIT 20
+        """)
+    ).fetchall()
+    _count_row = conn.execute(sql('SELECT COUNT(*) AS cnt FROM bot_users')).fetchone()
+    total = _count_row['cnt'] if isinstance(_count_row, dict) else _count_row[0]
+    linhas_info = []
+    text = f"👤 *Usuários Registrados* ({total} total)\n\nSelecione para gerenciar:\n"
+    keyboard = []
+    for idx, u in enumerate(users, start=1):
+        nome = (u['first_name'] or 'Sem nome')[:18]
+        status = u['status'] or 'free'
+        bloq = ' 🚫' if int(u['blocked'] or 0) else ''
+        test_badge = ' 🧪' if int(u.get('is_test_user', 0) or 0) else ''
+        filtro_valor = normalize_max_price(u['max_price'])
+        filtro_txt = 'Sem limite' if filtro_valor is None else f"R$ {int(float(filtro_valor)) if float(filtro_valor).is_integer() else format_money_br(float(filtro_valor))}"
+        linhas_info.append(f"{idx}. {nome}{test_badge}{bloq} | {status} | {filtro_txt}")
+        keyboard.append([InlineKeyboardButton(
+            f"{idx}. {nome}{test_badge}{bloq}",
+            callback_data=f"painel:usr:{u['chat_id']}"
+        )])
+    if linhas_info:
+        text += '\n'.join(linhas_info[:20])
+    keyboard.append([InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')])
+    return text, InlineKeyboardMarkup(keyboard)
+
+
 def _fetchcount(row) -> int:
     if row is None:
         return 0
@@ -1791,42 +1830,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == 'usuarios':
         await query.answer()
-        users = conn.execute(
-            sql("""
-            SELECT b.user_id, b.chat_id, b.first_name, b.username, b.confirmed,
-                   COALESCE(b.blocked, 0) AS blocked,
-                   COALESCE(b.is_test_user, 0) AS is_test_user,
-                   ua.status, ua.expires_at, ua.free_uses, ua.total_paid,
-                   bs.max_price
-            FROM bot_users b
-            LEFT JOIN user_access ua ON ua.chat_id = b.chat_id
-            LEFT JOIN bot_settings bs ON bs.user_id = b.user_id
-            ORDER BY COALESCE(NULLIF(TRIM(b.first_name), ''), NULLIF(TRIM(b.username), ''), b.chat_id) ASC
-            LIMIT 20
-            """)
-        ).fetchall()
-        _count_row = conn.execute(sql('SELECT COUNT(*) AS cnt FROM bot_users')).fetchone()
-        total = _count_row['cnt'] if isinstance(_count_row, dict) else _count_row[0]
-        linhas_info = []
-        text = f"👤 *Usuários Registrados* ({total} total)\n\nSelecione para gerenciar:\n"
-        keyboard = []
-        for idx, u in enumerate(users, start=1):
-            nome = (u['first_name'] or 'Sem nome')[:18]
-            status = u['status'] or 'free'
-            bloq = ' 🚫' if int(u['blocked'] or 0) else ''
-            test_badge = ' 🧪' if int(u.get('is_test_user', 0) or 0) else ''
-            filtro_valor = normalize_max_price(u['max_price'])
-            filtro_txt = 'Sem limite' if filtro_valor is None else f"R$ {int(float(filtro_valor)) if float(filtro_valor).is_integer() else format_money_br(float(filtro_valor))}"
-            linhas_info.append(f"{idx}. {nome}{test_badge}{bloq} | {status} | {filtro_txt}")
-            keyboard.append([InlineKeyboardButton(
-                f"{idx}. {nome}{test_badge}{bloq}",
-                callback_data=f"painel:usr:{u['chat_id']}"
-            )])
-        if linhas_info:
-            text += '\n'.join(linhas_info[:20])
-        keyboard.append([InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')])
-        await query.edit_message_text(text, parse_mode='Markdown',
-                                      reply_markup=InlineKeyboardMarkup(keyboard))
+        text, markup = _render_user_list(conn)
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=markup)
 
     elif action.startswith('usr:'):
         await query.answer()
@@ -1838,6 +1843,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action.startswith('usr_bloquear:'):
         target_chat_id = action[len('usr_bloquear:'):]
         row = get_bot_user_by_chat(conn, target_chat_id)
+        novo = 1
         if row:
             novo = 0 if int(row['blocked'] or 0) else 1
             conn.execute(sql('UPDATE bot_users SET blocked = %s WHERE chat_id = %s'), (novo, target_chat_id))
@@ -1864,9 +1870,12 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 except Exception as exc:
                     logger.warning('usr_bloquear: falha ao abrir menu | target=%s | erro=%s', target_chat_id, exc)
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Bloqueado ✅' if novo else 'Desbloqueado ✅')
+        # Recarrega a lista de usuários
         await _hide_query_markup_safe(query)
+        # Recarrega a lista de usuários
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action.startswith('usr_trechos:'):
         await query.answer()
