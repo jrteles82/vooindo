@@ -1845,6 +1845,25 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             acao = 'bloqueado' if novo else 'desbloqueado'
             audit.admin(f"usuario_{acao}", chat_id=chat_id,
                         payload={"target_chat_id": target_chat_id})
+            if not novo:
+                # Desbloqueou — avisa o usuário e abre o menu
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_chat_id,
+                        text='✅ Sua conta foi desbloqueada. Seu acesso foi restabelecido.',
+                    )
+                except Exception as exc:
+                    logger.warning('usr_bloquear: falha ao notificar desbloqueio | target=%s | erro=%s', target_chat_id, exc)
+                try:
+                    panel = get_panel_text(target_chat_id)
+                    await context.bot.send_message(
+                        chat_id=target_chat_id,
+                        text=panel,
+                        parse_mode='HTML',
+                        reply_markup=full_menu_markup(target_chat_id),
+                    )
+                except Exception as exc:
+                    logger.warning('usr_bloquear: falha ao abrir menu | target=%s | erro=%s', target_chat_id, exc)
         text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Bloqueado ✅' if novo else 'Desbloqueado ✅')
         await _hide_query_markup_safe(query)
