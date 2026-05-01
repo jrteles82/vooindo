@@ -1138,6 +1138,9 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
         [InlineKeyboardButton(cobranca_global_label, callback_data='painel:cobranca_global'),
          InlineKeyboardButton(cobranca_admin_label, callback_data='painel:cobranca_admin')],
         [InlineKeyboardButton(filtros_label, callback_data='painel:toggle_result_type_filters')],
+        # Config
+        [InlineKeyboardButton('🎁 Acessos Grátis', callback_data='painel:free_access'),
+         InlineKeyboardButton('⏱ Intervalo', callback_data='painel:scan_interval')],
         # Ações
         [InlineKeyboardButton('💳 Pix', callback_data='painel:pix'),
          InlineKeyboardButton('🔔 Notificações', callback_data='painel:notificacoes')],
@@ -2580,6 +2583,130 @@ LIMIT 15
             texto.strip(), parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]]),
         )
+
+    elif action == 'free_access':
+        await query.answer()
+        settings = get_monetization_settings(conn)
+        current = int(settings['free_uses_limit'] or 20)
+        presets = [0, 5, 10, 15, 20, 30, 50]
+        texto = (
+            '🎁 *Acessos Grátis*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nQuantidade atual: *{current}* consultas grátis por usuário.'
+            '\n\nEscolha um novo valor:'
+        )
+        keyboard = []
+        row_btns = []
+        for opt in presets:
+            chk = '\u2705 ' if opt == current else ''
+            lbl = f'{chk}{"\u221e" if opt == 0 else opt}'
+            row_btns.append(InlineKeyboardButton(lbl, callback_data=f'painel:free_access_set:{opt}'))
+            if len(row_btns) == 3:
+                keyboard.append(row_btns)
+                row_btns = []
+        if row_btns:
+            keyboard.append(row_btns)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action.startswith('free_access_set:'):
+        await query.answer()
+        try:
+            novo_valor = int(action.split(':', 2)[1])
+        except (ValueError, IndexError):
+            novo_valor = 20
+        if novo_valor < 0:
+            novo_valor = 0
+        conn.execute(sql('UPDATE monetization_settings SET free_uses_limit = %s WHERE id = 1'), (novo_valor,))
+        conn.commit()
+        audit.admin('free_access_limit_alterado', chat_id=chat_id, payload={'novo_valor': novo_valor})
+        settings = get_monetization_settings(conn)
+        current = int(settings['free_uses_limit'] or 20)
+        presets = [0, 5, 10, 15, 20, 30, 50]
+        texto = (
+            '\u2705 *Acessos Grátis*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nValor atualizado para *{current}* consultas grátis por usuário.'
+            '\n\nEscolha um novo valor:'
+        )
+        keyboard = []
+        row_btns = []
+        for opt in presets:
+            chk = '\u2705 ' if opt == current else ''
+            lbl = f'{chk}{"\u221e" if opt == 0 else opt}'
+            row_btns.append(InlineKeyboardButton(lbl, callback_data=f'painel:free_access_set:{opt}'))
+            if len(row_btns) == 3:
+                keyboard.append(row_btns)
+                row_btns = []
+        if row_btns:
+            keyboard.append(row_btns)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action == 'scan_interval':
+        await query.answer()
+        row = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+        current = int(row['scan_interval_minutes'] or 60) if row else 60
+        texto = (
+            '\u23f1 *Intervalo entre rodadas*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nIntervalo atual: *{current} minutos*'
+            '\n\nEscolha um novo intervalo (m\u00ednimo 60 min, incrementos de 30):'
+        )
+        options = [60, 90, 120, 150, 180, 240, 360]
+        keyboard = []
+        row_buttons = []
+        for opt in options:
+            chk = '\u2705 ' if opt == current else ''
+            lbl = f'{chk}{opt} min'
+            row_buttons.append(InlineKeyboardButton(lbl, callback_data=f'painel:scan_interval_set:{opt}'))
+            if len(row_buttons) == 3:
+                keyboard.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            keyboard.append(row_buttons)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action.startswith('scan_interval_set:'):
+        await query.answer()
+        try:
+            novo_valor = int(action.split(':', 2)[1])
+        except (ValueError, IndexError):
+            novo_valor = 60
+        novo_valor = max(60, novo_valor - (novo_valor % 30))
+        conn.execute(
+            sql("UPDATE app_settings SET scan_interval_minutes = %s, updated_at = datetime('now') WHERE id = 1"),
+            (novo_valor,),
+        )
+        conn.commit()
+        audit.admin('scan_interval_alterado', chat_id=chat_id, payload={'novo_valor': novo_valor})
+        row = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+        current = int(row['scan_interval_minutes'] or 60) if row else 60
+        texto = (
+            '\u2705 *Intervalo entre rodadas*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nIntervalo atualizado para *{current} minutos*'
+            '\n\nEscolha um novo intervalo (m\u00ednimo 60 min, incrementos de 30):'
+        )
+        options = [60, 90, 120, 150, 180, 240, 360]
+        keyboard = []
+        row_buttons = []
+        for opt in options:
+            chk = '\u2705 ' if opt == current else ''
+            lbl = f'{chk}{opt} min'
+            row_buttons.append(InlineKeyboardButton(lbl, callback_data=f'painel:scan_interval_set:{opt}'))
+            if len(row_buttons) == 3:
+                keyboard.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            keyboard.append(row_buttons)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif action == 'restart_service':
         await query.answer()
