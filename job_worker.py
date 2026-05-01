@@ -570,7 +570,7 @@ def process_job(conn, bot: Bot, loop, job):
         _route_count = len(_build_user_routes(conn, user_id))
     except Exception:
         _route_count = 1
-    _JOB_TIMEOUT = 120 + max(0, _route_count - 1) * 120 + 60  # mínimo 180s, ~120s por rota extra
+    _JOB_TIMEOUT = 60 + max(0, _route_count - 2) * 90 + 30  # min 90s, ~90s por rota extra (2 Chromes simultâneos + timeout 150s no executor)
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
