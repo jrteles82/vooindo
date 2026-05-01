@@ -1052,10 +1052,11 @@ def user_welcome_preview_text() -> str:
     )
 
 
-def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, can_trigger_scan: bool, is_test: bool = False) -> InlineKeyboardMarkup:
+def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, can_trigger_scan: bool, is_test: bool = False, status: str = 'free') -> InlineKeyboardMarkup:
     block_label = '✅ Desbloquear usuário' if blocked else '🚫 Bloquear usuário'
     plan_label = '🔒 Exigir verificação de plano' if skip_charge else '🔓 Liberar sem verificação de plano'
     test_label = '🧪 Desmarcar como teste' if is_test else '🧪 Marcar como usuário teste'
+    status_label = f'📋 Status: {status} 🔄'
     rows = [
         [InlineKeyboardButton(block_label, callback_data=f'painel:usr_bloquear:{target_chat_id}')],
         [InlineKeyboardButton('🧭 Ver trechos do usuário', callback_data=f'painel:usr_trechos:{target_chat_id}')],
@@ -1067,6 +1068,7 @@ def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, ca
     rows.extend([
         [InlineKeyboardButton('🔄 Zerar acessos grátis', callback_data=f'painel:usr_zerar:{target_chat_id}')],
         [InlineKeyboardButton(test_label, callback_data=f'painel:usr_test_toggle:{target_chat_id}')],
+        [InlineKeyboardButton(status_label, callback_data=f'painel:usr_status:{target_chat_id}')],
         [InlineKeyboardButton(plan_label, callback_data=f'painel:usr_plano:{target_chat_id}')],
         [InlineKeyboardButton('🗑️ Excluir usuário', callback_data=f'painel:usr_del:{target_chat_id}')],
         [InlineKeyboardButton('🔙 Voltar à lista', callback_data='painel:usuarios')],
@@ -1107,11 +1109,11 @@ def normalize_max_price(max_price) -> float | None:
         return None
 
 
-def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool, bool]:
-    """Retorna (texto, blocked, skip_charge, can_trigger_scan, is_test) para o painel de gerenciamento."""
+def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool, bool, str]:
+    """Retorna (texto, blocked, skip_charge, can_trigger_scan, is_test, status)."""
     u = get_bot_user_by_chat(conn, target_chat_id)
     if not u:
-        return ('Usuário não encontrado.', False, False, False, False)
+        return ('Usuário não encontrado.', False, False, False, False, 'free')
     access = conn.execute(sql('SELECT * FROM user_access WHERE chat_id = %s'), (target_chat_id,)).fetchone()
     routes_count = conn.execute(
         sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = %s AND active = 1'), (u['user_id'],)
@@ -1836,9 +1838,9 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action.startswith('usr:'):
         await query.answer()
         target_chat_id = action[4:]
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         await query.edit_message_text(text, parse_mode='Markdown',
-                                      reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                      reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_bloquear:'):
         target_chat_id = action[len('usr_bloquear:'):]
@@ -1872,13 +1874,13 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning('usr_bloquear: falha ao abrir menu | target=%s | erro=%s', target_chat_id, exc)
         await query.answer('Bloqueado ✅' if novo else 'Desbloqueado ✅')
         # Recarrega o card do usuário
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_trechos:'):
         await query.answer()
@@ -1933,13 +1935,13 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta manual enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_sched:'):
         target_chat_id = action[len('usr_sched:'):]
@@ -1957,13 +1959,13 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta agendada enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action == 'usuarios_trechos':
         await query.answer()
@@ -2002,13 +2004,13 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_usos_zerados", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id})
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_test_toggle:'):
         target_chat_id = action[len('usr_test_toggle:'):]
@@ -2021,13 +2023,35 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             audit.admin('usuario_test_toggle', chat_id=chat_id,
                         payload={'target_chat_id': target_chat_id, 'is_test_user': novo})
         await query.answer('Usuário teste ✅' if novo else 'Usuário normal ✅')
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
+
+    elif action.startswith('usr_status:'):
+        target_chat_id = action[len('usr_status:'):]
+        access = conn.execute(sql('SELECT status FROM user_access WHERE chat_id = %s'), (target_chat_id,)).fetchone()
+        current_status = (access['status'] or 'free') if access else 'free'
+        # Ciclo: free -> active -> expired -> free
+        novo_status = {'free': 'active', 'active': 'expired', 'expired': 'free'}.get(current_status, 'free')
+        conn.execute(
+            sql(f"UPDATE user_access SET status = %s, updated_at = NOW() WHERE chat_id = %s"),
+            (novo_status, target_chat_id),
+        )
+        conn.commit()
+        audit.admin('usuario_status_alterado', chat_id=chat_id,
+                    payload={'target_chat_id': target_chat_id, 'de': current_status, 'para': novo_status})
+        await query.answer(f'Status alterado: {current_status} → {novo_status} ✅')
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
+        try:
+            await query.edit_message_text(text, parse_mode='Markdown',
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
+        except Exception:
+            await query.message.reply_text(text, parse_mode='Markdown',
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_plano:'):
         target_chat_id = action[len('usr_plano:'):]
@@ -2041,13 +2065,13 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_skip_charge", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id, "skip_charge": novo})
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test, status = _user_manage_text(conn, target_chat_id)
         try:
             await query.edit_message_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
         except Exception:
             await query.message.reply_text(text, parse_mode='Markdown',
-                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
+                                          reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test, status=status))
 
     elif action.startswith('usr_del:'):
         target_chat_id = action[len('usr_del:'):]
