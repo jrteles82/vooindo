@@ -1930,8 +1930,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta manual enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
-        await _hide_query_markup_safe(query)
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action.startswith('usr_sched:'):
         target_chat_id = action[len('usr_sched:'):]
@@ -1949,8 +1949,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta agendada enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
-        await _hide_query_markup_safe(query)
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action == 'usuarios_trechos':
         await query.answer()
@@ -1989,9 +1989,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_usos_zerados", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id})
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
-        await query.answer('Acessos grátis zerados ✅')
-        await _hide_query_markup_safe(query)
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action.startswith('usr_test_toggle:'):
         target_chat_id = action[len('usr_test_toggle:'):]
@@ -2003,9 +2002,9 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
             audit.admin('usuario_test_toggle', chat_id=chat_id,
                         payload={'target_chat_id': target_chat_id, 'is_test_user': novo})
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Usuário teste ✅' if novo else 'Usuário normal ✅')
-        await _hide_query_markup_safe(query)
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action.startswith('usr_plano:'):
         target_chat_id = action[len('usr_plano:'):]
@@ -2019,9 +2018,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_skip_charge", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id, "skip_charge": novo})
-        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
-        await query.answer('Verificação de plano atualizada ✅')
-        await _hide_query_markup_safe(query)
+        user_list_text, user_list_markup = _render_user_list(conn)
+        await query.message.reply_text(user_list_text, parse_mode='Markdown', reply_markup=user_list_markup)
 
     elif action.startswith('usr_del:'):
         target_chat_id = action[len('usr_del:'):]
