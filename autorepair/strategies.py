@@ -87,20 +87,74 @@ def repair_chrome_crash(ctx: dict) -> bool:
     """Chrome crashou (rc=1 no_stderr): mata órfãos e limpa cache."""
     return repair_oom(ctx)
 
+
+def repair_requeue_job(ctx: dict) -> bool:
+    """Re-cria job como pending tentando novamente (até 3x)."""
+    import sys
+    from db import connect as _db, sql as _sql
+    
+    job_id = ctx.get('job_id')
+    if not job_id:
+        return False
+    
+    try:
+        conn = _db()
+        # Pega info do job original
+        row = conn.execute(_sql('''
+            SELECT user_id, chat_id, job_type, created_at
+            FROM scan_jobs WHERE id = %s
+        '''), (job_id,)).fetchone()
+        if not row:
+            conn.close()
+            return False
+        
+        user_id = row['user_id']
+        chat_id = row['chat_id']
+        job_type = row['job_type']
+        
+        # Verifica quantas tentativas já teve
+        prev_tries = conn.execute(_sql('''
+            SELECT COUNT(*) as cnt FROM scan_jobs
+            WHERE user_id = %s AND DATE(created_at) = DATE(%s)
+              AND status = 'error'
+        '''), (user_id, row['created_at'])).fetchone()
+        tries = prev_tries['cnt'] if isinstance(prev_tries, dict) else prev_tries[0]
+        
+        if tries >= 3:
+            conn.close()
+            logger.warning(f'[repair] job={job_id} max retries={tries} para user={user_id}')
+            return False
+        
+        # Cria novo job pending
+        conn.execute(_sql('''
+            INSERT INTO scan_jobs (user_id, chat_id, job_type, status, created_at, retry_count)
+            VALUES (?, ?, ?, 'pending', NOW(), COALESCE((SELECT retry_count FROM scan_jobs WHERE id = ?), 0) + 1)
+        '''), (user_id, chat_id, job_type, job_id))
+        conn.commit()
+        new_id = conn.execute(_sql('SELECT LAST_INSERT_ID() as id')).fetchone()
+        if isinstance(new_id, dict):
+            new_id = new_id['id']
+        conn.close()
+        logger.warning(f'[repair] job={job_id} → novo job={new_id} user={user_id} (retry #{tries+1})')
+        return True
+    except Exception as e:
+        logger.error(f'[repair] falha requeue job={job_id}: {e}')
+        return False
+
 # ─── Mapa erro → estratégia ─────────────────────────────────────────
 
 ERROR_STRATEGIES = {
-    'parsed=0': [repair_parse_zero],
-    'proc_error_rc1': [repair_chrome_crash],
-    'chrome_semaphore_timeout': [repair_deadlock_semaphore],
-    'deadlock': [repair_deadlock_semaphore, repair_stale_workers],
-    'mysql_timeout': [repair_mysql_timeout],
-    'OOM': [repair_oom, repair_stale_workers],
-    'job_timeout_300s': [repair_chrome_crash],  # watchdog matou, limpa Chrome e semáforo
+    'parsed=0': [repair_parse_zero, repair_requeue_job],
+    'proc_error_rc1': [repair_chrome_crash, repair_requeue_job],
+    'chrome_semaphore_timeout': [repair_deadlock_semaphore, repair_requeue_job],
+    'deadlock': [repair_deadlock_semaphore, repair_stale_workers, repair_requeue_job],
+    'mysql_timeout': [repair_mysql_timeout, repair_requeue_job],
+    'OOM': [repair_oom, repair_stale_workers, repair_requeue_job],
+    'job_timeout_300s': [repair_chrome_crash, repair_requeue_job],  # watchdog matou, limpa Chrome + re-tenta
     'stale_running_recovered': [],  # job já foi recuperado pelo recovery system, sem ação
     'cancelled_by_new_request': [],  # não é erro técnico (ignora)
     'usuario_bloqueado': [],  # não é erro técnico (ignora: bloqueado, teto, sem preço)
-    'process_killed': [],  # SIGTERM/SIGKILL durante restart, não precisa reparar
+    'process_killed': [repair_requeue_job],  # SIGTERM/SIGKILL, re-tenta
 }
 
 def classify_error(error_message: str) -> list:
