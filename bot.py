@@ -2791,8 +2791,60 @@ LIMIT 15
         if should_exit:
             raise SystemExit(0)
 
+    elif action.startswith('broadcast_confirm'):
+        # Ação de confirmar envio do broadcast
+        await query.answer()
+        context.user_data.pop('awaiting_admin_broadcast', None)
+        text = (context.user_data.pop('admin_broadcast_text', None) or '').strip()
+        # Extrair texto da callback data se não estava no user_data
+        if not text:
+            parts = action.split(':', 2)
+            if len(parts) == 3 and parts[2]:
+                try:
+                    text = base64.urlsafe_b64decode(parts[2].encode('ascii')).decode('utf-8').strip()
+                except Exception:
+                    pass
+        if not text:
+            logger.warning('broadcast_confirm sem texto | chat_id=%s', chat_id)
+            await query.message.reply_text('⚠️ Mensagem não encontrada para envio. Gere a confirmação novamente.')
+            return
+        settings = get_monetization_settings(conn)
+        maintenance_on = is_maintenance_mode(conn)
+        show_result_type_filters = should_show_result_type_filters(conn)
+        admin_unread_support, _ = get_support_badges(conn, chat_id, admin=True)
+        rows = conn.execute(sql("SELECT chat_id FROM bot_users WHERE chat_id IS NOT NULL AND blocked = 0")).fetchall()
+        sent = 0
+        failed = 0
+        bot_for_broadcast = context.bot
+        if LEGACY_BROADCAST_TOKEN:
+            bot_for_broadcast = Bot(token=LEGACY_BROADCAST_TOKEN)
+        for row in rows:
+            target_chat_id = str(row['chat_id'])
+            try:
+                await bot_for_broadcast.send_message(chat_id=target_chat_id, text=text)
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning('broadcast falhou | target_chat_id=%s | erro=%s', target_chat_id, exc)
+        origem = 'bot antigo' if LEGACY_BROADCAST_TOKEN else 'bot atual'
+        logger.info('broadcast concluido | chat_id=%s | origem=%s | sent=%s | failed=%s', chat_id, origem, sent, failed)
+        try:
+            await query.edit_message_text(
+                f'📣 Envio concluído via {origem}. Sucesso: {sent} | Falhas: {failed}',
+            )
+        except Exception:
+            pass
+        await query.message.reply_text(
+            f'📣 Envio concluído via {origem}. Sucesso: {sent} | Falhas: {failed}',
+            reply_markup=admin_panel_markup(settings, maintenance_on, show_result_type_filters, admin_unread_support),
+        )
+        return
+
     elif action == 'back':
         await query.answer()
+        # Limpa estado do broadcast se estava pendente
+        context.user_data.pop('awaiting_admin_broadcast', None)
+        context.user_data.pop('admin_broadcast_text', None)
         settings = get_monetization_settings(conn)
         maintenance_on = is_maintenance_mode(conn)
         show_result_type_filters = should_show_result_type_filters(conn)
@@ -4067,57 +4119,6 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     return ConversationHandler.END
-async def admin_broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = str(query.message.chat.id)
-    conn = get_db()
-    admin = is_admin_chat(conn, chat_id)
-    conn.close()
-    if not admin:
-        await query.message.reply_text('🚫 Comando restrito a administradores.')
-        return ConversationHandler.END
-    text = (context.user_data.get('admin_broadcast_text') or '').strip()
-    parts = query.data.split(':', 2)
-    if (not text) and len(parts) == 3:
-        try:
-            text = base64.urlsafe_b64decode(parts[2].encode('ascii')).decode('utf-8').strip()
-        except Exception:
-            text = ''
-    if not text:
-        logger.warning('broadcast_confirm sem texto | chat_id=%s | data=%s', chat_id, query.data)
-        await query.message.reply_text('⚠️ Mensagem não encontrada para envio. Gere a confirmação novamente.')
-        return ConversationHandler.END
-    logger.info('broadcast_confirm recebido | chat_id=%s | texto_len=%s | legacy=%s', chat_id, len(text), bool(LEGACY_BROADCAST_TOKEN))
-    conn = get_db()
-    rows = conn.execute(sql("SELECT chat_id FROM bot_users WHERE chat_id IS NOT NULL AND blocked = 0")).fetchall()
-    maintenance_on = is_maintenance_mode(conn)
-    show_result_type_filters = should_show_result_type_filters(conn)
-    admin_unread_support, _ = get_support_badges(conn, chat_id, admin=True)
-    conn.close()
-    sent = 0
-    failed = 0
-    bot_for_broadcast = context.bot
-    if LEGACY_BROADCAST_TOKEN:
-        bot_for_broadcast = Bot(token=LEGACY_BROADCAST_TOKEN)
-    for row in rows:
-        target_chat_id = str(row['chat_id'])
-        try:
-            await bot_for_broadcast.send_message(chat_id=target_chat_id, text=text)
-            sent += 1
-        except Exception as exc:
-            failed += 1
-            logger.warning('broadcast falhou | target_chat_id=%s | erro=%s', target_chat_id, exc)
-    clear_pending_input_state(context)
-    origem = 'bot antigo' if LEGACY_BROADCAST_TOKEN else 'bot atual'
-    logger.info('broadcast concluido | chat_id=%s | origem=%s | sent=%s | failed=%s', chat_id, origem, sent, failed)
-    await query.message.reply_text(
-        f'📣 Envio concluído via {origem}. Sucesso: {sent} | Falhas: {failed}',
-        reply_markup=admin_panel_markup(settings, maintenance_on, show_result_type_filters, admin_unread_support),
-    )
-    return ConversationHandler.END
-
-
 async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -4891,7 +4892,6 @@ async def run_bot():
         per_message=True,
     )
 
-    app.add_handler(CallbackQueryHandler(admin_broadcast_confirm, pattern=r'^painel:broadcast_confirm(%s::.*)%s$'))
     app.add_handler(CallbackQueryHandler(admin_broadcast_start, pattern=r'^painel:broadcast$'))
     app.add_handler(CallbackQueryHandler(alerts_callback, pattern=r'^menu:(togglealerts|confirmalerts:)'))
     app.add_handler(conv)
