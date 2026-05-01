@@ -1169,6 +1169,29 @@ def _has_valid_vendor(result: dict) -> bool:
     return True
 
 
+def _try_renew_session(profile_dir: str | None = None) -> bool:
+    """Tenta renovar a sessão Google via renew_google_session.py."""
+    import subprocess
+    import sys as _sys
+    # Procura o script em lugares comuns
+    script = '/opt/vooindo/renew_google_session.py'
+    if not os.path.exists(script):
+        return False
+    try:
+        env = os.environ.copy()
+        if profile_dir:
+            env['GOOGLE_PERSISTENT_PROFILE_DIR'] = profile_dir
+        proc = subprocess.run(
+            [_sys.executable, script],
+            env=env, capture_output=True, timeout=120, text=True
+        )
+        if proc.returncode == 0:
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 4:
         print(json.dumps({"ok": False, "error": "usage", "message": "expected origin destination outbound_date [inbound_date]"}, ensure_ascii=False))
@@ -1178,9 +1201,11 @@ def main(argv: list[str]) -> int:
     destination = argv[2].upper()
     outbound_date = argv[3]
     inbound_date = argv[4] if len(argv) > 4 else ""
+    profile_dir = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooindo/google_session')
     
     max_retries = 2
     last_result = None
+    renewed = False
     for attempt in range(1 + max_retries):
         try:
             result = run(origin, destination, outbound_date, inbound_date)
@@ -1197,6 +1222,15 @@ def main(argv: list[str]) -> int:
             last_result = {"ok": False, "error": "timeout", "message": str(exc)}
         except Exception as exc:
             last_result = {"ok": False, "error": exc.__class__.__name__, "message": str(exc)}
+        # Se tentou 2x e ainda falhou, tenta renovar sessão antes do último retry
+        if attempt >= 1 and not renewed:
+            renewed = _try_renew_session(profile_dir)
+            if renewed:
+                if last_result is None:
+                    last_result = {'notes': []}
+                notes = last_result.get('notes', [])
+                notes.append('session_renewed_after_retries')
+                last_result['notes'] = notes
     
     # Último resultado (com ou sem vendor/preço)
     print(json.dumps(last_result, ensure_ascii=False))
