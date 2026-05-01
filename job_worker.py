@@ -800,19 +800,12 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             if image_path:
                 logger.info('[job-worker] job_id=%s | enviando imagem', job_id)
                 send_photo(bot, loop, chat_id, image_path)
-            # Mensagem IA + links inline
-            try:
-                ai_msg = generate_ai_message(filtered)
-                if ai_msg:
-                    _send_links_message(bot, loop, chat_id, ai_msg, main_menu_markup())
-                else:
-                    links_msg = build_booking_links_message(filtered)
-                    if links_msg:
-                        _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-                    else:
-                        loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
-            except Exception:
-                links_msg = build_booking_links_message(filtered)
+            # Links de reserva (sem IA)
+            links_msg = build_booking_links_message(filtered)
+            if links_msg:
+                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+            else:
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
                 if links_msg:
                     _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
                 else:
