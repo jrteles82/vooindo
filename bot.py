@@ -419,6 +419,7 @@ def ensure_bot_tables() -> bool:
         "ALTER TABLE app_settings ADD COLUMN notif_acesso_expirado INTEGER DEFAULT 1",
         "ALTER TABLE app_settings ADD COLUMN notif_pix_gerado INTEGER DEFAULT 1",
         "ALTER TABLE app_settings ADD COLUMN notif_pagamento_confirmado INTEGER DEFAULT 1",
+        "ALTER TABLE bot_users ADD COLUMN is_test_user INTEGER DEFAULT 0",
     ]:
         try:
             cur.execute(ddl)
@@ -728,6 +729,17 @@ def is_user_blocked(conn, chat_id: str) -> bool:
     return bool(row and int(row['blocked'] if isinstance(row, dict) else row[row.keys().index('blocked')] if hasattr(row, 'keys') else 0 or 0))
 
 
+def is_test_user(conn, chat_id: str) -> bool:
+    row = get_bot_user_by_chat(conn, chat_id)
+    if not row:
+        return False
+    try:
+        col = row['is_test_user'] if isinstance(row, dict) else row[row.keys().index('is_test_user') if hasattr(row, 'keys') else 0]
+        return bool(int(col or 0))
+    except Exception:
+        return False
+
+
 def require_confirmation(conn, chat_id: str):
     row = get_bot_user_by_chat(conn, chat_id)
     if not row:
@@ -736,7 +748,7 @@ def require_confirmation(conn, chat_id: str):
         blocked = int(row['blocked'] or 0)
     except Exception:
         blocked = 0
-    if blocked:
+    if blocked and not is_test_user(conn, chat_id):
         return '🚫 Sua conta foi suspensa. Entre em contato com o suporte.'
     if int(row['confirmed']) != 1:
         return '⚠️ Confirme seu cadastro primeiro para liberar as funções. Use o botão em /start.'
@@ -744,6 +756,9 @@ def require_confirmation(conn, chat_id: str):
 
 
 def should_block_paid_action(conn, chat_id: str) -> bool:
+    # Usuário teste nunca é bloqueado
+    if is_test_user(conn, chat_id):
+        return False
     ensure_user_access(conn, chat_id)
     ensure_owner_test_access(conn)
     access = ensure_user_access(conn, chat_id)
@@ -998,9 +1013,10 @@ def user_welcome_preview_text() -> str:
     )
 
 
-def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, can_trigger_scan: bool) -> InlineKeyboardMarkup:
+def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, can_trigger_scan: bool, is_test: bool = False) -> InlineKeyboardMarkup:
     block_label = '✅ Desbloquear usuário' if blocked else '🚫 Bloquear usuário'
     plan_label = '🔒 Exigir verificação de plano' if skip_charge else '🔓 Liberar sem verificação de plano'
+    test_label = '🧪 Desmarcar como teste' if is_test else '🧪 Marcar como usuário teste'
     rows = [
         [InlineKeyboardButton(block_label, callback_data=f'painel:usr_bloquear:{target_chat_id}')],
         [InlineKeyboardButton('🧭 Ver trechos do usuário', callback_data=f'painel:usr_trechos:{target_chat_id}')],
@@ -1011,6 +1027,7 @@ def user_manage_markup(target_chat_id: str, blocked: bool, skip_charge: bool, ca
         rows.append([InlineKeyboardButton('⏰ Gerar consulta agendada', callback_data=f'painel:usr_sched:{target_chat_id}')])
     rows.extend([
         [InlineKeyboardButton('🔄 Zerar acessos grátis', callback_data=f'painel:usr_zerar:{target_chat_id}')],
+        [InlineKeyboardButton(test_label, callback_data=f'painel:usr_test_toggle:{target_chat_id}')],
         [InlineKeyboardButton(plan_label, callback_data=f'painel:usr_plano:{target_chat_id}')],
         [InlineKeyboardButton('🗑️ Excluir usuário', callback_data=f'painel:usr_del:{target_chat_id}')],
         [InlineKeyboardButton('🔙 Voltar à lista', callback_data='painel:usuarios')],
@@ -1051,11 +1068,11 @@ def normalize_max_price(max_price) -> float | None:
         return None
 
 
-def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool]:
-    """Retorna (texto, blocked, skip_charge, can_trigger_scan) para o painel de gerenciamento."""
+def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool, bool]:
+    """Retorna (texto, blocked, skip_charge, can_trigger_scan, is_test) para o painel de gerenciamento."""
     u = get_bot_user_by_chat(conn, target_chat_id)
     if not u:
-        return ('Usuário não encontrado.', False, False)
+        return ('Usuário não encontrado.', False, False, False, False)
     access = conn.execute(sql('SELECT * FROM user_access WHERE chat_id = %s'), (target_chat_id,)).fetchone()
     routes_count = conn.execute(
         sql('SELECT COUNT(*) AS total FROM user_routes WHERE user_id = %s AND active = 1'), (u['user_id'],)
@@ -1071,6 +1088,7 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool]
     limite = int((free_uses_limit['free_uses_limit'] if free_uses_limit else None) or 3)
     blocked    = bool(int(u['blocked'] or 0))
     skip_c     = bool(int((access['skip_charge'] if access else None) or 0))
+    is_test    = bool(int(u['is_test_user'] if 'is_test_user' in (u.keys() if isinstance(u, dict) else []) else 0))
     status     = (access['status'] if access else None) or 'free'
     expires    = (access['expires_at'] if access else None) or '—'
     free_uses  = int((access['free_uses'] if access else None) or 0)
@@ -1078,12 +1096,14 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool]
     alerts_enabled = bool(int((bot_settings['alerts_enabled'] if bot_settings else 1) or 0))
     is_confirmed = bool(int(u['confirmed'] or 0))
     can_trigger_scan = is_confirmed and rotas > 0 and alerts_enabled and not blocked
+    test_badge = '🧪 Sim' if is_test else 'Não'
     text = (
         f"👤 *Gerenciar Usuário*\n\n"
         f"*Nome:* {u['first_name'] or '—'}\n"
         f"*Username:* @{u['username'] or '—'}\n"
         f"*Chat ID:* `{target_chat_id}`\n"
         f"*Confirmado:* {'Sim' if int(u['confirmed'] or 0) else 'Não'}\n"
+        f"*Teste:* {test_badge}\n"
         f"*Bloqueado:* {'🚫 Sim' if blocked else '✅ Não'}\n"
         f"*Status:* {status}\n"
         f"*Válido até:* {expires}\n"
@@ -1095,7 +1115,7 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool]
         f"*Notificações:* {'Ativas ✅' if alerts_enabled else 'Desativadas ❌'}\n"
         f"*Pode disparar consulta:* {'Sim ✅' if can_trigger_scan else 'Não ❌'}"
     )
-    return text, blocked, skip_c, can_trigger_scan
+    return text, blocked, skip_c, can_trigger_scan, is_test
 
 
 def admin_notif_markup(notif_settings: dict) -> InlineKeyboardMarkup:
@@ -1766,6 +1786,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sql("""
             SELECT b.user_id, b.chat_id, b.first_name, b.username, b.confirmed,
                    COALESCE(b.blocked, 0) AS blocked,
+                   COALESCE(b.is_test_user, 0) AS is_test_user,
                    ua.status, ua.expires_at, ua.free_uses, ua.total_paid,
                    bs.max_price
             FROM bot_users b
@@ -1784,11 +1805,12 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nome = (u['first_name'] or 'Sem nome')[:18]
             status = u['status'] or 'free'
             bloq = ' 🚫' if int(u['blocked'] or 0) else ''
+            test_badge = ' 🧪' if int(u.get('is_test_user', 0) or 0) else ''
             filtro_valor = normalize_max_price(u['max_price'])
             filtro_txt = 'Sem limite' if filtro_valor is None else f"R$ {int(float(filtro_valor)) if float(filtro_valor).is_integer() else format_money_br(float(filtro_valor))}"
-            linhas_info.append(f"{idx}. {nome}{bloq} | {status} | {filtro_txt}")
+            linhas_info.append(f"{idx}. {nome}{test_badge}{bloq} | {status} | {filtro_txt}")
             keyboard.append([InlineKeyboardButton(
-                f"{idx}. {nome}{bloq}",
+                f"{idx}. {nome}{test_badge}{bloq}",
                 callback_data=f"painel:usr:{u['chat_id']}"
             )])
         if linhas_info:
@@ -1800,9 +1822,9 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action.startswith('usr:'):
         await query.answer()
         target_chat_id = action[4:]
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.edit_message_text(text, parse_mode='Markdown',
-                                      reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan))
+                                      reply_markup=user_manage_markup(target_chat_id, blocked, skip_c, can_trigger_scan, is_test))
 
     elif action.startswith('usr_bloquear:'):
         target_chat_id = action[len('usr_bloquear:'):]
@@ -1814,7 +1836,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             acao = 'bloqueado' if novo else 'desbloqueado'
             audit.admin(f"usuario_{acao}", chat_id=chat_id,
                         payload={"target_chat_id": target_chat_id})
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Bloqueado ✅' if novo else 'Desbloqueado ✅')
         await _hide_query_markup_safe(query)
 
@@ -1871,7 +1893,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta manual enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await _hide_query_markup_safe(query)
 
     elif action.startswith('usr_sched:'):
@@ -1890,7 +1912,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
             await query.answer('Consulta agendada enfileirada ✅')
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await _hide_query_markup_safe(query)
 
     elif action == 'usuarios_trechos':
@@ -1930,8 +1952,22 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_usos_zerados", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id})
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Acessos grátis zerados ✅')
+        await _hide_query_markup_safe(query)
+
+    elif action.startswith('usr_test_toggle:'):
+        target_chat_id = action[len('usr_test_toggle:'):]
+        u_row = get_bot_user_by_chat(conn, target_chat_id)
+        if u_row:
+            current = int(u_row.get('is_test_user', 0) if isinstance(u_row, dict) else u_row[u_row.keys().index('is_test_user') if hasattr(u_row, 'keys') else -1] or 0)
+            novo = 0 if current else 1
+            conn.execute(sql('UPDATE bot_users SET is_test_user = %s WHERE chat_id = %s'), (novo, target_chat_id))
+            conn.commit()
+            audit.admin('usuario_test_toggle', chat_id=chat_id,
+                        payload={'target_chat_id': target_chat_id, 'is_test_user': novo})
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
+        await query.answer('Usuário teste ✅' if novo else 'Usuário normal ✅')
         await _hide_query_markup_safe(query)
 
     elif action.startswith('usr_plano:'):
@@ -1946,7 +1982,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         audit.admin("usuario_skip_charge", chat_id=chat_id,
                     payload={"target_chat_id": target_chat_id, "skip_charge": novo})
-        text, blocked, skip_c, can_trigger_scan = _user_manage_text(conn, target_chat_id)
+        text, blocked, skip_c, can_trigger_scan, is_test = _user_manage_text(conn, target_chat_id)
         await query.answer('Verificação de plano atualizada ✅')
         await _hide_query_markup_safe(query)
 
