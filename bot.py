@@ -1410,19 +1410,21 @@ def rotas_management_markup(rows: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def manual_topics_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def manual_topics_markup(show_monetization: bool = True) -> InlineKeyboardMarkup:
+    buttons = [
         [InlineKeyboardButton('🚀 Primeiros passos', callback_data='manual:primeiros_passos')],
         [InlineKeyboardButton('➕ Como cadastrar uma rota', callback_data='manual:cadastrar_rota')],
         [InlineKeyboardButton('🔎 Como buscar aeroportos', callback_data='manual:buscar_aeroportos')],
         [InlineKeyboardButton('📅 Como informar as datas', callback_data='manual:datas')],
         [InlineKeyboardButton('💰 Filtro de preço', callback_data='manual:filtro_preco')],
         [InlineKeyboardButton('🖼️ Consulta manual agora', callback_data='manual:consulta_manual')],
-        [InlineKeyboardButton('💳 Pagamentos e cobrança', callback_data='manual:pagamentos')],
-        [InlineKeyboardButton('🎁 Consultas grátis', callback_data='manual:consultas_gratis')],
-        [InlineKeyboardButton('📊 Meu status de cobrança', callback_data='manual:consultas_gratis_status')],
-        [InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')],
-    ])
+    ]
+    if show_monetization:
+        buttons.append([InlineKeyboardButton('💳 Pagamentos e cobrança', callback_data='manual:pagamentos')])
+        buttons.append([InlineKeyboardButton('🎁 Consultas grátis', callback_data='manual:consultas_gratis')])
+        buttons.append([InlineKeyboardButton('📊 Meu status de cobrança', callback_data='manual:consultas_gratis_status')])
+    buttons.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
+    return InlineKeyboardMarkup(buttons)
 
 
 def charging_status_text(conn, chat_id: str) -> str:
@@ -1535,10 +1537,17 @@ def manual_topic_text(topic: str) -> str:
 
 
 async def manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    conn = get_db()
+    try:
+        settings = get_monetization_settings(conn)
+        show_monetization = bool(int(settings['charge_global']) == 1)
+    finally:
+        conn.close()
     await update.message.reply_text(
         'ℹ️ *Dúvidas frequentes*\n────────────────────────\n\nEscolha abaixo o assunto que você quer ver:',
         parse_mode='Markdown',
-        reply_markup=manual_topics_markup(),
+        reply_markup=manual_topics_markup(show_monetization),
     )
 
 
@@ -2911,6 +2920,13 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    conn = get_db()
+    try:
+        settings = get_monetization_settings(conn)
+        show_monetization = bool(int(settings['charge_global']) == 1)
+    finally:
+        conn.close()
     await update.message.reply_text(
         'ℹ️ *Ajuda rápida*\n────────────────────────\n\n'
         '*Primeiro uso*\n'
@@ -2925,7 +2941,7 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '/manual — ver dúvidas frequentes\n'
         '/start — abrir o menu',
         parse_mode='Markdown',
-        reply_markup=manual_topics_markup(),
+        reply_markup=manual_topics_markup(show_monetization),
     )
 
 
@@ -3900,18 +3916,20 @@ async def manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data or ''
     topic = data.split(':', 1)[1] if ':' in data else 'primeiros_passos'
-    if topic == 'consultas_gratis_status':
-        conn = get_db()
-        try:
+    conn = get_db()
+    try:
+        settings = get_monetization_settings(conn)
+        show_monetization = bool(int(settings['charge_global']) == 1)
+        if topic == 'consultas_gratis_status':
             text = charging_status_text(conn, str(query.message.chat.id))
-        finally:
-            conn.close()
-    else:
-        text = manual_topic_text(topic)
+        else:
+            text = manual_topic_text(topic)
+    finally:
+        conn.close()
     await query.edit_message_text(
         text,
         parse_mode='Markdown',
-        reply_markup=manual_topics_markup(),
+        reply_markup=manual_topics_markup(show_monetization),
     )
     return ConversationHandler.END
 
