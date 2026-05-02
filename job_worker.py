@@ -857,9 +857,16 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     _route_info = _payload_data.get('route') if isinstance(_payload_data, dict) else None
     _group_key = str(job.get('group_key') or '')
     
+    # Debug: por que alguns jobs não pegam PER-ROUTE?
     if _route_info and _group_key:
         logger.info('[job-worker] job_id=%s | PER-ROUTE: %s->%s group=%s',
                      job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _group_key)
+    elif _route_info:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route OK, group_key VAZIA', job_id)
+    elif _group_key:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: group_key OK, route NULA | payload_len=%s', job_id, len(_payload_str))
+    else:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route NULA e group_key VAZIA | payload_len=%s', job_id, len(_payload_str))
         from models import RouteQuery as _RQ
         _single_route = _RQ(
             origin=_route_info.get('origin', ''),
