@@ -604,7 +604,11 @@ def create_mp_pix_payment(chat_id: str, plan_name: str, amount: float) -> dict:
 
 def save_payment(conn, mp_payment_id: str, chat_id: str, plan_name: str, amount: float, status: str, qr_code: str, ticket_url: str):
     conn.execute(
-        upsert_payment_sql(),
+        sql("""
+        INSERT INTO payments (mp_payment_id, chat_id, plan_name, amount, status, qr_code, ticket_url)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE status=VALUES(status), qr_code=VALUES(qr_code), ticket_url=VALUES(ticket_url)
+        """),
         (mp_payment_id, chat_id, plan_name, amount, status, qr_code, ticket_url),
     )
     conn.commit()
