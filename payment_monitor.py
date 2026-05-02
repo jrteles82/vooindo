@@ -154,7 +154,15 @@ def main():
                 try:
                     approved, info = apply_approved_payment(conn, payment_id)
                     if approved and payment_id not in notified:
+                        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
                         asyncio.run(bot.send_message(chat_id=chat_id, text=f'🎉 Pagamento aprovado automaticamente! Acesso liberado até {info}.'))
+                        asyncio.run(bot.send_message(
+                            chat_id=chat_id,
+                            text='🏠 Seu acesso foi liberado. Escolha uma opção abaixo:',
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton('🏠 Abrir menu', callback_data='menu:back')],
+                            ]),
+                        ))
                         notified.add(payment_id)
                 except Exception as exc:
                     logger.exception('[payment-monitor] erro no pagamento %s: %s', payment_id, exc)

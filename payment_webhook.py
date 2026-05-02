@@ -334,7 +334,15 @@ def webhook():
     try:
         approved, info, chat_id = apply_approved_payment(conn, str(payment_id))
         if approved and bot:
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
             bot.send_message(chat_id=chat_id, text=f'🎉 Pagamento aprovado automaticamente! Acesso liberado até {info}.')
+            bot.send_message(
+                chat_id=chat_id,
+                text='🏠 Seu acesso foi liberado. Escolha uma opção abaixo:',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton('🏠 Abrir menu', callback_data='menu:back')],
+                ]),
+            )
     finally:
         conn.close()
     return 'OK', 200
