@@ -20,3 +20,7 @@ google_session/
 google_session_3/
 google_session_4/
 google_session_5/
+google_session*
+__pycache__/
+*.pyc
+logs/
