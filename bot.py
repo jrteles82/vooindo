@@ -1836,19 +1836,21 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"*ID do pagamento:* `{payment.get('id')}`\n"
             f"*Status:* {payment.get('status', 'pending')}"
         )
-        await query.edit_message_text(detalhes, parse_mode='Markdown')
-        # Envia QR code como imagem se disponível
         import io as _io
+        # Envia o código Pix primeiro (copia e cola)
+        await query.message.reply_text(
+            f'📱 *Código Pix para pagar*\n\n' + '`' + qr_code + '`\n\nCopie e cole no seu banco para pagar.',
+            parse_mode='Markdown'
+        )
+        await query.edit_message_text(detalhes, parse_mode='Markdown')
+        # Depois envia QR code como imagem
         qr_base64 = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code_base64', '')
         if qr_base64:
             try:
                 qr_bytes = base64.b64decode(qr_base64)
-                await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes), caption='📱 Escaneie o QR Code abaixo com seu banco para pagar:')
+                await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes), caption='📱 Ou escaneie o QR Code abaixo:')
             except Exception as exc:
                 logger.warning('userpix: falha ao enviar QR imagem | erro=%s', exc)
-                await query.message.reply_text(f'📱 Código Pix para copiar e colar no seu banco:\n\n`{qr_code}`', parse_mode='Markdown')
-        else:
-            await query.message.reply_text(f'📱 Código Pix para copiar e colar no seu banco:\n\n`{qr_code}`', parse_mode='Markdown')
         if ticket_url:
             await query.message.reply_text(f'🔗 Link do pagamento: {ticket_url}')
         await query.message.reply_text(
