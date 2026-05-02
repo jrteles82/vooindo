@@ -861,12 +861,6 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     if _route_info and _group_key:
         logger.info('[job-worker] job_id=%s | PER-ROUTE: %s->%s group=%s',
                      job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _group_key)
-    elif _route_info:
-        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route OK, group_key VAZIA', job_id)
-    elif _group_key:
-        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: group_key OK, route NULA | payload_len=%s', job_id, len(_payload_str))
-    else:
-        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route NULA e group_key VAZIA | payload_len=%s', job_id, len(_payload_str))
         from models import RouteQuery as _RQ
         _single_route = _RQ(
             origin=_route_info.get('origin', ''),
@@ -891,17 +885,19 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         _parsed_route = _route_loop.run_until_complete(_route_future)
         if _parsed_route:
             _wd_scan_done[0] = True
-        # Sempre salva resultado na tabela de rota, mesmo que vazio,
-        # para que a consolidação saiba que esta rota foi processada
         _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
-        # Marcar job como done
         conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s"), (job_id,))
         conn.commit()
-        # Tentar consolidar o grupo (se todas as rotas terminaram)
         if _group_key:
             _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
         logger.info('[job-worker] job_id=%s | rota processada | %s->%s | parsed=%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), len(_parsed_route or []), _t.elapsed())
         return
+    elif _route_info:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route OK, group_key VAZIA', job_id)
+    elif _group_key:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: group_key OK, route NULA | payload_len=%s', job_id, len(_payload_str))
+    else:
+        logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route NULA e group_key VAZIA | payload_len=%s', job_id, len(_payload_str))
     
     logger.info('[job-worker] job_id=%s | LEGACY path (route_info=%s group_key=%s)', job_id, _route_info is not None, bool(_group_key))
     
