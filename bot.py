@@ -572,7 +572,7 @@ def ensure_app_user(conn, first_name: str) -> int:
 
 def get_bot_user_by_chat(conn, chat_id: str):
     return conn.execute(
-        sql("SELECT user_id, confirmed, first_name, username, COALESCE(blocked, 0) AS blocked FROM bot_users WHERE chat_id = %s"),
+        sql("SELECT user_id, confirmed, first_name, username, COALESCE(blocked, 0) AS blocked, COALESCE(is_test_user, 0) AS is_test_user FROM bot_users WHERE chat_id = %s"),
         (chat_id,),
     ).fetchone()
 
@@ -734,8 +734,7 @@ def is_test_user(conn, chat_id: str) -> bool:
     if not row:
         return False
     try:
-        col = row['is_test_user'] if isinstance(row, dict) else row[row.keys().index('is_test_user') if hasattr(row, 'keys') else 0]
-        return bool(int(col or 0))
+        return bool(int(row.get('is_test_user', 0) or 0))
     except Exception:
         return False
 
@@ -1129,7 +1128,7 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool,
     limite = int((free_uses_limit['free_uses_limit'] if free_uses_limit else None) or 3)
     blocked    = bool(int(u['blocked'] or 0))
     skip_c     = bool(int((access['skip_charge'] if access else None) or 0))
-    is_test    = bool(int(u['is_test_user'] if 'is_test_user' in (u.keys() if isinstance(u, dict) else []) else 0))
+    is_test    = bool(int(u.get('is_test_user', 0) or 0))
     status     = (access['status'] if access else None) or 'free'
     expires    = (access['expires_at'] if access else None) or '—'
     free_uses  = int((access['free_uses'] if access else None) or 0)
@@ -2018,8 +2017,9 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action.startswith('usr_test_toggle:'):
         target_chat_id = action[len('usr_test_toggle:'):]
         u_row = get_bot_user_by_chat(conn, target_chat_id)
+        novo = 1
         if u_row:
-            current = int(u_row.get('is_test_user', 0) if isinstance(u_row, dict) else u_row[u_row.keys().index('is_test_user') if hasattr(u_row, 'keys') else -1] or 0)
+            current = int(u_row.get('is_test_user', 0) or 0)
             novo = 0 if current else 1
             conn.execute(sql('UPDATE bot_users SET is_test_user = %s WHERE chat_id = %s'), (novo, target_chat_id))
             conn.commit()
