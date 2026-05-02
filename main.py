@@ -650,10 +650,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     except (TypeError, ValueError):
         requested_workers = 2
     
-    # Serial por worker. O paralelismo é entre workers (5 workers diferentes),
-    # não intra-worker. Paralelismo intra-worker causa over-subscription dos
-    # slots de Chrome (5 slots para 9+ threads competindo).
-    worker_count = 1
+    # Até 3 rotas por worker em paralelo. O semáforo Chrome (5 slots) impede
+    # over-subscription — threads sem slot esperam. Reduz tempo de usuários
+    # com múltiplas rotas de N×90s para ~90s + eventual espera de semáforo.
+    worker_count = 3
     
     source_flags = sources or {"google_flights": True}
     
@@ -694,8 +694,8 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
                 
-                # Timeout: 150s nacionais, 200s internacionais
-                intl_timeout = 200 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 150
+                # Timeout: 250s nacionais, 200s internacionais (com retry +60s em caso de timeout)
+                intl_timeout = 200 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 250
                 
                 # Semáforo: espera até 300s por um slot Chrome
                 slot_got = ChromeSemaphore.acquire(timeout=300.0)
@@ -703,8 +703,13 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
                        outbound_date=r.outbound_date, inbound_date=r.inbound_date,
                        price=None, notes="chrome_semaphore_timeout: nenhum slot disponível em 300s")
+                _timeout_retry = False
+                proc = None
                 try:
                     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=intl_timeout, env=env)
+                except subprocess.TimeoutExpired:
+                    _timeout_retry = True
+                    logger.warning('[scraper] timeout %ss para %s->%s | retry com +60s', intl_timeout, r.origin, r.destination)
                 finally:
                     # Mata Chrome orphan (sem pai python atual) pra liberar RAM entre rotas
                     import psutil as _psutil, os as _os
@@ -731,6 +736,28 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         pass
                     time.sleep(0.5)
                     ChromeSemaphore.release()
+
+                if _timeout_retry:
+                    _longer_timeout = intl_timeout + 60
+                    _slot2 = ChromeSemaphore.acquire(timeout=120.0)
+                    if not _slot2:
+                        return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                            outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                            price=None, notes="chrome_semaphore_retry: sem slot")
+                    try:
+                        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_longer_timeout, env=env)
+                    except subprocess.TimeoutExpired:
+                        logger.warning('[scraper] timeout até no retry %ss para %s->%s', _longer_timeout, r.origin, r.destination)
+                        return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                            outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                            price=None, notes=f"timeout_expired_retry_{_longer_timeout}s")
+                    except Exception as _re:
+                        return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
+                            outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                            price=None, notes=f"exception_retry: {str(_re)[:200]}")
+                    finally:
+                        ChromeSemaphore.release()
+                        time.sleep(0.5)
 
                 if proc.returncode == 0:
                     try:
