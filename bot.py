@@ -126,9 +126,15 @@ def get_panel_text(chat_id: str) -> str:
     cur = conn.execute(sql('SELECT COUNT(*) FROM user_routes WHERE user_id = %s AND active = 1'), (row['user_id'],))
     count_row = cur.fetchone()
     routes_count = count_row[0] if not isinstance(count_row, dict) else next(iter(count_row.values()))
+    admin = is_admin_chat(conn, chat_id)
+    max_routes = get_max_routes_default(conn)
     conn.close()
 
     msg_text = panel_text
+    if admin:
+        msg_text += f'\n👤 <b>Rotas:</b> {routes_count} · 🗺 <b>Limite:</b> ilimitado (admin)'
+    else:
+        msg_text += f'\n👤 <b>Rotas:</b> {routes_count}/{max_routes}'
     if routes_count == 0:
         msg_text += "\n\n⚠️ <b>Atenção:</b> Você ainda não tem nenhuma rota cadastrada.\nClique em <b>➕ Adicionar nova rota</b> abaixo para começar."
     return msg_text
@@ -3158,23 +3164,35 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     limite = setting['max_price'] if setting else None
     limite_txt = 'Sem limite' if limite is None else format_money_br(float(limite))
+    # Limite de rotas
+    max_routes = get_max_routes_default(conn)
+    admin = is_admin_chat(conn, chat_id)
     if not rows:
-        await update.message.reply_text(
+        texto_rotas = (
             '\n📋 *Minhas rotas*\n────────────────────────\n\n'
             f'Você ainda não tem rotas ativas.\n'
-            f'💰 Limite atual: *{limite_txt}*',
+            f'💰 Limite atual: *{limite_txt}*'
+        )
+        if not admin:
+            texto_rotas += f'\n🗺 Limite de rotas: 0/{max_routes}'
+        else:
+            texto_rotas += '\n🗺 Limite de rotas: *ilimitado (admin)*'
+        await update.message.reply_text(
+            texto_rotas,
             parse_mode='Markdown',
             reply_markup=rotas_management_markup([]),
         )
         return
 
+    restantes = 'ilimitado' if admin else (max_routes - len(rows))
+    limite_rota_str = f'*ilimitado (admin)*' if admin else f'{restantes} vaga{"s" if restantes != 1 else ""} restante{"s" if restantes != 1 else ""}'
     linhas = [
         '',
         '📋 *Minhas rotas*',
         '────────────────────────',
         '',
         f'💰 *Limite:* R$ {limite_txt}',
-        f'🧭 *Total:* {len(rows)} rota{"s" if len(rows) != 1 else ""}',
+        f'🧭 *Total:* {len(rows)} rota{"s" if len(rows) != 1 else ""} · 🗺 {limite_rota_str}',
         '',
     ]
     for row in rows:
