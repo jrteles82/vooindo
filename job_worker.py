@@ -861,6 +861,13 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     if _route_info and _group_key:
         logger.info('[job-worker] job_id=%s | PER-ROUTE: %s->%s group=%s',
                      job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _group_key)
+        # Delay escalonado: cada worker aguarda um tempo aleatório antes
+        # de iniciar o Chrome, evitando que múltiplas instâncias do
+        # headless-shell v1217 subam no mesmo segundo (causa trap int3).
+        import random as _random
+        _delay = _random.uniform(1.0, 6.0)
+        logger.info('[job-worker] job_id=%s | stagger delay %.1fs', job_id, _delay)
+        time.sleep(_delay)
         # Tudo dentro de um try gigante para garantir que QUALQUER
         # exceção seja capturada e o job marcado como done SEMPRE.
         # Isso impede que o código vaze para o LEGACY path.
