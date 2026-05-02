@@ -1770,15 +1770,8 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = str(query.message.chat.id)
     conn = get_db()
-    if not is_admin_chat(conn, chat_id):
-        conn.close()
-        await query.answer('Não autorizado', show_alert=True)
-        return
 
-    parts = query.data.split(':')
-    action = ':'.join(parts[1:]) if len(parts) > 1 else ''
-    ensure_owner_test_access(conn)
-
+    # userpix: é para usuários normais (gerar Pix), não requer admin
     if query.data.startswith('userpix:'):
         plan_name = query.data.split(':', 1)[1]
         access = ensure_user_access(conn, chat_id)
@@ -1795,7 +1788,7 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if existing_pending:
             conn.close()
             await query.edit_message_text(
-                f"💳 *Você já tem um Pix pendente válido*\n\n*Plano:* {existing_pending['plan_name']}\n*Valor:* R$ {format_money_br(existing_pending['amount'])}\n*ID:* `{existing_pending['mp_payment_id']}`",
+                f"💳 *Você já tem um Pix pendente válido*\n\n*Plano:* {existing_pending['plan_name']}\n*Valor:* R$ {format_money_br(existing_pending['amount'])}",
                 parse_mode='Markdown'
             )
             await query.message.reply_text(existing_pending['qr_code'] or 'Código Pix indisponível no momento.')
@@ -1813,7 +1806,6 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qr_code = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code', '')
         ticket_url = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('ticket_url', '')
         save_payment(conn, str(payment.get('id')), chat_id, plan_name, amount, payment.get('status', 'pending'), qr_code, ticket_url)
-
         audit.payment("pix_gerado", chat_id=chat_id, status="pending",
                       payload={"plano": plan_name, "valor": amount,
                                "mp_payment_id": str(payment.get('id'))})
@@ -1840,6 +1832,15 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.answer()
         return
+
+    if not is_admin_chat(conn, chat_id):
+        conn.close()
+        await query.answer('Não autorizado', show_alert=True)
+        return
+
+    parts = query.data.split(':')
+    action = ':'.join(parts[1:]) if len(parts) > 1 else ''
+    ensure_owner_test_access(conn)
 
     if action == 'usuarios':
         await query.answer()
