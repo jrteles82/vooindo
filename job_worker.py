@@ -870,27 +870,35 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             user_id=user_id,
             chat_id=int(chat_id) if chat_id.isdigit() else 0,
         )
-        _route_loop = asyncio.get_event_loop()
-        _route_future = _route_loop.run_in_executor(
-            None,
-            functools.partial(
-                run_scan_for_routes,
-                [_single_route],
-                sources={'google_flights': bool(settings['enable_google_flights']), '': False},
-                fast_mode=is_manual_now,
-                skip_booking=False,
-                allow_agencies=(pool != 'scheduled'),
+        try:
+            _route_loop = asyncio.get_event_loop()
+            _route_future = _route_loop.run_in_executor(
+                None,
+                functools.partial(
+                    run_scan_for_routes,
+                    [_single_route],
+                    sources={'google_flights': bool(settings['enable_google_flights']), '': False},
+                    fast_mode=is_manual_now,
+                    skip_booking=False,
+                    allow_agencies=(pool != 'scheduled'),
+                )
             )
-        )
-        _parsed_route = _route_loop.run_until_complete(_route_future)
-        if _parsed_route:
-            _wd_scan_done[0] = True
-        _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
-        conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s"), (job_id,))
-        conn.commit()
+            _parsed_route = _route_loop.run_until_complete(_route_future)
+            if _parsed_route:
+                _wd_scan_done[0] = True
+            _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
+        except BaseException as _perr:
+            logger.error('[job-worker] job_id=%s | PER-ROUTE exception: %s', job_id, _perr)
+        finally:
+            # SEMPRE marca como done, independente de exceção.
+            # Isso impede que o worker loop faça retry do job,
+            # evitando o race condition de dois workers processando
+            # o mesmo job (um via per-route, outro via legacy).
+            conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s"), (job_id,))
+            conn.commit()
         if _group_key:
             _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
-        logger.info('[job-worker] job_id=%s | rota processada | %s->%s | parsed=%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), len(_parsed_route or []), _t.elapsed())
+        logger.info('[job-worker] job_id=%s | rota processada | %s->%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _t.elapsed())
         return
     elif _route_info:
         logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route OK, group_key VAZIA', job_id)
