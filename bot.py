@@ -771,11 +771,16 @@ def should_block_paid_action(conn, chat_id: str) -> bool:
         return False
     if is_active_access(access):
         return False
+    # Se o plano venceu, bloqueia direto (precisa renovar)
+    status = (access.get('status') or 'free').strip().lower()
+    if status == 'expired':
+        return True
     # Se tem acessos grátis restantes, libera
-    free_uses = int(access.get('free_uses', 0) or 0)
-    free_uses_limit = get_free_uses_limit(conn)
-    if free_uses < free_uses_limit:
-        return False
+    if status == 'free':
+        free_uses = int(access.get('free_uses', 0) or 0)
+        free_uses_limit = get_free_uses_limit(conn)
+        if free_uses < free_uses_limit:
+            return False
     return True
 
 
