@@ -574,11 +574,37 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
     
     # Verifica se ainda há jobs pendentes/rodando no grupo
     pending = conn.execute(sql('''
-        SELECT COUNT(*) AS c FROM scan_jobs
+        SELECT COUNT(*) AS c, MAX(started_at) AS recent_started
+        FROM scan_jobs
         WHERE group_key = %s AND status IN ('pending', 'running')
     '''), (group_key,)).fetchone()
-    if pending and (pending['c'] if isinstance(pending, dict) else pending[0]) > 0:
-        return  # Ainda há rotas pendentes
+    _pend_count = (pending['c'] if isinstance(pending, dict) else pending[0]) if pending else 0
+    _recent_started = (pending.get('recent_started') if isinstance(pending, dict) else None) if pending else None
+    
+    if _pend_count > 0:
+        # Verifica se jobs pendentes estão stale (>5min rodando sem resposta)
+        if _recent_started:
+            import datetime as _dt
+            _now = _dt.datetime.now()
+            _started = _recent_started
+            if isinstance(_started, str):
+                try:
+                    _started = _dt.datetime.strptime(_started, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    _started = _now
+            _stale_seconds = (_now - _started).total_seconds() if _started else 0
+            if _stale_seconds > 300:
+                logger.warning('[job-worker] group_key=%s | %s jobs stale (>%ds) — consolidando mesmo assim', group_key, _pend_count, _stale_seconds)
+                # Marca jobs stale como error pra não ficarem presos
+                conn.execute(sql('''
+                    UPDATE scan_jobs SET status = 'error', error_message = 'stale_timeout', finished_at = NOW()
+                    WHERE group_key = %s AND status IN ('pending', 'running') AND started_at < NOW() - INTERVAL 5 MINUTE
+                '''), (group_key,))
+                conn.commit()
+            else:
+                return  # Jobs ainda estão dentro do tempo esperado
+        else:
+            return  # Jobs pendentes sem started_at (aguardando worker)
     
     # Buscar dados JSON salvos das rotas do grupo
     route_results = conn.execute(sql('''
