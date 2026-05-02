@@ -2434,9 +2434,29 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         conn.commit()
         await query.message.reply_text(
-            '❌ Pagamento cancelado. Escolha um novo plano:',
+            '❌ Pagamento cancelado. Escolha um novo valor:',
             reply_markup=user_plan_markup()
         )
+
+    elif action == 'plan_add':
+        await query.answer()
+        settings = get_monetization_settings(conn)
+        disabled = []
+        for col, label in [('weekly_price', 'Semanal'), ('biweekly_price', 'Quinzenal'), ('monthly_price', 'Mensal')]:
+            if float(settings.get(col, 0) or 0) == 0:
+                disabled.append((col, label))
+        if not disabled:
+            await query.message.reply_text('✅ Todos os planos já estão ativos.')
+        else:
+            keyboard = []
+            for col, label in disabled:
+                keyboard.append([InlineKeyboardButton(f'➕ Ativar {label}', callback_data=f'painel:plan_edit:{col.replace("_price", "")}')])
+            keyboard.append([InlineKeyboardButton('🔙 Voltar', callback_data='painel:planos')])
+            await query.edit_message_text(
+                '📋 *Planos disponíveis para ativar*\n\nSelecione um plano para definir o valor:',
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
 
     elif action.startswith('plan_edit:'):
         await query.answer()
