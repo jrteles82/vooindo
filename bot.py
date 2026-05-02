@@ -1827,7 +1827,18 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 *Pix gerado com sucesso!*\n\n*Valor:* R$ {format_money_br(amount)}\n*ID:* `{payment.get('id')}`",
             parse_mode='Markdown'
         )
-        await query.message.reply_text(qr_code or 'Código Pix indisponível no momento.')
+        # Envia QR code como imagem se disponível
+        import io as _io
+        qr_base64 = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code_base64', '')
+        if qr_base64:
+            try:
+                qr_bytes = base64.b64decode(qr_base64)
+                await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes))
+            except Exception as exc:
+                logger.warning('userpix: falha ao enviar QR imagem | erro=%s', exc)
+                await query.message.reply_text(qr_code or 'Código Pix indisponível no momento.')
+        else:
+            await query.message.reply_text(qr_code or 'Código Pix indisponível no momento.')
         if ticket_url:
             await query.message.reply_text(ticket_url)
         await query.message.reply_text(
