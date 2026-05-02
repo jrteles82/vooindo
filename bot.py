@@ -525,6 +525,14 @@ def choose_plan_text(conn, chat_id: str) -> str:
     for idx, (name, amount, days) in enumerate(plans):
         medal = medals[idx] if idx < len(medals) else '💠'
         lines.append(f"{medal} {name}: R$ {format_money_br(amount)} ({days} dias)")
+    # Intervalo das consultas
+    row = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+    interval_min = int(row['scan_interval_minutes'] or 60) if row else 60
+    lines.extend([
+        '',
+        f'✅ Você receberá atualizações automáticas a cada {interval_min} minutos,',
+        'além de poder fazer consulta a qualquer momento.',
+    ])
     return '\n'.join(lines)
 
 
