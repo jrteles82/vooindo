@@ -179,6 +179,8 @@ def classify_error(error_message: str) -> list:
         categories.append('job_timeout_300s')
     if 'stale_running' in error_lower:
         categories.append('stale_running_recovered')
+    if error_lower == 'stale_group_recovered':
+        categories.append('stale_group_recovered')
     if 'cancelled' in error_lower:
         categories.append('cancelled_by_new_request')
     if 'bloqueado' in error_lower:
@@ -201,7 +203,7 @@ def run_repair(job_id: int, error_message: str) -> dict:
         return {'repaired': False, 'action': 'unknown_error', 'notify': True}
     
     # Se só tem erros não-técnicos, não repara
-    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'job_timeout_300s', 'process_killed'}
+    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'stale_group_recovered', 'job_timeout_300s', 'process_killed'}
     if all(c in nonttechnical for c in categories):
         return {'repaired': False, 'action': 'not_technical', 'notify': False}
     

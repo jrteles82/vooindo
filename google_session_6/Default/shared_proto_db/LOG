@@ -1,15 +1,3 @@
-2026/05/02-09:34:12.745 40339 Reusing MANIFEST /opt/vooindo/google_session/Default/shared_proto_db/MANIFEST-000001
-2026/05/02-09:34:12.745 40339 Recovering log #16
-2026/05/02-09:34:12.748 40339 Reusing old log /opt/vooindo/google_session/Default/shared_proto_db/000016.log 
-2026/05/02-09:34:25.246 40330 Level-0 table #20: started
-2026/05/02-09:34:25.249 40330 Level-0 table #20: 125547 bytes OK
-2026/05/02-09:34:25.250 40330 Delete type=0 #16
-2026/05/02-09:34:25.250 40330 Compacting 4@0 + 1@1 files
-2026/05/02-09:34:25.257 40330 Generated table #21@0: 378 keys, 71441 bytes
-2026/05/02-09:34:25.257 40330 Compacted 4@0 + 1@1 files => 71441 bytes
-2026/05/02-09:34:25.257 40330 compacted to: files[ 0 1 1 0 0 0 0 ]
-2026/05/02-09:34:25.258 40330 Delete type=2 #17
-2026/05/02-09:34:25.258 40330 Delete type=2 #8
-2026/05/02-09:34:25.258 40330 Delete type=2 #20
-2026/05/02-09:34:25.258 40330 Delete type=2 #11
-2026/05/02-09:34:25.258 40330 Delete type=2 #14
+2026/05/02-10:01:26.656 41d81 Reusing MANIFEST /opt/vooindo/google_session/Default/shared_proto_db/MANIFEST-000001
+2026/05/02-10:01:26.657 41d81 Recovering log #19
+2026/05/02-10:01:26.659 41d81 Reusing old log /opt/vooindo/google_session/Default/shared_proto_db/000019.log 
