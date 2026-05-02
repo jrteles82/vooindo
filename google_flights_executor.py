@@ -985,6 +985,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     "--disable-extensions",
                     "--disable-component-extensions-with-background-pages",
                     "--disable-software-rasterizer",
+                    "--single-process",
                     "--disable-crashpad",
                     "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
                 ],

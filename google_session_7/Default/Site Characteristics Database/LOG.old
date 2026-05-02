@@ -1,3 +1,6 @@
-2026/05/02-10:42:08.984 43314 Reusing MANIFEST /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001
-2026/05/02-10:42:08.984 43314 Recovering log #45
-2026/05/02-10:42:08.984 43314 Reusing old log /opt/vooindo/google_session/Default/Site Characteristics Database/000045.log 
+2026/05/02-10:53:27.453 45ff1 Log #48: 0 ops saved to Table #49 OK
+2026/05/02-10:53:27.453 45ff1 Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/000048.log: OK
+2026/05/02-10:53:27.453 45ff1 Table #46: 2 entries OK
+2026/05/02-10:53:27.453 45ff1 Table #42: 3 entries OK
+2026/05/02-10:53:27.453 45ff1 Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001: OK
+2026/05/02-10:53:27.457 45ff1 **** Repaired leveldb /opt/vooindo/google_session/Default/Site Characteristics Database; recovered 2 files; 477 bytes. Some data may have been lost. ****
