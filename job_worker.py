@@ -207,7 +207,7 @@ def recover_stale_job_groups(conn):
         FROM scan_jobs j
         WHERE j.group_key IS NOT NULL AND j.group_key != ''
           AND j.status IN ('running', 'done')
-          AND j.started_at < NOW() - INTERVAL 6 MINUTE
+          AND j.started_at < NOW() - INTERVAL 3 MINUTE
           AND j.group_key NOT LIKE ?
         GROUP BY j.group_key
         HAVING done > 0 AND done < total
@@ -220,7 +220,7 @@ def recover_stale_job_groups(conn):
             UPDATE scan_jobs SET status = 'error', error_message = 'stale_group_recovered',
                 finished_at = NOW()
             WHERE group_key = %s AND status = 'running'
-              AND started_at < NOW() - INTERVAL 6 MINUTE
+              AND started_at < NOW() - INTERVAL 3 MINUTE
         '''), (gk,))
         if affected:
             conn.commit()
@@ -625,12 +625,12 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
                 except ValueError:
                     _started = _now
             _stale_seconds = (_now - _started).total_seconds() if _started else 0
-            if _stale_seconds > 300:
+            if _stale_seconds > 180:
                 logger.warning('[job-worker] group_key=%s | %s jobs stale (>%ds) — consolidando mesmo assim', group_key, _pend_count, _stale_seconds)
                 # Marca jobs stale como error pra não ficarem presos
                 conn.execute(sql('''
                     UPDATE scan_jobs SET status = 'error', error_message = 'stale_timeout', finished_at = NOW()
-                    WHERE group_key = %s AND status IN ('pending', 'running') AND started_at < NOW() - INTERVAL 5 MINUTE
+                    WHERE group_key = %s AND status IN ('pending', 'running') AND started_at < NOW() - INTERVAL 3 MINUTE
                 '''), (group_key,))
                 conn.commit()
             else:
