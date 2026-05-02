@@ -151,7 +151,7 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int = 20, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+def recover_stale_jobs(conn, running_timeout_minutes: int = 6, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
     stale_running = conn.execute(
         sql(
             f"""
@@ -195,6 +195,38 @@ def recover_stale_jobs(conn, running_timeout_minutes: int = 20, pending_timeout_
     if recovered_running_ids or expired_pending_ids:
         conn.commit()
     return recovered_running_ids, expired_pending_ids
+
+
+def recover_stale_job_groups(conn):
+    """Recupera grupos de jobs onde o último job está stale (running >5min
+    mas sem Chrome ativo). Marca como error e retorna group_keys afetados
+    para que a consolidação seja forçada."""
+    stale = conn.execute(sql('''
+        SELECT j.group_key, COUNT(*) AS total,
+               SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS done
+        FROM scan_jobs j
+        WHERE j.group_key IS NOT NULL AND j.group_key != ''
+          AND j.status IN ('running', 'done')
+          AND j.started_at < NOW() - INTERVAL 6 MINUTE
+          AND j.group_key NOT LIKE 'test%'
+        GROUP BY j.group_key
+        HAVING done > 0 AND done < total
+    ''')).fetchall()
+    recovered = []
+    for r in stale:
+        gk = r['group_key']
+        # Marca os running jobs do grupo como stale
+        affected = conn.execute(sql('''
+            UPDATE scan_jobs SET status = 'error', error_message = 'stale_group_recovered',
+                finished_at = NOW()
+            WHERE group_key = %s AND status = 'running'
+              AND started_at < NOW() - INTERVAL 6 MINUTE
+        '''), (gk,))
+        if affected:
+            conn.commit()
+            recovered.append(gk)
+            logger.info('[cleanup] grupo %s: %s jobs stale recuperados', gk, affected)
+    return recovered
 
 
 def _make_cap_conn():
@@ -1103,6 +1135,9 @@ def main():
                 logger.warning('[JOB_RECOVERY] startup/loop recovery | scan_jobs travados recuperados: %s', recovered_running_ids)
             if expired_pending_ids:
                 logger.warning('[JOB_RECOVERY] startup/loop recovery | scan_jobs pendentes expirados: %s', expired_pending_ids)
+            recovered_groups = recover_stale_job_groups(conn)
+            if recovered_groups:
+                logger.warning('[JOB_RECOVERY] grupos com jobs stale: %s', recovered_groups)
 
             # Sync de perfil desabilitado — workers usam sessão base diretamente (run_all.py)
             pass
