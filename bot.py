@@ -511,18 +511,19 @@ def choose_plan_text(conn, chat_id: str) -> str:
     plans = plan_catalog(settings)
     if not plans:
         return '⚠️ Nenhum plano está configurado no momento.'
-    lines = ['💰 *Escolha um plano para continuar*', '']
-    medals = ['🥉', '🥈', '🥇']
-    for idx, (name, amount, days) in enumerate(plans):
-        medal = medals[idx] if idx < len(medals) else '💠'
-        lines.append(f"{medal} {name}: R$ {format_money_br(amount)} ({days} dias)")
-    lines.extend([
-        '',
+    lines = [
         '🌟 *Apoie o Vooindo*',
         'Este bot é mantido de forma independente.',
         'Ao apoiar, você libera mais consultas e funcionalidades!',
         '💳 Pix disponível.',
-    ])
+        '',
+        '💰 *Escolha um plano para continuar*',
+        '',
+    ]
+    medals = ['🥉', '🥈', '🥇']
+    for idx, (name, amount, days) in enumerate(plans):
+        medal = medals[idx] if idx < len(medals) else '💠'
+        lines.append(f"{medal} {name}: R$ {format_money_br(amount)} ({days} dias)")
     return '\n'.join(lines)
 
 
