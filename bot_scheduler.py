@@ -869,41 +869,72 @@ def main():
                 except Exception:
                     pass
 
-            # --- DELEGAR PARA JOB_WORKERS ---
-            # Em vez de rodar run_for_user nas threads (que competem pelo mesmo profile),
-            # cria jobs no scan_jobs para cada usuario elegivel.
-            # Os job_workers (com profiles Chrome separados) pegam e processam em paralelo.
+            # --- DELEGAR PARA JOB_WORKERS (1 job POR ROTA) ---
+            # Cria jobs individuais para cada rota ativa de cada usuário.
+            # Workers processam rotas individuais e um consolidador junta os
+            # resultados do mesmo usuário quando todas as rotas terminarem.
             created_job_ids = []
             for user in eligible_users:
                 try:
                     label = user_label(user)
                     chat_id = str(user['chat_id'])
                     user_id = int(user['user_id'])
-                    # Calcular custo (quantidade de rotas) para balanceamento inteligente
-                    routes_row = conn.execute(
-                        sql("SELECT COUNT(*) as c FROM user_routes WHERE user_id = %s AND active = 1"),
+                    
+                    # Buscar rotas ativas do usuário
+                    route_rows = conn.execute(
+                        sql("SELECT id, origin, destination, outbound_date, inbound_date FROM user_routes WHERE user_id = %s AND active = 1"),
                         (user_id,)
-                    ).fetchone()
-                    cost = int((routes_row['c'] if isinstance(routes_row, dict) else routes_row[0]) or 1)
-
-                    insert_result = conn.execute(
-                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score) VALUES (%s, %s, 'scheduled', 'pending', %s, %s)"),
-                        (user_id, chat_id, json.dumps({'round_started_at': cycle_started_iso}, ensure_ascii=False), cost),
-                    )
-                    conn.commit()
-                    job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
-                    if not job_id:
-                        last_id_row = conn.execute(sql("SELECT LAST_INSERT_ID() AS id")).fetchone()
-                        job_id = int((last_id_row['id'] if isinstance(last_id_row, dict) else last_id_row[0]) or 0)
-                    if job_id:
-                        created_job_ids.append(job_id)
-                    logger.info("[bot-scheduler] %s | job criado para worker", label)
+                    ).fetchall()
+                    
+                    if not route_rows:
+                        logger.info("[bot-scheduler] %s | sem rotas ativas, pulando", label)
+                        cycle_stats['skipped_users'] += 1
+                        continue
+                    
+                    group_key = f"round_{user_id}_{cycle_started_iso}"
+                    num_routes = len(route_rows)
+                    
+                    for route in route_rows:
+                        route_id = route['id'] if isinstance(route, dict) else route[0]
+                        origin = route['origin'] if isinstance(route, dict) else route[1]
+                        destination = route['destination'] if isinstance(route, dict) else route[2]
+                        outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
+                        inbound_date = route['inbound_date'] if isinstance(route, dict) else route[4] or ''
+                        
+                        payload = json.dumps({
+                            'round_started_at': cycle_started_iso,
+                            'route': {
+                                'id': route_id,
+                                'origin': origin,
+                                'destination': destination,
+                                'outbound_date': outbound_date,
+                                'inbound_date': inbound_date,
+                            },
+                            'group_info': {
+                                'total_routes': num_routes,
+                                'label': label,
+                            }
+                        }, ensure_ascii=False)
+                        
+                        insert_result = conn.execute(
+                            sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
+                            (user_id, chat_id, payload, 1, group_key),
+                        )
+                        conn.commit()
+                        job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
+                        if not job_id:
+                            last_id_row = conn.execute(sql("SELECT LAST_INSERT_ID() AS id")).fetchone()
+                            job_id = int((last_id_row['id'] if isinstance(last_id_row, dict) else last_id_row[0]) or 0)
+                        if job_id:
+                            created_job_ids.append(job_id)
+                        
+                    logger.info("[bot-scheduler] %s | %s jobs de rota criados (group=%s)", label, num_routes, group_key)
                     cycle_stats['sent_users'] += 1
                 except Exception as exc:
                     logger.error("[bot-scheduler] erro ao criar job para user %s: %s", user.get('user_id'), exc)
                     cycle_stats['errors'] += 1
 
-            logger.info('[bot-scheduler] %s jobs delegados para job_workers', len(eligible_users))
+            logger.info('[bot-scheduler] %s jobs de rota delegados para job_workers', len(created_job_ids))
         except DatabaseRateLimitError as exc:
             audit.error("scheduler_db_limit", error_msg=str(exc), status="blocked")
             logger.warning('[SCHED_DB_LIMIT] [bot-scheduler] limite de conexão MySQL por hora atingido durante ciclo: %s', exc)
