@@ -24,3 +24,8 @@ google_session*
 __pycache__/
 *.pyc
 logs/
+google_session_*/
+google_session_firefox*/
+google_session_bkp*/
+google_session_pool_*/
+login_auto.py
