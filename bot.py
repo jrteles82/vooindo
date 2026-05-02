@@ -1284,7 +1284,7 @@ def plans_adjust_markup(settings_row=None) -> InlineKeyboardMarkup:
 
 def plan_entry_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton('💰 Escolha um plano para continuar', callback_data='payment:changeplan')],
+        [InlineKeyboardButton('💰 Escolha um valor para continuar', callback_data='payment:changeplan')],
         [InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')],
     ])
 
@@ -4217,7 +4217,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             audit.access("acesso_bloqueado", chat_id=chat_id, status="blocked",
                          payload={"acao": action})
             conn.close()
-            await query.answer('Selecione um plano para continuar.', show_alert=True)
+            await query.answer('Selecione um valor para continuar.', show_alert=True)
             await query.message.reply_text(texto.replace('*', ''), reply_markup=user_plan_markup())
             return ConversationHandler.END
         conn.close()
