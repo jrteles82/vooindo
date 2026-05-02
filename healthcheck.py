@@ -182,25 +182,55 @@ def send_alert(message: str, state: dict) -> None:
         print(f'Falha ao enviar alerta: {exc}', file=sys.stderr)
 
 
+def check_google_session() -> dict:
+    """Verifica se a sessão Google ainda está válida."""
+    result = {'ok': True, 'score': 3, 'message': ''}
+    try:
+        os.environ.setdefault('USE_SYSTEM_CHROME', '1')
+        import sys as _sys
+        _sys.path.insert(0, str(BASE_DIR))
+        from playwright.sync_api import sync_playwright
+        from google_flights_executor import check_session_health
+        for f in Path(str(BASE_DIR / 'google_session')).glob('Singleton*'):
+            try: f.unlink()
+            except: pass
+        with sync_playwright() as _pw:
+            _ctx = _pw.chromium.launch_persistent_context(
+                str(BASE_DIR / 'google_session'), headless=True, channel='chrome',
+                args=['--no-sandbox'], timeout=20000
+            )
+            _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
+            _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
+            _health = check_session_health(_page)
+            _score = _health.get('score', 0)
+            _ctx.close()
+        result['score'] = _score
+        if _score < 2:
+            result['ok'] = False
+            result['message'] = f'Sessão Google expirada (score {_score}/3). Use 🔐 Renovar Google no painel admin.'
+    except Exception as e:
+        result['ok'] = True  # Se falhou ao verificar, não alarmar
+        result['message'] = f'Verificação de sessão falhou: {e}'
+    return result
+
+
 def main():
-    state = load_state()
     health = check_service()
     fixed = False
-
+    
+    # Verifica sessão Google
+    session = check_google_session()
+    if not session['ok']:
+        send_alert(session['message'], {})
+    
+    # Tenta auto-fix
     if not health['healthy']:
-        print(f"[HEALTHCHECK] {health['message']}")
-        if health['recent_errors']:
-            for err in health['recent_errors'][:5]:
-                print(f"  └ {err['msg']}")
-
-        # Tenta auto-fix
-        fixed = try_auto_fix(health, state)
-        if fixed:
-            print(f"[HEALTHCHECK] Auto-fix aplicado: restart do serviço")
-            time.sleep(3)  # Espera service subir
-            health = check_service()  # Recheck
-
-        # Se ainda não saudável, notifica admin
+        state = load_state()
+        if try_auto_fix(health, state):
+            fixed = True
+            time.sleep(3)
+            health = check_service()
+        
         if not health['healthy']:
             msg_lines = [
                 f"🔴 Vooindo: {health['message']}",
@@ -211,16 +241,16 @@ def main():
                 f"Auto-fix: {'✅ aplicado' if fixed else '❌ não aplicado (cooldown)'}",
             ]
             if health['recent_errors']:
-                msg_lines.append("\nErros recentes:")
+                msg_lines.append('\nErros recentes:')
                 for err in health['recent_errors'][:5]:
                     msg_lines.append(f"  • {err['msg'][:150]}")
             send_alert('\n'.join(msg_lines), state)
     else:
-        # Tudo ok — reseta contagem de falhas
+        state = load_state()
         if state.get('consecutive_failures', 0) > 0:
             state['consecutive_failures'] = 0
             save_state(state)
-            send_alert("✅ Vooindo recuperado — serviço estável", state)
+            send_alert('✅ Vooindo recuperado — serviço estável', state)
 
     print(f"[HEALTHCHECK] {health['message']} | fix={fixed}")
 
