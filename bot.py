@@ -510,14 +510,15 @@ def choose_plan_text(conn, chat_id: str) -> str:
     settings = get_monetization_settings(conn)
     plans = plan_catalog(settings)
     if not plans:
-        return '⚠️ Nenhum plano está configurado no momento.'
+        return '⚠️ Nenhum valor está configurado no momento.'
     lines = [
         '🌟 *Apoie o Vooindo*',
         'Este bot é mantido de forma independente.',
-        'Ao apoiar, você libera mais consultas e funcionalidades!',
+        'Se ele te ajuda a encontrar passagens, considere apoiar:',
+        '',
         '💳 Pix disponível.',
         '',
-        '💰 *Escolha um plano para continuar*',
+        '💰 *Escolha um valor para continuar*',
         '',
     ]
     medals = ['🥉', '🥈', '🥇']
@@ -1513,6 +1514,7 @@ def charging_status_text(conn, chat_id: str) -> str:
     charge_admin_only = int(settings['charge_admin_only'] or 0) == 1
     test_charge = int(access.get('test_charge', 0) or 0) == 1 if isinstance(access, dict) else False
     plans = plan_catalog(settings)
+    medals = ['🥉', '🥈', '🥇']
 
     if charge_global:
         charging_line = '🌐 Cobrança geral: *ATIVA* para todos os usuários.'
@@ -1523,17 +1525,20 @@ def charging_status_text(conn, chat_id: str) -> str:
 
     test_line = '🧪 Seu usuário está marcado para teste de cobrança.' if test_charge else '🧪 Seu usuário não está marcado para teste de cobrança.'
 
+    planos_txt = '\n'.join(
+        f'{medals[i] if i < len(medals) else "💠"} {name}: R$ {format_money_br(amount)} ({days} dias)'
+        for i, (name, amount, days) in enumerate(plans)
+    ) if plans else '_Nenhum valor configurado._'
+
     return (
         '💳 *Cobrança e consultas grátis*\n────────────────────────\n\n'
         f'{charging_line}\n'
         f'{test_line}\n\n'
         f'🎁 Consultas grátis disponíveis antes da cobrança: *{free_uses_limit}*\n'
         f'📊 Consultas grátis já usadas no seu acesso atual: *{free_uses}/{free_uses_limit}*\n\n'
-        '*Planos atuais disponíveis*\n'
-        f'🥉 {weekly[0]}: R$ {format_money_br(weekly[1])} ({weekly[2]} dias)\n'
-        f'🥈 {biweekly[0]}: R$ {format_money_br(biweekly[1])} ({biweekly[2]} dias)\n'
-        f'🥇 {monthly[0]}: R$ {format_money_br(monthly[1])} ({monthly[2]} dias)\n\n'
-        'Os valores dos planos vêm da configuração do banco e podem ser alterados pelo administrador.'
+        '*Valores atuais disponíveis*\n'
+        f'{planos_txt}\n\n'
+        'Os valores vêm da configuração do banco e podem ser alterados pelo administrador.'
     )
 
 
@@ -1599,8 +1604,8 @@ def manual_topic_text(topic: str) -> str:
         ),
         'pagamentos': (
             '💳 *Pagamentos e cobrança*\n────────────────────────\n\n'
-            'Se a cobrança estiver ativa, o bot pode pedir um plano quando os usos grátis acabarem ou quando a regra de cobrança do momento exigir.\n\n'
-            'Os valores dos planos são definidos na configuração do banco e exibidos para o usuário conforme a configuração atual.\n\n'
+            'Se a cobrança estiver ativa, o bot pode pedir um valor quando os usos grátis acabarem.\n\n'
+            'Os valores são definidos na configuração do banco e podem ser alterados pelo administrador.\n\n'
             'Você pode acompanhar seus pagamentos no menu em *💳 Meus pagamentos*.\n\n'
             'Se tiver dúvida sobre pagamento, use *💬 Fale conosco*.'
         ),
@@ -1608,7 +1613,7 @@ def manual_topic_text(topic: str) -> str:
             '🎁 *Consultas grátis*\n────────────────────────\n\n'
             'O bot pode liberar uma quantidade de consultas grátis antes da cobrança.\n\n'
             'Essa quantidade vem da configuração do banco e deve ser usada em toda a lógica e nos textos do sistema.\n\n'
-            'Quando os usos grátis acabarem, o bot pode apresentar os planos disponíveis conforme a configuração atual.'
+            'Quando os usos grátis acabarem, o bot pode apresentar os valores disponíveis conforme a configuração atual.'
         ),
     }
     return mapping.get(topic, mapping['primeiros_passos'])
