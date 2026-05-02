@@ -1,3 +1,3 @@
-2026/04/30-19:56:27.044 27c99 Reusing MANIFEST /opt/vooindo/google_session_pool_0/Default/shared_proto_db/metadata/MANIFEST-000001
-2026/04/30-19:56:27.044 27c99 Recovering log #3
-2026/04/30-19:56:27.044 27c99 Reusing old log /opt/vooindo/google_session_pool_0/Default/shared_proto_db/metadata/000003.log 
+2026/05/02-08:17:22.569 3a53b Reusing MANIFEST /opt/vooindo/google_session/Default/shared_proto_db/metadata/MANIFEST-000001
+2026/05/02-08:17:22.570 3a53b Recovering log #3
+2026/05/02-08:17:22.570 3a53b Reusing old log /opt/vooindo/google_session/Default/shared_proto_db/metadata/000003.log 

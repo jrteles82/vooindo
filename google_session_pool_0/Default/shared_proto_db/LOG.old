@@ -1,2 +1,3 @@
-2026/04/30-19:55:50.543 27a3f Creating DB /opt/vooindo/google_session_pool_0/Default/shared_proto_db since it was missing.
-2026/04/30-19:55:50.565 27a3f Reusing MANIFEST /opt/vooindo/google_session_pool_0/Default/shared_proto_db/MANIFEST-000001
+2026/05/02-08:02:38.662 3a34d Reusing MANIFEST /opt/vooindo/google_session/Default/shared_proto_db/MANIFEST-000001
+2026/05/02-08:02:38.662 3a34d Recovering log #10
+2026/05/02-08:02:38.662 3a34d Reusing old log /opt/vooindo/google_session/Default/shared_proto_db/000010.log 

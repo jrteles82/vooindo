@@ -1,2 +1,3 @@
-2026/04/30-19:55:55.503 27abe Creating DB /opt/vooindo/google_session_pool_1/Default/GCM Store since it was missing.
-2026/04/30-19:55:55.505 27abe Reusing MANIFEST /opt/vooindo/google_session_pool_1/Default/GCM Store/MANIFEST-000001
+2026/05/02-08:17:27.834 3a53c Reusing MANIFEST /opt/vooindo/google_session/Default/GCM Store/MANIFEST-000001
+2026/05/02-08:17:27.834 3a53c Recovering log #3
+2026/05/02-08:17:27.834 3a53c Reusing old log /opt/vooindo/google_session/Default/GCM Store/000003.log 
