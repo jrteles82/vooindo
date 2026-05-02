@@ -763,7 +763,16 @@ def should_block_paid_action(conn, chat_id: str) -> bool:
     access = ensure_user_access(conn, chat_id)
     if int(access.get('skip_charge', 0) or 0):
         return False
-    return bool(should_charge_user(conn, chat_id, access) and not is_active_access(access))
+    if not should_charge_user(conn, chat_id, access):
+        return False
+    if is_active_access(access):
+        return False
+    # Se tem acessos grátis restantes, libera
+    free_uses = int(access.get('free_uses', 0) or 0)
+    free_uses_limit = get_free_uses_limit(conn)
+    if free_uses < free_uses_limit:
+        return False
+    return True
 
 
 def start_markup() -> InlineKeyboardMarkup:
