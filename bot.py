@@ -1492,6 +1492,7 @@ def manual_topics_markup(show_monetization: bool = True) -> InlineKeyboardMarkup
         buttons.append([InlineKeyboardButton('💳 Pagamentos e cobrança', callback_data='manual:pagamentos')])
         buttons.append([InlineKeyboardButton('🎁 Consultas grátis', callback_data='manual:consultas_gratis')])
         buttons.append([InlineKeyboardButton('📊 Meu status de cobrança', callback_data='manual:consultas_gratis_status')])
+        buttons.append([InlineKeyboardButton('🌟 Apoie o projeto', callback_data='manual:apoie')])
     buttons.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
     return InlineKeyboardMarkup(buttons)
 
@@ -3160,13 +3161,13 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (user_id,),
     ).fetchall()
     setting = get_user_settings(conn, user_id)
-    conn.close()
 
     limite = setting['max_price'] if setting else None
     limite_txt = 'Sem limite' if limite is None else format_money_br(float(limite))
     # Limite de rotas
     max_routes = get_max_routes_default(conn)
     admin = is_admin_chat(conn, chat_id)
+    conn.close()
     if not rows:
         texto_rotas = (
             '\n📋 *Minhas rotas*\n────────────────────────\n\n'
@@ -4127,6 +4128,24 @@ async def manual_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         show_monetization = bool(int(settings['charge_global']) == 1)
         if topic == 'consultas_gratis_status':
             text = charging_status_text(conn, str(query.message.chat.id))
+        elif topic == 'apoie':
+            plans = plan_catalog(settings)
+            if not plans:
+                text = '🌟 *Apoie o Vooindo*\n\nNenhum plano disponível no momento.'
+            else:
+                medals = ['🥉', '🥈', '🥇']
+                planos_txt = '\n'.join(
+                    f'{medals[i] if i < len(medals) else "💠"} {name}: R$ {format_money_br(amount)} ({days} dias)'
+                    for i, (name, amount, days) in enumerate(plans)
+                )
+                text = (
+                    '🌟 *Apoie o Vooindo*\n────────────────────────\n\n'
+                    'Este bot é mantido de forma independente.\n'
+                    'Se ele te ajuda a encontrar passagens, considere apoiar:\n\n'
+                    f'{planos_txt}\n\n'
+                    '💳 *Pix ou cartão disponíveis.*\n'
+                    'Ao apoiar, você também libera mais consultas e funcionalidades!'
+                )
         else:
             text = manual_topic_text(topic)
     finally:
