@@ -550,57 +550,39 @@ def mark_sent(conn, user_id: int):
 
 
 def _save_route_result(conn, job_id: int, user_id: int, chat_id: str, route_info: dict, parsed: list[dict], group_key: str) -> None:
-    """Salva resultado de uma rota individual no banco."""
-    if not parsed:
-        return
-    for row in parsed:
+    """Salva resultado de uma rota individual no banco como JSON."""
+    import json as _json
+    _data = _json.dumps(parsed, ensure_ascii=False, default=str)
+    # Trunca se exceder 500KB (MEDIUMTEXT aguenta 16MB)
+    if len(_data) > 500_000:
+        _data = _data[:500_000] + '...TRUNCATED'
+    try:
         conn.execute(sql('''
-            INSERT INTO results (created_at, site, origin, destination, outbound_date, inbound_date,
-                price, currency, url, notes, best_vendor, best_vendor_price,
-                booking_options_json, price_insight, best_airline_vendor,
-                best_airline_price, best_airline_url, best_airline_visible_price)
-            VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        '''), (
-            'google_flights',
-            row.get('origin') or route_info.get('origin', ''),
-            row.get('destination') or route_info.get('destination', ''),
-            row.get('outbound_date') or route_info.get('outbound_date', ''),
-            row.get('inbound_date') or route_info.get('inbound_date', ''),
-            row.get('price'),
-            row.get('currency', 'BRL'),
-            row.get('url', ''),
-            row.get('notes', ''),
-            row.get('best_vendor', ''),
-            row.get('best_vendor_price'),
-            row.get('booking_options_json', '[]'),
-            row.get('price_insight', ''),
-            row.get('best_airline_vendor', ''),
-            row.get('best_airline_price'),
-            row.get('best_airline_url', ''),
-            row.get('best_airline_visible_price'),
-        ))
-    conn.execute(sql('''
-        INSERT INTO scan_job_route_results (job_id, user_id, chat_id, group_key, origin, destination, num_results)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE num_results = VALUES(num_results), finished_at = NOW()
-    '''), (job_id, user_id, chat_id, group_key,
-          route_info.get('origin', ''), route_info.get('destination', ''), len(parsed)))
-    conn.commit()
+            INSERT INTO scan_job_route_results (job_id, user_id, chat_id, group_key, origin, destination, num_results, result_data)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE num_results = VALUES(num_results), result_data = VALUES(result_data), finished_at = NOW()
+        '''), (job_id, user_id, chat_id, group_key,
+              route_info.get('origin', ''), route_info.get('destination', ''), len(parsed), _data))
+        conn.commit()
+    except Exception as _se:
+        logger.warning('[job-worker] job_id=%s | erro ao salvar resultado de rota: %s', job_id, _se)
 
 
 def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, group_key: str, settings, pool: str, charge_now: bool, _t) -> None:
     """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia."""
+    import json as _json
+    
+    # Verifica se ainda há jobs pendentes/rodando no grupo
     pending = conn.execute(sql('''
         SELECT COUNT(*) AS c FROM scan_jobs
         WHERE group_key = %s AND status IN ('pending', 'running')
     '''), (group_key,)).fetchone()
     if pending and (pending['c'] if isinstance(pending, dict) else pending[0]) > 0:
-        # Ainda há rotas pendentes — não consolidar ainda
-        return
+        return  # Ainda há rotas pendentes
     
-    # Buscar todas as rotas do grupo que terminaram
+    # Buscar dados JSON salvos das rotas do grupo
     route_results = conn.execute(sql('''
-        SELECT origin, destination, num_results FROM scan_job_route_results
+        SELECT origin, destination, num_results, result_data FROM scan_job_route_results
         WHERE group_key = %s ORDER BY id
     '''), (group_key,)).fetchall()
     
@@ -608,65 +590,49 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
         return
     
-    total_results = sum(int(r['num_results'] if isinstance(r, dict) else r[2]) for r in route_results)
+    total_results = sum(
+        int(r['num_results'] if isinstance(r, dict) else r[2])
+        for r in route_results
+    )
     logger.info('[job-worker] group_key=%s | consolidando %s rotas (%s resultados)', group_key, len(route_results), total_results)
     
-    # Buscar resultados salvos recentes para esse usuário
-    recent = conn.execute(sql('''
-        SELECT * FROM results
-        WHERE id > (SELECT COALESCE(MAX(id), 0) - 500 FROM results)
-        ORDER BY id DESC LIMIT 100
-    ''')).fetchall()
+    # Reconstruir lista de dicts a partir dos JSONs salvos
+    all_rows = []
+    for r in route_results:
+        rd = dict(r) if isinstance(r, dict) else {}
+        raw = rd.get('result_data')
+        if not raw:
+            continue
+        try:
+            parsed_rows = _json.loads(raw)
+            all_rows.extend(parsed_rows)
+        except Exception as _je:
+            logger.warning('[job-worker] group_key=%s | erro ao parsear resultado de %s->%s: %s', group_key, rd.get('origin','?'), rd.get('destination','?'), _je)
     
-    # Reconstruir lista de dicts a partir dos resultados
-    filtered = []
-    for r in recent:
-        rd = dict(r) if isinstance(r, dict) else {k: r[i] for i, k in enumerate(['id','created_at','site','origin','destination','outbound_date','inbound_date','price','currency','url','notes','best_vendor','best_vendor_price','booking_options_json','price_insight','best_airline_vendor','best_airline_price','best_airline_url','best_airline_visible_price'])}
-        filtered.append({
-            'site': rd.get('site', 'google_flights'),
-            'origin': rd.get('origin', ''),
-            'destination': rd.get('destination', ''),
-            'outbound_date': rd.get('outbound_date', ''),
-            'inbound_date': rd.get('inbound_date', ''),
-            'price': rd.get('price'),
-            'currency': rd.get('currency', 'BRL'),
-            'url': rd.get('url', ''),
-            'booking_url': '',
-            'notes': rd.get('notes', ''),
-            'best_vendor': rd.get('best_vendor', ''),
-            'best_vendor_price': rd.get('best_vendor_price'),
-            'booking_options_json': rd.get('booking_options_json', '[]'),
-            'price_insight': rd.get('price_insight', ''),
-            'best_airline_vendor': rd.get('best_airline_vendor', ''),
-            'best_airline_price': rd.get('best_airline_price'),
-            'best_airline_url': rd.get('best_airline_url', ''),
-            'best_airline_visible_price': rd.get('best_airline_visible_price'),
-        })
-    
-    if not filtered:
+    if not all_rows:
         loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
         return
     
-    # Aplicar filtros
+    # Aplicar filtros (mesma lógica do fluxo original)
     try:
         airline_filters_json = str(settings.get('airline_filters_json') or '')
     except (KeyError, IndexError):
         airline_filters_json = ''
     show_result_type_filters = should_show_result_type_filters(conn)
     
-    expanded = expand_rows_by_result_type(filtered, airline_filters_json, show_result_type_filters=show_result_type_filters)
+    expanded = expand_rows_by_result_type(all_rows, airline_filters_json, show_result_type_filters=show_result_type_filters)
     max_price_val = normalize_max_price(settings.get('max_price'))
     filtered_price = filter_rows_by_max_price(expanded, max_price_val)
     filtered_norm = normalize_rows_for_airline_priority(filtered_price, airline_filters_json)
     filtered_vendor = filter_rows_with_vendor(filtered_norm)
     filtered_airlines = filter_rows_by_airlines(filtered_vendor, airline_filters_json, show_result_type_filters=show_result_type_filters)
-    filtered_merged = _merge_rows_for_combined_result_view(filtered_airlines) if False else filtered_airlines  # should_split=False
+    filtered_merged = _merge_rows_for_combined_result_view(filtered_airlines) if False else filtered_airlines
     
     if not filtered_merged:
         loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
         return
     
-    # Gerar imagem
+    # Gerar imagem e enviar
     image_path = build_scan_results_image(filtered_merged, trigger='agendada')
     if not image_path:
         fallback_msg = build_booking_links_message(filtered_merged)
