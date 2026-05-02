@@ -1,6 +1,3 @@
-2026/05/02-10:56:44.669 4743e Log #60: 0 ops saved to Table #61 OK
-2026/05/02-10:56:44.669 4743e Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/000060.log: OK
-2026/05/02-10:56:44.669 4743e Table #46: 2 entries OK
-2026/05/02-10:56:44.669 4743e Table #42: 3 entries OK
-2026/05/02-10:56:44.669 4743e Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001: OK
-2026/05/02-10:56:44.670 4743e **** Repaired leveldb /opt/vooindo/google_session/Default/Site Characteristics Database; recovered 2 files; 477 bytes. Some data may have been lost. ****
+2026/05/02-19:11:24.991 633eb Table #4: 1 entries OK
+2026/05/02-19:11:24.991 633eb Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001: OK
+2026/05/02-19:11:24.993 633eb **** Repaired leveldb /opt/vooindo/google_session/Default/Site Characteristics Database; recovered 1 files; 130 bytes. Some data may have been lost. ****

@@ -1,2 +1,3 @@
-2026/04/30-12:03:40.668 1991b Creating DB /opt/vooindo/google_session/Default/Extension Rules since it was missing.
-2026/04/30-12:03:40.685 1991b Reusing MANIFEST /opt/vooindo/google_session/Default/Extension Rules/MANIFEST-000001
+2026/05/02-11:11:14.012 49af0 Reusing MANIFEST /opt/vooindo/google_session/Default/Extension Rules/MANIFEST-000001
+2026/05/02-11:11:14.012 49af0 Recovering log #3
+2026/05/02-11:11:14.012 49af0 Reusing old log /opt/vooindo/google_session/Default/Extension Rules/000003.log 
