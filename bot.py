@@ -514,7 +514,7 @@ def choose_plan_text(conn, chat_id: str) -> str:
     lines = [
         '🌟 *Apoie o Vooindo*',
         'Este bot é mantido de forma independente.',
-        'Se ele te ajuda a encontrar passagens, considere apoiar:',
+        'Se ele pode te ajudar a encontrar PASSAGENS MAIS BARATAS, considere apoiar:',
         '',
         '💳 Pix disponível.',
         '',
