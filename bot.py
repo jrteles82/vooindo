@@ -1137,7 +1137,10 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool,
     alerts_enabled = bool(int((bot_settings['alerts_enabled'] if bot_settings else 1) or 0))
     is_confirmed = bool(int(u['confirmed'] or 0))
     can_trigger_scan = is_confirmed and rotas > 0 and alerts_enabled and not blocked
-    test_badge = '🧪 Sim' if is_test else 'Não'
+    if is_test:
+        test_badge = '🧪 Sim — pula bloqueio e cobrança'
+    else:
+        test_badge = 'Não'
     text = (
         f"👤 *Gerenciar Usuário*\n\n"
         f"*Nome:* {u['first_name'] or '—'}\n"
@@ -1156,7 +1159,7 @@ def _user_manage_text(conn, target_chat_id: str) -> tuple[str, bool, bool, bool,
         f"*Notificações:* {'Ativas ✅' if alerts_enabled else 'Desativadas ❌'}\n"
         f"*Pode disparar consulta:* {'Sim ✅' if can_trigger_scan else 'Não ❌'}"
     )
-    return text, blocked, skip_c, can_trigger_scan, is_test
+    return text, blocked, skip_c, can_trigger_scan, is_test, status
 
 
 def admin_notif_markup(notif_settings: dict) -> InlineKeyboardMarkup:
