@@ -1,3 +1,2 @@
-2026/05/02-02:10:27.660 31440 Reusing MANIFEST /opt/vooindo/google_session/Default/Local Storage/leveldb/MANIFEST-000001
-2026/05/02-02:10:27.667 31440 Recovering log #4
-2026/05/02-02:10:27.667 31440 Reusing old log /opt/vooindo/google_session/Default/Local Storage/leveldb/000004.log 
+2026/05/02-03:06:00.566 32b89 Creating DB /opt/vooindo/google_session/Default/Local Storage/leveldb since it was missing.
+2026/05/02-03:06:00.586 32b89 Reusing MANIFEST /opt/vooindo/google_session/Default/Local Storage/leveldb/MANIFEST-000001

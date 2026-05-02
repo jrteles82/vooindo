@@ -1,3 +1,3 @@
-2026/05/02-02:10:27.640 31427 Reusing MANIFEST /opt/vooindo/google_session/Default/Sync Data/LevelDB/MANIFEST-000001
-2026/05/02-02:10:27.640 31427 Recovering log #3
-2026/05/02-02:10:27.640 31427 Reusing old log /opt/vooindo/google_session/Default/Sync Data/LevelDB/000003.log 
+2026/05/02-03:06:00.552 32b6d Reusing MANIFEST /opt/vooindo/google_session/Default/Sync Data/LevelDB/MANIFEST-000001
+2026/05/02-03:06:00.552 32b6d Recovering log #3
+2026/05/02-03:06:00.552 32b6d Reusing old log /opt/vooindo/google_session/Default/Sync Data/LevelDB/000003.log 

@@ -650,10 +650,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     except (TypeError, ValueError):
         requested_workers = 2
     
-    # Cada job_worker processa até 3 rotas em paralelo (via ThreadPoolExecutor).
-    # O ChromeSemaphore (global, max=_CHROME_MAX_CONCURRENT=5) controla o total
-    # de Chromes simultâneos no sistema inteiro, evitando sobrecarga.
-    worker_count = min(3, len(routes))
+    # Serial por worker. O paralelismo é entre workers (5 workers diferentes),
+    # não intra-worker. Paralelismo intra-worker causa over-subscription dos
+    # slots de Chrome (5 slots para 9+ threads competindo).
+    worker_count = 1
     
     source_flags = sources or {"google_flights": True}
     
