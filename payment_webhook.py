@@ -335,7 +335,16 @@ def webhook():
         approved, info, chat_id = apply_approved_payment(conn, str(payment_id))
         if approved and bot:
             from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+            from db import sql as _sql
+            conn2 = get_db()
+            row = conn2.execute(_sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+            interval_min = int(row['scan_interval_minutes'] or 60) if row else 60
+            conn2.close()
             bot.send_message(chat_id=chat_id, text=f'🎉 Pagamento aprovado automaticamente! Acesso liberado até {info}.')
+            bot.send_message(
+                chat_id=chat_id,
+                text=f'✅ Você receberá atualizações automáticas a cada {interval_min} minutos, além de poder fazer consulta a qualquer momento.',
+            )
             bot.send_message(
                 chat_id=chat_id,
                 text='🏠 Seu acesso foi liberado. Escolha uma opção abaixo:',

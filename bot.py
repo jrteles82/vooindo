@@ -2422,6 +2422,9 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         approved, info = apply_approved_payment(conn, payment_id)
         if approved:
             await query.message.reply_text(f'🎉 Pagamento aprovado! Acesso liberado até {info}.')
+            row_int = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+            interval_min = int(row_int['scan_interval_minutes'] or 60) if row_int else 60
+            await query.message.reply_text(f'✅ Você receberá atualizações automáticas a cada {interval_min} minutos, além de poder fazer consulta a qualquer momento.')
         else:
             await query.message.reply_text(f'⏳ Pagamento ainda não aprovado. Status atual: {info}')
 
@@ -4022,6 +4025,9 @@ async def payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             approved, info = apply_approved_payment(conn, payment_id)
             if approved:
                 await query.message.reply_text(f'🎉 Pagamento aprovado! Acesso liberado até {info}.')
+                row_int = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+                interval_min = int(row_int['scan_interval_minutes'] or 60) if row_int else 60
+                await query.message.reply_text(f'✅ Você receberá atualizações automáticas a cada {interval_min} minutos, além de poder fazer consulta a qualquer momento.')
             else:
                 await query.message.reply_text(f'⏳ Pagamento ainda não aprovado. Status atual: {info}')
         elif action == 'cancel' and payment_id:
