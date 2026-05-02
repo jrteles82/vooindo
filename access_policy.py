@@ -178,7 +178,7 @@ AIRPORT_SEARCH_ALIASES = {
 }
 
 DEFAULT_FREE_USES_LIMIT = 20
-DEFAULT_MAX_ROUTES_DEFAULT = 6
+DEFAULT_MAX_ROUTES_DEFAULT = 4
 DEFAULT_PIX_PENDING_EXPIRATION_HOURS = 24
 
 _policy_schema_ensured = False
@@ -426,6 +426,14 @@ def get_free_uses_limit(conn) -> int:
 def get_max_routes_default(conn) -> int:
     settings = get_monetization_settings(conn)
     return int(settings["max_routes_default"] or DEFAULT_MAX_ROUTES_DEFAULT)
+
+
+def set_max_routes_default(conn, value: int) -> None:
+    conn.execute(
+        sql("UPDATE monetization_settings SET max_routes_default = %s WHERE id = 1"),
+        (max(1, value),),
+    )
+    conn.commit()
 
 
 def get_pix_pending_expiration_hours(conn) -> int:

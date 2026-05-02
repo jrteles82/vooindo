@@ -1222,6 +1222,8 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
         # Config
         [InlineKeyboardButton('🎁 Acessos Grátis', callback_data='painel:free_access'),
          InlineKeyboardButton('⏱ Intervalo', callback_data='painel:scan_interval')],
+        [InlineKeyboardButton('🗺 Rotas/Usuário', callback_data='painel:max_routes'),
+         InlineKeyboardButton('🔙 Voltar', callback_data='painel:back')],
         # Ações
         [InlineKeyboardButton('💳 Pix', callback_data='painel:pix'),
          InlineKeyboardButton('🔔 Notificações', callback_data='painel:notificacoes')],
@@ -1541,7 +1543,8 @@ def manual_topic_text(topic: str) -> str:
             '2. informar o *destino*\n'
             '3. informar a *data de ida*\n'
             '4. depois informar a *data de volta* se quiser\n\n'
-            'Se não quiser passagem de volta, basta deixar a rota como somente ida quando o fluxo permitir ou cadastrar apenas a ida no formato atual disponível.'
+            'Cada usuário tem um limite de rotas ativas definido pelo administrador. '
+            'Se atingir o limite, remova uma rota existente antes de cadastrar outra.'
         ),
         'buscar_aeroportos': (
             '🔎 *Como buscar aeroportos*\n────────────────────────\n\n'
@@ -2876,6 +2879,64 @@ LIMIT 15
         await query.edit_message_text(texto, parse_mode='Markdown',
                                       reply_markup=InlineKeyboardMarkup(keyboard))
 
+    elif action == 'max_routes':
+        await query.answer()
+        from access_policy import set_max_routes_default
+        current = get_max_routes_default(conn)
+        presets = [1, 2, 3, 4, 5, 6, 8, 10, 20, 50]
+        texto = (
+            '\U0001f5fa *Limite de rotas por usu\u00e1rio*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nLimite atual: *{current}* rotas ativas por usu\u00e1rio.'
+            '\n\nO administrador n\u00e3o sofre esse limite.'
+            '\n\nEscolha um novo limite:'
+        )
+        keyboard = []
+        row_btns = []
+        for opt in presets:
+            chk = '\u2705 ' if opt == current else ''
+            row_btns.append(InlineKeyboardButton(f'{chk}{opt}', callback_data=f'painel:max_routes_set:{opt}'))
+            if len(row_btns) == 3:
+                keyboard.append(row_btns)
+                row_btns = []
+        if row_btns:
+            keyboard.append(row_btns)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif action.startswith('max_routes_set:'):
+        await query.answer()
+        try:
+            novo = int(action.split(':', 2)[1])
+        except (ValueError, IndexError):
+            novo = 4
+        if novo < 1:
+            novo = 1
+        from access_policy import set_max_routes_default
+        set_max_routes_default(conn, novo)
+        audit.admin('max_routes_alterado', chat_id=chat_id, payload={'novo_valor': novo})
+        current = get_max_routes_default(conn)
+        presets = [1, 2, 3, 4, 5, 6, 8, 10, 20, 50]
+        texto = (
+            '\u2705 *Limite de rotas por usu\u00e1rio*'
+            '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
+            f'\n\nLimite atualizado para *{current}* rotas ativas por usu\u00e1rio.'
+        )
+        keyboard = []
+        row_btns = []
+        for opt in presets:
+            chk = '\u2705 ' if opt == current else ''
+            row_btns.append(InlineKeyboardButton(f'{chk}{opt}', callback_data=f'painel:max_routes_set:{opt}'))
+            if len(row_btns) == 3:
+                keyboard.append(row_btns)
+                row_btns = []
+        if row_btns:
+            keyboard.append(row_btns)
+        keyboard.append([InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')])
+        await query.edit_message_text(texto, parse_mode='Markdown',
+                                      reply_markup=InlineKeyboardMarkup(keyboard))
+
     elif action == 'restart_service':
         await query.answer()
         running_sched = conn.execute(sql("SELECT COUNT(*) AS c FROM scan_jobs WHERE status = 'running' AND job_type != 'manual_now'")) .fetchone()
@@ -3189,7 +3250,7 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if (not admin) and total_rotas >= max_routes_default:
-        await update.message.reply_text(f'⚠️ Você atingiu o limite de {max_routes_default} rotas ativas.')
+        await update.message.reply_text(f'⚠️ Limite de rotas: você pode ter no máximo {max_routes_default} rotas ativas. Remova uma rota existente antes de cadastrar outra.')
         return ConversationHandler.END
 
     context.user_data.clear()
