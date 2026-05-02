@@ -1813,34 +1813,44 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         audit.payment("pix_gerado", chat_id=chat_id, status="pending",
                       payload={"plano": plan_name, "valor": amount,
                                "mp_payment_id": str(payment.get('id'))})
+        # Pega dados do usuário para exibir
+        user_row = get_bot_user_by_chat(conn, chat_id)
+        user_name = (user_row['first_name'] or '—') if user_row else chat_id
         push_admin_notif(
             conn,
             "notif_pix_gerado",
             f"💳 *PIX gerado*\n\n"
+            f"*Usuário:* {user_name}\n"
             f"*Chat ID:* `{chat_id}`\n"
             f"*Plano:* {plan_name}\n"
             f"*Valor:* R$ {amount:.2f}\n"
             f"*ID:* `{payment.get('id')}`",
         )
         conn.close()
-        await query.edit_message_text(
-            f"💳 *Pix gerado com sucesso!*\n\n*Valor:* R$ {format_money_br(amount)}\n*ID:* `{payment.get('id')}`",
-            parse_mode='Markdown'
+        detalhes = (
+            f"💳 *Pix gerado com sucesso!*\n\n"
+            f"*Usuário:* {user_name}\n"
+            f"*Chat ID:* `{chat_id}`\n"
+            f"*Plano:* {plan_name}\n"
+            f"*Valor:* R$ {format_money_br(amount)}\n"
+            f"*ID do pagamento:* `{payment.get('id')}`\n"
+            f"*Status:* {payment.get('status', 'pending')}"
         )
+        await query.edit_message_text(detalhes, parse_mode='Markdown')
         # Envia QR code como imagem se disponível
         import io as _io
         qr_base64 = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code_base64', '')
         if qr_base64:
             try:
                 qr_bytes = base64.b64decode(qr_base64)
-                await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes))
+                await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes), caption='📱 Escaneie o QR Code abaixo com seu banco para pagar:')
             except Exception as exc:
                 logger.warning('userpix: falha ao enviar QR imagem | erro=%s', exc)
-                await query.message.reply_text(qr_code or 'Código Pix indisponível no momento.')
+                await query.message.reply_text(f'📱 Código Pix para copiar e colar no seu banco:\n\n`{qr_code}`', parse_mode='Markdown')
         else:
-            await query.message.reply_text(qr_code or 'Código Pix indisponível no momento.')
+            await query.message.reply_text(f'📱 Código Pix para copiar e colar no seu banco:\n\n`{qr_code}`', parse_mode='Markdown')
         if ticket_url:
-            await query.message.reply_text(ticket_url)
+            await query.message.reply_text(f'🔗 Link do pagamento: {ticket_url}')
         await query.message.reply_text(
             'Selecione uma opção:',
             reply_markup=pending_payment_markup(str(payment.get("id")))
