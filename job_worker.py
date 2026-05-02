@@ -201,17 +201,17 @@ def recover_stale_job_groups(conn):
     """Recupera grupos de jobs onde o último job está stale (running >5min
     mas sem Chrome ativo). Marca como error e retorna group_keys afetados
     para que a consolidação seja forçada."""
-    stale = conn.execute(sql('''
+    stale = conn.execute('''
         SELECT j.group_key, COUNT(*) AS total,
                SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS done
         FROM scan_jobs j
         WHERE j.group_key IS NOT NULL AND j.group_key != ''
-          AND j.status IN ('running', 'done')
+          AND j.status IN ("running", "done")
           AND j.started_at < NOW() - INTERVAL 6 MINUTE
-          AND j.group_key NOT LIKE 'test%'
+          AND j.group_key NOT LIKE "test%"
         GROUP BY j.group_key
         HAVING done > 0 AND done < total
-    ''')).fetchall()
+    ''').fetchall()
     recovered = []
     for r in stale:
         gk = r['group_key']
