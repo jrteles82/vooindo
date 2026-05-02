@@ -1295,7 +1295,7 @@ def user_plan_markup() -> InlineKeyboardMarkup:
         plans = plan_catalog(get_monetization_settings(conn))
     finally:
         conn.close()
-    rows = [[InlineKeyboardButton(f'Pix {name}', callback_data=f'userpix:{name}')] for name, _amount, _days in plans]
+    rows = [[InlineKeyboardButton(f'Pix {name} — R$ {format_money_br(amount)}', callback_data=f'userpix:{name}')] for name, amount, _days in plans]
     rows.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
     return InlineKeyboardMarkup(rows)
 
@@ -4217,7 +4217,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             audit.access("acesso_bloqueado", chat_id=chat_id, status="blocked",
                          payload={"acao": action})
             conn.close()
-            await query.answer('Selecione um valor para continuar.', show_alert=True)
+            await query.answer('Aguarde...')
             await query.message.reply_text(texto.replace('*', ''), reply_markup=user_plan_markup())
             return ConversationHandler.END
         conn.close()
