@@ -579,10 +579,11 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         _t.sleep(_JOB_TIMEOUT)
         _jid = _wd_job_id[0]
         # Se o scan já retornou dados (parsed > 0), watchdog só limpa processos sem marcar erro
+        _wd_session_dir = GOOGLE_SESSION_DIR
         if _wd_scan_done[0]:
             try:
                 import subprocess as _sp
-                _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
+                _sp.run(['pkill', '-9', '-f', _wd_session_dir], capture_output=True, timeout=5)
                 import main as _main
                 _main.ChromeSemaphore.reset()
             except:
@@ -603,7 +604,8 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         _wd_fired[0] = True
         try:
             import subprocess as _sp
-            _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
+            # Mata só Chrome deste worker (pelo diretório de perfil), não todos
+            _sp.run(['pkill', '-9', '-f', _wd_session_dir], capture_output=True, timeout=5)
             import main as _main
             _main.ChromeSemaphore.reset()
         except:
