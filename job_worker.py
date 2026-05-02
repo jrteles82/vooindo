@@ -151,7 +151,7 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int = 6, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+def recover_stale_jobs(conn, running_timeout_minutes: int = 12, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
     stale_running = conn.execute(
         sql(
             f"""
