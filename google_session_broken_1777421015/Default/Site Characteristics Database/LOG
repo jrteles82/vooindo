@@ -1,3 +1,4 @@
-2026/05/02-08:58:29.411 3b3d0 Reusing MANIFEST /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001
-2026/05/02-08:58:29.411 3b3d0 Recovering log #12
-2026/05/02-08:58:29.411 3b3d0 Reusing old log /opt/vooindo/google_session/Default/Site Characteristics Database/000012.log 
+2026/05/02-09:21:58.935 3e426 Reusing MANIFEST /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001
+2026/05/02-09:21:58.935 3e426 Ignoring error IO error: /opt/vooindo/google_session/Default/Site Characteristics Database/000019.log: Unable to create sequential file (ChromeMethodBFE: 7::NewSequentialFile::5)
+2026/05/02-09:21:58.935 3e426 Recovering log #20
+2026/05/02-09:21:58.935 3e426 Reusing old log /opt/vooindo/google_session/Default/Site Characteristics Database/000020.log 

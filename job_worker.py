@@ -861,16 +861,19 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     if _route_info and _group_key:
         logger.info('[job-worker] job_id=%s | PER-ROUTE: %s->%s group=%s',
                      job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _group_key)
-        from models import RouteQuery as _RQ
-        _single_route = _RQ(
-            origin=_route_info.get('origin', ''),
-            destination=_route_info.get('destination', ''),
-            outbound_date=_route_info.get('outbound_date', ''),
-            inbound_date=_route_info.get('inbound_date') or None,
-            user_id=user_id,
-            chat_id=int(chat_id) if chat_id.isdigit() else 0,
-        )
+        # Tudo dentro de um try gigante para garantir que QUALQUER
+        # exceção seja capturada e o job marcado como done SEMPRE.
+        # Isso impede que o código vaze para o LEGACY path.
         try:
+            from models import RouteQuery as _RQ
+            _single_route = _RQ(
+                origin=_route_info.get('origin', ''),
+                destination=_route_info.get('destination', ''),
+                outbound_date=_route_info.get('outbound_date', ''),
+                inbound_date=_route_info.get('inbound_date') or None,
+                user_id=user_id,
+                chat_id=int(chat_id) if chat_id.isdigit() else 0,
+            )
             _route_loop = asyncio.get_event_loop()
             _route_future = _route_loop.run_in_executor(
                 None,
@@ -890,15 +893,14 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         except BaseException as _perr:
             logger.error('[job-worker] job_id=%s | PER-ROUTE exception: %s', job_id, _perr)
         finally:
-            # SEMPRE marca como done, independente de exceção.
-            # Isso impede que o worker loop faça retry do job,
-            # evitando o race condition de dois workers processando
-            # o mesmo job (um via per-route, outro via legacy).
             conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s"), (job_id,))
             conn.commit()
-        if _group_key:
-            _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
-        logger.info('[job-worker] job_id=%s | rota processada | %s->%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _t.elapsed())
+        try:
+            if _group_key:
+                _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
+            logger.info('[job-worker] job_id=%s | rota processada | %s->%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _t.elapsed())
+        except BaseException as _post_err:
+            logger.error('[job-worker] job_id=%s | PER-ROUTE post exception: %s', job_id, _post_err)
         return
     elif _route_info:
         logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route OK, group_key VAZIA', job_id)
