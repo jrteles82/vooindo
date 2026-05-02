@@ -42,6 +42,7 @@ MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "5"))
 MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "12"))
 MAX_CARDS_STEP = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_STEP", "1"))
 MIN_AIRLINE_PRICES_TO_COMPARE = int(os.getenv("GOOGLE_FLIGHTS_MIN_AIRLINE_PRICES_TO_COMPARE", "2"))
+USE_SYSTEM_CHROME = os.getenv("USE_SYSTEM_CHROME", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def configure_context_routing(context) -> None:
@@ -965,10 +966,14 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
         # Apenas Chrome (Firefox removido — instável com recursos do VPS)
+        _launch_kwargs = {}
+        if USE_SYSTEM_CHROME:
+            _launch_kwargs["channel"] = "chrome"
         context = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
             headless=HEADLESS,
             slow_mo=SLOW_MO,
+            **_launch_kwargs,
                 locale="pt-BR",
                 user_agent=USER_AGENT,
                 proxy=proxy_settings if proxy_settings else None,
@@ -985,7 +990,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     "--disable-extensions",
                     "--disable-component-extensions-with-background-pages",
                     "--disable-software-rasterizer",
-                    "--single-process",
+                ] + ([] if USE_SYSTEM_CHROME else ["--single-process"]) + [
                     "--disable-crashpad",
                     "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
                 ],

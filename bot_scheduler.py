@@ -70,7 +70,7 @@ def iter_users(conn):
     return conn.execute(
         sql('''
         SELECT bu.user_id, bu.chat_id, COALESCE(bu.first_name, '') AS first_name, COALESCE(bu.username, '') AS username,
-               COALESCE(bs.max_price, 1200) AS max_price,
+               bs.max_price AS max_price,
                COALESCE(bs.enable_google_flights, 1) AS enable_google_flights,
                COALESCE(bs.alerts_enabled, 1) AS alerts_enabled,
                COALESCE(bs.last_sent_at, '') AS last_sent_at,
@@ -307,7 +307,7 @@ def iter_users(conn):
     return conn.execute(
         sql('''
         SELECT bu.user_id, bu.chat_id, COALESCE(bu.first_name, '') AS first_name, COALESCE(bu.username, '') AS username,
-               COALESCE(bs.max_price, 1200) AS max_price,
+               bs.max_price AS max_price,
                COALESCE(bs.enable_google_flights, 1) AS enable_google_flights,
                COALESCE(bs.alerts_enabled, 1) AS alerts_enabled,
                COALESCE(bs.last_sent_at, '') AS last_sent_at,

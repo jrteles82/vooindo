@@ -3148,7 +3148,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         msg_text,
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=full_menu_markup(chat_id),
     )
 
@@ -4440,7 +4440,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.message.chat.id)
     await update.message.reply_text(
         'ℹ️ Ação cancelada.\n\n' + get_panel_text(chat_id),
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=full_menu_markup(chat_id)
     )
     return ConversationHandler.END
@@ -4805,7 +4805,7 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     await update.message.reply_text(
         '⚠️ Opção não encontrada.\n\n' + get_panel_text(chat_id),
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=full_menu_markup(chat_id),
     )
 
@@ -4838,7 +4838,24 @@ async def post_init(app):
     ])
 
 
-async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) -> None:
+_GOOGLE_EMAIL = 'vooindo.bot@gmail.com'
+_GOOGLE_PASSWORD = 'Vooindo#8212'
+
+
+async def _send_2fa_to_script(proc, queue):
+    import asyncio as _a
+    try:
+        code = await _a.wait_for(queue.get(), timeout=120)
+        if code:
+            proc.stdin.write((code + '\n').encode())
+            await proc.stdin.drain()
+    except _a.TimeoutError:
+        pass
+    except Exception:
+        pass
+
+
+async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str = '') -> None:
     import asyncio as _asyncio
 
     session = _login_sessions.setdefault(chat_id, {})
@@ -4863,29 +4880,58 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
 
     proc = None
     try:
+        email = _GOOGLE_EMAIL
+        pwd = password or _GOOGLE_PASSWORD
+
+        # Check if session is already valid before attempting renewal
+        try:
+            import pathlib as _pl, json
+            for _f in _pl.Path('/opt/vooindo/google_session').glob('Singleton*'):
+                try: _f.unlink()
+                except: pass
+            os.environ.setdefault('USE_SYSTEM_CHROME', '1')
+            _score = 0
+            from playwright.sync_api import sync_playwright
+            from google_flights_executor import check_session_health
+            with sync_playwright() as _pw:
+                _ctx = _pw.chromium.launch_persistent_context(
+                    '/opt/vooindo/google_session', headless=True, channel='chrome',
+                    args=['--no-sandbox'], timeout=20000
+                )
+                _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
+                _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
+                _health = check_session_health(_page)
+                _score = _health.get('score', 0)
+                _ctx.close()
+            if _score >= 2:
+                markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=status_msg_id,
+                    text='✅ *Sessão Google OK!* (score {}/3)\n\nA sessão ainda está válida, não precisa renovar agora.'.format(_score),
+                    parse_mode='Markdown',
+                    reply_markup=markup,
+                )
+                return
+        except Exception as _e:
+            logger.warning('Pre-check da sessão falhou (continuando): %s', _e)
+
         proc = await _asyncio.create_subprocess_exec(
-            sys.executable, '/opt/vooindo/google_login_stdin.py',
+            sys.executable, '/opt/vooindo/google_login_subprocess.py',
             stdin=_asyncio.subprocess.PIPE,
             stdout=_asyncio.subprocess.PIPE,
             stderr=_asyncio.subprocess.PIPE,
+            env={**os.environ, 'PYTHONUNBUFFERED': '1'},
         )
         session['proc'] = proc
 
-        proc.stdin.write((password + '\n').encode())
+        # Send email + password via stdin
+        proc.stdin.write(f'{email}\n{pwd}\n'.encode())
         await proc.stdin.drain()
-
-        # Task to log stderr
-        async def _log_stderr(stream):
-            while True:
-                line = await stream.readline()
-                if not line: break
-                logger.error(f"[google_login_stderr] {line.decode().strip()}")
-        
-        _asyncio.create_task(_log_stderr(proc.stderr))
 
         while True:
             try:
-                line_bytes = await _asyncio.wait_for(proc.stdout.readline(), timeout=200)
+                line_bytes = await _asyncio.wait_for(proc.stdout.readline(), timeout=300)
             except _asyncio.TimeoutError:
                 break
             if not line_bytes:
@@ -4898,27 +4944,24 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
                 await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_msg_id,
-                    text='📱 *2FA detectado!*\n\nDigite o código de verificação enviado ao seu telefone:',
+                    text='📱 *Verificação em 2 etapas*\n\n✅ *Confirme no seu celular*\n\nToque em **SIM** na notificação que\napareceu no seu celular.',
                     parse_mode='Markdown',
                 )
                 _last_edit[0] = _asyncio.get_event_loop().time()
-                q = session['2fa_queue']
-                try:
-                    code = await _asyncio.wait_for(q.get(), timeout=120)
-                except _asyncio.TimeoutError:
-                    code = ''
-                proc.stdin.write((code + '\n').encode())
-                await proc.stdin.drain()
+                # O script detecta aprovacao no celular sozinho
+                # Se admin quiser enviar SMS, pode digitar o codigo
+                # que a task de background le e envia para o script
+                _asyncio.create_task(_send_2fa_to_script(proc, session.get('2fa_queue')))
 
             elif line.startswith('STATUS:AUTH_SCORE:'):
                 _got_final[0] = True
                 score = int(line.split(':')[2])
-                if score == 2:
-                    text = '✅ *Login concluído!* auth\\_score=2/2\n\nAgências voltarão a aparecer nas próximas buscas.'
+                if score >= 2:
+                    text = f'✅ *Sessão renovada!* (score {score}/3)'
                 elif score == 1:
-                    text = '⚠️ *Login parcial.* auth\\_score=1/2\n\nSessão sem foto de perfil detectada.'
+                    text = f'⚠️ *Sessão parcial* (score {score}/3)'
                 else:
-                    text = '❌ *Login falhou.* auth\\_score=0/2\n\nVerifique screenshots em debug\\_dumps/.'
+                    text = f'❌ *Login falhou* (score {score}/3)'
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
                 await bot.edit_message_text(
                     chat_id=chat_id,
@@ -4944,10 +4987,50 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str) 
                 break
 
             elif line.startswith('STATUS:STEP:'):
-                step = line[len('STATUS:STEP:'):]
-                await _safe_edit(f'⏳ *Login em andamento...*\n\n`{step[:80]}`')
+                step_text = line[len('STATUS:STEP:'):]
+                await _safe_edit(f'⏳ *Login em andamento...*\n\n`{step_text[:80]}`')
 
         await proc.wait()
+
+        # Fallback: always check auth score directly with Playwright
+        if not _got_final[0]:
+            try:
+                import pathlib as _pl
+                for _f in _pl.Path('/opt/vooindo/google_session').glob('Singleton*'):
+                    try: _f.unlink()
+                    except: pass
+                os.environ.setdefault('USE_SYSTEM_CHROME', '1')
+                sys.path.insert(0, '/opt/vooindo')
+                from playwright.sync_api import sync_playwright
+                from google_flights_executor import check_session_health
+                with sync_playwright() as _pw:
+                    _ctx = _pw.chromium.launch_persistent_context(
+                        '/opt/vooindo/google_session', headless=True, channel='chrome',
+                        args=['--no-sandbox'], timeout=20000
+                    )
+                    _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
+                    _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
+                    _health = check_session_health(_page)
+                    _score = _health.get('score', 0)
+                    _ctx.close()
+                if _score >= 2:
+                    _got_final[0] = True
+                    text = f'✅ *Sessão renovada!* (score {_score}/3)\n\nOs workers usarão a nova sessão nas próximas buscas.'
+                elif _score == 1:
+                    text = f'⚠️ *Sessão parcial* (score {_score}/3)'
+                else:
+                    text = f'❌ *Login falhou* (score {_score}/3)'
+                if _got_final[0]:
+                    markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=status_msg_id,
+                        text=text,
+                        parse_mode='Markdown',
+                        reply_markup=markup,
+                    )
+            except Exception as _exc:
+                logger.error('Fallback auth check failed: %s', _exc)
 
         if not _got_final[0]:
             markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
@@ -5002,11 +5085,9 @@ async def renovar_sessao_callback(update: Update, context: ContextTypes.DEFAULT_
                 old_proc.kill()
             except Exception:
                 pass
-    # Pula etapa da senha — usa a app password gravada
-    password = 'rcwv jvmu yyyx okto'
     try:
         status_msg = await query.message.reply_text(
-            '⏳ *Iniciando renovação da sessão Google...*',
+            '⏳ *Iniciando renovação da sessão Google...*\n\n🔐 Usando método Chrome subprocess + senha real',
             parse_mode='Markdown',
         )
     except Exception as exc:
@@ -5016,7 +5097,7 @@ async def renovar_sessao_callback(update: Update, context: ContextTypes.DEFAULT_
 
     import asyncio as _asyncio
     _login_sessions[chat_id] = {'2fa_queue': _asyncio.Queue(), 'done': False}
-    _asyncio.create_task(_run_login_task(context.bot, chat_id, status_msg.message_id, password))
+    _asyncio.create_task(_run_login_task(context.bot, chat_id, status_msg.message_id))
     return ASK_GOOGLE_2FA
 
 
@@ -5043,7 +5124,7 @@ async def renovar_sessao_password(update: Update, context: ContextTypes.DEFAULT_
     try:
         status_msg = await context.bot.send_message(
             chat_id=chat_id,
-            text='⏳ *Iniciando login Google...*',
+            text='⏳ *Iniciando login Google...*\n\n🔐 Usando senha fornecida manualmente',
             parse_mode='Markdown',
         )
     except Exception as exc:
