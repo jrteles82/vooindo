@@ -624,96 +624,58 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             WHERE id IN ({placeholders})
         """), params).fetchone()
 
-        job_durations = conn_report.execute(sql(f"""
-            SELECT
-              bu.first_name,
-              TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at) AS dur_s,
-              j.status,
-              j.error_message
-            FROM scan_jobs j
-            JOIN bot_users bu ON bu.user_id = j.user_id
-            WHERE j.id IN ({placeholders})
-            ORDER BY dur_s DESC, j.id DESC
-            LIMIT 10
-        """), params).fetchall()
-
         received = conn_report.execute(sql(f"""
-            SELECT DISTINCT bu.first_name
+            SELECT bu.first_name,
+                   COUNT(*) as total,
+                   ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)), 0) as total_dur
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.id IN ({placeholders}) AND j.status = 'done'
-            ORDER BY bu.first_name
+            GROUP BY bu.user_id, bu.first_name
+            ORDER BY total_dur DESC
         """), params).fetchall()
 
-        not_received = conn_report.execute(sql(f"""
-            SELECT DISTINCT bu.first_name, COALESCE(j.error_message, 'erro') AS erro
+        erros = conn_report.execute(sql(f"""
+            SELECT bu.first_name, COALESCE(MAX(j.error_message), 'erro') AS erro,
+                   COUNT(*) as qtd
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.id IN ({placeholders}) AND j.status = 'error'
-              AND COALESCE(j.error_message, '') NOT IN ('stale_running_recovered', 'stale_pending_expired')
-              AND j.user_id NOT IN (
-                  SELECT DISTINCT user_id FROM scan_jobs
-                  WHERE id IN ({placeholders}) AND status = 'done'
-              )
+            GROUP BY bu.user_id, bu.first_name, j.error_message
             ORDER BY bu.first_name
-        """), params + params).fetchall()
+        """), params).fetchall()
 
         reasons = cycle_stats.get('reasons', {}) or {}
         lines = []
-        lines.append(f"📊 RELATÓRIO DA RODADA — {cycle_started_iso[:16]}")
+        lines.append(f"📊 RODADA {cycle_started_iso[11:16]}")
+        lines.append(f'✅ {job_stats["done"]}/{job_stats["total"]} | ❌ {job_stats["erro"]}')
+        round_s = int(wait_result.get('elapsed_seconds', 0))
+        lines.append(f'⏱ {round_s//60}m{round_s%60}s')
         lines.append('')
-        lines.append('⚙️ DESEMPENHO')
-        lines.append(f"  ⏱ Scheduler: {round(cycle_duration_ms / 1000, 1)}s | Rodada completa: {wait_result.get('elapsed_seconds', 0) if wait_result else 0}s")
-        lines.append(f"  ⏱ Janela: {job_stats['min_created']} → {job_stats['max_finished']}")
-        lines.append(f"  🖥 CPU: {cpu_pct}% | RAM proc: {round(proc_mem, 0)}MB" if cpu_pct is not None else '  🖥 CPU/RAM: n/d')
-        lines.append(f"  📈 Load: {load_avg[0]:.2f} {load_avg[1]:.2f} {load_avg[2]:.2f}")
+        lines.append('📋 USUÁRIOS')
+        def _fmt_dur(s):
+            s = int(s)
+            return f'{s//60}m{s%60}s' if s >= 60 else f'{s}s'
+        for r in received:
+            name = (r['first_name'] or '---').split()[0][:12]
+            tot = int(r['total'])
+            dur = _fmt_dur(r['total_dur'])
+            dur_fmt = dur if tot == 1 else f'{dur} ({tot}r)'
+            lines.append(f'  ✅ {name}  ⏱{dur_fmt}')
+        for r in erros:
+            name = (r['first_name'] or '---').split()[0][:12]
+            err = str(r['erro'] or 'erro')[:18]
+            icon = '⚠️' if 'stale' in err or 'timeout' in err else '❌'
+            lines.append(f'  {icon} {name}  {err}')
+        lines.append('')
+        lines.append('⚙️')
+        if cpu_pct is not None:
+            lines.append(f'  CPU {cpu_pct}% | RAM {round(proc_mem,0)}MB')
         if mem:
             lines.append(f"  💾 RAM total: {round(mem.used/1024/1024, 0)}/{round(mem.total/1024/1024, 0)}GB ({mem.percent}%)")
-        lines.append('')
-        lines.append('📋 RESUMO')
-        lines.append(f"  👥 Elegíveis: {cycle_stats.get('eligible_users', 0)}")
-        lines.append(f"  📦 Jobs: {job_stats['total'] or 0} | ✅ {job_stats['done'] or 0} | ❌ {job_stats['erro'] or 0} | 🏃 {job_stats['running'] or 0} | 🕒 {job_stats['pending'] or 0}")
-        lines.append(f"  ⏲ Média/job: {job_stats['avg_duration_s'] or '%s'}s | Custo total: {job_stats['total_cost'] or 0}")
         if reasons:
-            ignored = ', '.join(f"{k}={v}" for k, v in sorted(reasons.items(), key=lambda x: -x[1]))
-            lines.append(f"  ⏭ Ignorados: {ignored}")
-        lines.append('')
-
-        if received:
-            names = ' | '.join((r['first_name'] or '---') for r in received)
-            lines.append(f"✅ RECEBERAM ({len(received)})")
-            lines.append(f"  {names}")
-            lines.append('')
-
-        # Separa erros reais de filtro de preço
-        real_errors = []
-        price_filtered = []
-        for r in not_received:
-            err = (r['erro'] or '').strip()
-            if err == 'Consulta acima do teto configurado':
-                price_filtered.append(r)
-            else:
-                real_errors.append(r)
-        
-        if real_errors:
-            lines.append(f"❌ NÃO RECEBERAM ({len(real_errors)})")
-            for r in real_errors:
-                lines.append(f"  {(r['first_name'] or '---')}: {(r['erro'] or 'erro')[:80]}")
-            lines.append('')
-        
-        if price_filtered:
-            lines.append(f"⚠️ ACIMA DO TETO ({len(price_filtered)})")
-            for r in price_filtered:
-                lines.append(f"  {(r['first_name'] or '---')}: preço acima do limite configurado")
-            lines.append('')
-
-        if job_durations:
-            lines.append('🐌 TEMPOS (top 10)')
-            for jd in job_durations:
-                name = jd['first_name'] or '---'
-                dur = jd['dur_s'] if jd['dur_s'] is not None else '%s'
-                suffix = f" | {(jd['error_message'] or '')[:50]}" if jd['status'] == 'error' else ''
-                lines.append(f"  {name}: {dur}s | {jd['status']}{suffix}")
+            for motivo, qtd in sorted(reasons.items(), key=lambda x: -x[1]):
+                lines.append(f'  ⏭ {motivo}: {qtd}')
 
         if wait_result and not wait_result.get('complete', True):
             lines.append('')
