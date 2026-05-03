@@ -151,7 +151,7 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int = 12, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+def recover_stale_jobs(conn, running_timeout_minutes: int = 18, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
     stale_running = conn.execute(
         sql(
             f"""
@@ -249,39 +249,60 @@ def _make_cap_conn():
 
 
 def fetch_next_job(conn, pool='scheduled'):
-    """Captura o próximo job pendente usando conexão separada com autocommit=True.
-    Isso garante que o UPDATE lock seja imediato e não conflite com outros workers ou o bot."""
+    """Captura o próximo job pendente usando transação com SELECT FOR UPDATE.
+    Isso garante que NUNCA dois workers peguem o mesmo job."""
     if pool == 'manual':
         job_type_filter = "job_type IN ('manual_now', 'manual')"
     else:
         job_type_filter = "job_type = 'scheduled'"
 
     _cap = _make_cap_conn()
-    _cur = _cap.cursor()
     try:
+        # Desabilita autocommit pra usar transação com FOR UPDATE
+        _cap.autocommit(False)
+        _cur = _cap.cursor()
         _now = now_expression()
+
+        # Lock e captura atômica do próximo job pendente
         _cur.execute(
             f"""
-                UPDATE scan_jobs
-                SET status = 'running', started_at = {_now}
+                SELECT id
+                FROM scan_jobs
                 WHERE status = 'pending' AND {job_type_filter}
                 ORDER BY cost_score ASC, id ASC
                 LIMIT 1
+                FOR UPDATE
             """
-        )
-        if _cur.rowcount != 1:
-            logger.info('nenhum job pendente disponível no pool %s', pool)
-            return None
-
-        _cur.execute(
-            f"SELECT * FROM scan_jobs WHERE status = 'running' AND {job_type_filter} ORDER BY started_at DESC LIMIT 1"
         )
         _row = _cur.fetchone()
         if not _row:
-            logger.error('fetch_next_job: capturou mas SELECT retornou None')
+            _cap.commit()
+            logger.info('nenhum job pendente disponível no pool %s', pool)
             return None
-        return _row
+
+        _job_id = int(_row['id'])
+        _cur.execute(
+            f"UPDATE scan_jobs SET status = 'running', started_at = {_now} WHERE id = %s",
+            (_job_id,),
+        )
+        _cap.commit()
+
+        # Busca o job completo (pode usar a mesma conn ou a principal)
+        _cur.execute("SELECT * FROM scan_jobs WHERE id = %s", (_job_id,))
+        _job = _cur.fetchone()
+        if not _job:
+            logger.error('fetch_next_job: capturou job %s mas SELECT retornou None', _job_id)
+            return None
+        return _job
+    except Exception as _exc:
+        try:
+            _cap.rollback()
+        except Exception:
+            pass
+        logger.error('fetch_next_job: erro %s', _exc)
+        return None
     finally:
+        _cap.autocommit(True)
         _cap.close()
 
 
@@ -752,12 +773,23 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
 
     # Watchdog: timeout dinâmico baseado no número de rotas
     # Cada rota leva ~90s no modo fast, ~150s no modo normal
-    # Fórmula: 120s (fixo) + (num_rotas - 1) * 120s + 60s margem
+    # Fórmula: 120s (fixo) + (num_rotas - 1) * 60s + 60s margem
+    # Para jobs PER-ROUTE, usa total_routes do payload se disponível
+    import json as _wj
     try:
-        _route_count = len(_build_user_routes(conn, user_id))
+        _wp = _wj.loads(str(job.get('payload') or '{}'))
+        _gi = _wp.get('group_info', {}) if isinstance(_wp, dict) else {}
+        _pr_count = int(_gi.get('total_routes', 0)) if isinstance(_gi, dict) else 0
     except Exception:
-        _route_count = 1
-    _JOB_TIMEOUT = max(300, 120 + _route_count * 120)  # min 300s, ~120s por rota com booking (dá folga pra retry + fila)
+        _pr_count = 0
+    if _pr_count > 0:
+        _route_count = _pr_count
+    else:
+        try:
+            _route_count = len(_build_user_routes(conn, user_id))
+        except Exception:
+            _route_count = 1
+    _JOB_TIMEOUT = max(300, 60 + _route_count * 60)  # min 300s, ~60s por rota + buffer de fila
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
@@ -765,16 +797,11 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         import time as _t
         _t.sleep(_JOB_TIMEOUT)
         _jid = _wd_job_id[0]
-        # Se o scan já retornou dados (parsed > 0), watchdog só limpa processos sem marcar erro
+        # Se o scan já retornou dados, NÃO faz nada — o Chrome já foi liberado.
+        # NÃO matar chrome aqui: isso mata o Chrome de jobs ATUAIS de outros workers.
+        # O _purge_stale_chrome() no início do próximo process_job limpa orphans.
         if _wd_scan_done[0]:
-            try:
-                import subprocess as _sp
-                _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
-                import main as _main
-                _main.ChromeSemaphore.reset()
-            except:
-                pass
-            logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss (scan já completou, só limpou processos)', _jid, _JOB_TIMEOUT)
+            logger.info('[job-worker][watchdog] job_id=%s | scan já completou, watchdog ocioso', _jid)
             return
         # Só age se o job AINDA estiver running (não foi finalizado naturalmente)
         try:
@@ -913,7 +940,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         except BaseException as _perr:
             logger.error('[job-worker] job_id=%s | PER-ROUTE exception: %s', job_id, _perr)
         finally:
-            conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s"), (job_id,))
+            conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s AND status = 'running'"), (job_id,))
             conn.commit()
         try:
             if _group_key:

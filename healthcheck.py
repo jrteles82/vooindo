@@ -182,6 +182,30 @@ def send_alert(message: str, state: dict) -> None:
         print(f'Falha ao enviar alerta: {exc}', file=sys.stderr)
 
 
+def check_stale_jobs(hours: int = 2) -> dict:
+    """Verifica quantos stale_running_recovered nas últimas N horas."""
+    result = {'stale_count': 0, 'message': ''}
+    try:
+        sys.path.insert(0, str(BASE_DIR))
+        from db import connect as db_connect, sql
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute(sql("""
+            SELECT COUNT(*) AS cnt
+            FROM scan_jobs
+            WHERE error_message = 'stale_running_recovered'
+              AND finished_at >= NOW() - INTERVAL %s HOUR
+        """), (hours,))
+        row = cur.fetchone()
+        result['stale_count'] = int(row['cnt'] if isinstance(row, dict) else row[0])
+        if result['stale_count'] > 0:
+            result['message'] = f"⚠️ {result['stale_count']} stale_running_recovered nas últimas {h}h"
+        conn.close()
+    except Exception as e:
+        result['message'] = f'Falha ao verificar stales: {e}'
+    return result
+
+
 def check_google_session() -> dict:
     """Verifica se a sessão Google ainda está válida."""
     result = {'ok': True, 'score': 3, 'message': ''}
@@ -223,6 +247,11 @@ def main():
     if not session['ok']:
         send_alert(session['message'], {})
     
+    # Verifica stales (goal = zero)
+    stales = check_stale_jobs(hours=2)
+    if stales['stale_count'] > 0:
+        send_alert(stales['message'], {})
+    
     # Tenta auto-fix
     if not health['healthy']:
         state = load_state()
@@ -238,6 +267,7 @@ def main():
                 f"Bot: {'vivo' if health['bot_alive'] else 'morto'}",
                 f"Scheduler: {'vivo' if health['scheduler_alive'] else 'morto'}",
                 f"Workers: {health['workers_alive']}",
+                f"Stales (2h): {stales['stale_count']}",
                 f"Auto-fix: {'✅ aplicado' if fixed else '❌ não aplicado (cooldown)'}",
             ]
             if health['recent_errors']:
@@ -250,9 +280,14 @@ def main():
         if state.get('consecutive_failures', 0) > 0:
             state['consecutive_failures'] = 0
             save_state(state)
-            send_alert('✅ Vooindo recuperado — serviço estável', state)
+        if stales['stale_count'] > 0:
+            stale_msg = stales['message']
+            send_alert(stale_msg, state)
+        if state.get('consecutive_failures', 0) == 0:
+            pass  # saudável, sem stales, sem problemas recentes
 
-    print(f"[HEALTHCHECK] {health['message']} | fix={fixed}")
+    stale_info = f" | stales_2h={stales['stale_count']}" if stales['stale_count'] > 0 else ''
+    print(f"[HEALTHCHECK] {health['message']} | fix={fixed}{stale_info}")
 
 
 if __name__ == '__main__':

@@ -711,9 +711,9 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     _timeout_retry = True
                     logger.warning('[scraper] timeout %ss para %s->%s | retry com +60s', intl_timeout, r.origin, r.destination)
                 finally:
-                    # Mata Chrome orphan (sem pai python atual) pra liberar RAM entre rotas
+                    # Mata APENAS Chrome orphan REAL (pai não existe mais)
+                    # NÃO mata Chrome de outros workers ativos
                     import psutil as _psutil, os as _os
-                    _current_pid = _os.getpid()
                     try:
                         for _proc in _psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
                             _name = (_proc.info.get('name') or '').lower()
@@ -721,16 +721,12 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                             if 'chrome' not in _name and 'chrom' not in _cmd:
                                 continue
                             _pp = _proc.info['ppid']
-                            _is_child = False
-                            while _pp > 1:
-                                if _pp == _current_pid:
-                                    _is_child = True
-                                    break
-                                try:
-                                    _pp = _psutil.Process(_pp).ppid()
-                                except (_psutil.NoSuchProcess, _psutil.AccessDenied):
-                                    break
-                            if not _is_child and _proc.info['pid'] != _current_pid:
+                            if _pp <= 1:
+                                _proc.kill()
+                                continue
+                            try:
+                                _pproc = _psutil.Process(_pp)
+                            except _psutil.NoSuchProcess:
                                 _proc.kill()
                     except Exception:
                         pass

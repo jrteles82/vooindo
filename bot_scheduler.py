@@ -634,12 +634,21 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             ORDER BY total_dur DESC
         """), params).fetchall()
 
+        # Erros com rota específica (do payload JSON)
         erros = conn_report.execute(sql(f"""
-            SELECT bu.user_id, bu.first_name, COALESCE(MAX(j.error_message), 'erro') AS erro
+            SELECT bu.user_id, bu.first_name,
+                   COALESCE(MAX(j.error_message), 'erro') AS erro,
+                   GROUP_CONCAT(DISTINCT
+                       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.route.origin')), '?'),
+                       '-',
+                       COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.route.destination')), '?')
+                       SEPARATOR ', '
+                   ) AS rotas_erro,
+                   COUNT(*) AS qtd_erro
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.id IN ({placeholders}) AND j.status = 'error'
-            GROUP BY bu.user_id, bu.first_name, j.error_message
+            GROUP BY bu.user_id, bu.first_name
             ORDER BY bu.first_name
         """), params).fetchall()
 
@@ -665,29 +674,31 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
 
         reasons = cycle_stats.get('reasons', {}) or {}
         lines = []
+        total_users = len(received) + len(erros)
+        total_routes = sum(
+            user_payload_routes.get(int(r['user_id']), user_active_routes.get(int(r['user_id']), 0))
+            for r in (received or []) + (erros or [])
+        )
+        avg_dur = _fmt_dur(job_stats['avg_duration_s'] or 0)
         lines.append(f"📊 RODADA {cycle_started_iso[11:16]}")
         lines.append(f'✅ {job_stats["done"]}/{job_stats["total"]} | ❌ {job_stats["erro"]}')
         round_s = int(wait_result.get('elapsed_seconds', 0))
-        lines.append(f'⏱ {round_s//60}m{round_s%60}s')
+        lines.append(f'⏱ {round_s//60}m{round_s%60}s  📍 {total_users} users | {total_routes} rotas | {avg_dur}/rota')
         lines.append('')
         lines.append('📋 USUÁRIOS')
         def _fmt_dur(s):
             s = int(s)
             return f'{s//60}m{s%60}s' if s >= 60 else f'{s}s'
-        def _route_fmt(uid, is_done):
-            total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
-            if total <= 1:
-                return ''
-            if is_done:
-                return f' {total}/{total}r'
-            # Para erro: tenta estimar quantas completaram
-            # Se não temos dados de resultado, mostra 0
-            return f' 0/{total}r'
         for r in received:
             uid = int(r['user_id'])
             name = (r['first_name'] or '---').split()[0][:12]
             dur = _fmt_dur(r['total_dur'])
-            rf = _route_fmt(uid, True)
+            total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
+            rf = ''
+            if total > 1:
+                # Count how many of this user's jobs were done
+                done_count = sum(1 for rr in received if int(rr['user_id']) == uid)
+                rf = f' {done_count}/{total}r'
             lines.append(f'  ✅ {name}  ⏱{dur}{rf}')
         for r in erros:
             uid = int(r['user_id'])
@@ -695,8 +706,15 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             err = str(r['erro'] or 'erro')[:18]
             icon = '⚠️' if 'stale' in err or 'timeout' in err else '❌'
             total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
-            rf = f' 0/{total}r' if total > 1 else ''
-            lines.append(f'  {icon} {name}  {err}{rf}')
+            done_count = sum(1 for rr in received if int(rr['user_id']) == uid)
+            qtd_erro = int(r['qtd_erro'])
+            rf = ''
+            if total > 1:
+                rf = f' {done_count}/{total}r'
+            rota_info = ''
+            if r.get('rotas_erro'):
+                rota_info = f'  🗺️ {r["rotas_erro"]}'[:40]
+            lines.append(f'  {icon} {name}  {err}{rf}{rota_info}')
         lines.append('')
         lines.append('⚙️')
         if cpu_pct is not None:
