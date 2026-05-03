@@ -207,7 +207,7 @@ def recover_stale_job_groups(conn):
         FROM scan_jobs j
         WHERE j.group_key IS NOT NULL AND j.group_key != ''
           AND j.status IN ('running', 'done')
-          AND j.started_at < NOW() - INTERVAL 10 MINUTE
+          AND j.started_at < NOW() - INTERVAL 20 MINUTE
           AND j.group_key NOT LIKE ?
         GROUP BY j.group_key
         HAVING done > 0 AND done < total
@@ -220,7 +220,7 @@ def recover_stale_job_groups(conn):
             UPDATE scan_jobs SET status = 'error', error_message = 'stale_group_recovered',
                 finished_at = NOW()
             WHERE group_key = %s AND status = 'running'
-              AND started_at < NOW() - INTERVAL 10 MINUTE
+              AND started_at < NOW() - INTERVAL 20 MINUTE
         '''), (gk,))
         if affected:
             conn.commit()
@@ -603,6 +603,19 @@ def _save_route_result(conn, job_id: int, user_id: int, chat_id: str, route_info
 def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, group_key: str, settings, pool: str, charge_now: bool, _t) -> None:
     """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia."""
     import json as _json
+    
+    # Seguranca: verifica se TODOS os jobs do grupo sao do mesmo usuario
+    _user_check = conn.execute(sql('''
+        SELECT COUNT(DISTINCT user_id) AS uc, COUNT(DISTINCT chat_id) AS cc
+        FROM scan_jobs
+        WHERE group_key = %s
+    '''), (group_key,)).fetchone()
+    if _user_check:
+        _uc = _user_check['uc'] if isinstance(_user_check, dict) else _user_check[0]
+        _cc = _user_check['cc'] if isinstance(_user_check, dict) else _user_check[1]
+        if _uc > 1 or _cc > 1:
+            logger.warning('[job-worker] group_key=%s | MULTIPLOS usuarios (%s uids, %s chats) no mesmo grupo — IGNORANDO consolidacao', group_key, _uc, _cc)
+            return
     
     # Verifica se ainda há jobs pendentes/rodando no grupo
     pending = conn.execute(sql('''
