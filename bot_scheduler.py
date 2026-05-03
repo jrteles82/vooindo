@@ -652,10 +652,12 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         if all_uid_ids:
             uid_list_str = ','.join(str(u) for u in all_uid_ids)
             try:
-                for row in conn_report.execute(sql(f"""SELECT j.user_id, COALESCE(JSON_LENGTH(JSON_EXTRACT(j.payload, '$.routes')), 0) as cnt FROM scan_jobs j WHERE j.id IN ({placeholders}) AND j.user_id IN ({uid_list_str})"""), params).fetchall():
+                payload_sql = sql(f"""SELECT j.user_id, COALESCE(JSON_LENGTH(JSON_EXTRACT(j.payload, '$.routes')), 0) as cnt FROM scan_jobs j WHERE j.id IN ({placeholders}) AND j.user_id IN ({uid_list_str})""")
+                payload_rows = conn_report.execute(payload_sql, params).fetchall()
+                for row in payload_rows:
                     user_payload_routes[int(row['user_id'])] = int(row['cnt'])
             except Exception as e:
-                pass
+                logger.warning('report_cycle: erro ao contar rotas do payload: %s', e, exc_info=True)
             try:
                 for row in conn_report.execute(sql(f"""SELECT user_id, COUNT(*) as c FROM user_routes WHERE user_id IN ({uid_list_str}) AND active=1 GROUP BY user_id""")).fetchall():
                     user_active_routes[int(row['user_id'])] = int(row['c'])
