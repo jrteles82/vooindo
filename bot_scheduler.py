@@ -875,6 +875,25 @@ def main():
                     """)
                 )
                 stuck_count = getattr(conn.cursor(), 'rowcount', 0)
+                
+                # Resetar jobs mortos por SIGTERM (error='143') — restart matou o worker
+                stuck_143 = conn.execute(
+                    sql("""
+                        UPDATE scan_jobs
+                        SET status = 'pending', started_at = NULL, finished_at = NULL,
+                            error_message = NULL, retry_count = COALESCE(retry_count, 0) + 1
+                        WHERE status = 'error' AND error_message = '143'
+                          AND finished_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
+                          AND job_type = 'scheduled'
+                    """)
+                )
+                stuck_143_count = getattr(conn.cursor(), 'rowcount', 0)
+                if stuck_143_count > 0:
+                    conn.commit()
+                    logger.info(
+                        "[bot-scheduler] resetados %s jobs mortos por SIGTERM (143) para 'pending'",
+                        stuck_143_count,
+                    )
                 if stuck_count > 0:
                     conn.commit()
                     logger.info(

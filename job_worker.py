@@ -1227,6 +1227,7 @@ def main():
                     'Consulta sem preço ou link confiável',
                     'cancelled_by_new_request',  # scan pode ter dados, vale retry
                     'job_timeout_300s',  # watchdog matou, mas scan pode ter completado
+                    '143',  # SIGTERM (restart/sistema matou o worker) — sempre retentar
                 }
                 # 'Consulta sem resultados filtrados' só retenta se parsed > 0 (crashou no filtro)
                 _retryable_sem_resultados = ('Consulta sem resultados filtrados' in error_text)
