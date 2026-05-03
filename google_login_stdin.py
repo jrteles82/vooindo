@@ -103,8 +103,7 @@ try:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(SESSION_DIR),
-            headless=False,
-            channel='chrome',
+            headless=True,
             proxy=proxy_settings if proxy_settings else None,
             ignore_default_args=['--enable-automation'],
             slow_mo=80,
@@ -122,6 +121,7 @@ try:
                 '--ignore-certifcate-errors-spki-list',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--disable-web-security',
+                '--disable-gpu',
             ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
