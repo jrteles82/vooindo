@@ -152,10 +152,11 @@ def ensure_job_tables(conn):
 
 
 def recover_stale_jobs(conn, running_timeout_minutes: int = 18, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+    # Primeiro: jobs running há muito tempo -> retry em vez de error
     stale_running = conn.execute(
         sql(
             f"""
-            SELECT id
+            SELECT id, retry_count
             FROM scan_jobs
             WHERE status = 'running'
               AND started_at IS NOT NULL
@@ -181,11 +182,28 @@ def recover_stale_jobs(conn, running_timeout_minutes: int = 18, pending_timeout_
     expired_pending_ids = [row['id'] for row in stale_pending]
 
     if recovered_running_ids:
-        placeholders = ', '.join(['%s'] * len(recovered_running_ids))
-        conn.execute(
-            f"UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'stale_running_recovered' WHERE id IN ({placeholders})",
-            tuple(recovered_running_ids),
-        )
+        # Tenta retry primeiro (se já não retentou muito)
+        retry_ids = []
+        error_ids = []
+        for row in stale_running:
+            rcount = int(row.get('retry_count') or row[1] if isinstance(row, (list, tuple)) else row.get('retry_count', 0))
+            if rcount < 2:
+                retry_ids.append(row['id'])
+            else:
+                error_ids.append(row['id'])
+        if retry_ids:
+            placeholders = ', '.join(['%s'] * len(retry_ids))
+            conn.execute(
+                f"UPDATE scan_jobs SET status = 'pending', started_at = NULL, retry_count = retry_count + 1, error_message = NULL WHERE id IN ({placeholders})",
+                tuple(retry_ids),
+            )
+            logger.warning('[JOB_RECOVERY] %s jobs retentados (stale → pending)', len(retry_ids))
+        if error_ids:
+            placeholders = ', '.join(['%s'] * len(error_ids))
+            conn.execute(
+                f"UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'stale_running_recovered' WHERE id IN ({placeholders})",
+                tuple(error_ids),
+            )
     if expired_pending_ids:
         placeholders = ', '.join(['%s'] * len(expired_pending_ids))
         conn.execute(
