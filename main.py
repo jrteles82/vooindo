@@ -1668,6 +1668,15 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                     insight = re.sub(r"O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?\s*", "", insight, flags=re.I).strip()
                 if insight:
                     lines.append(f'<i>{escape(insight)}</i>')
+            else:
+                # Fallback: gera dica baseada no price_band
+                band = str(row.get('price_band', '') or '').strip()
+                if band == '🟢':
+                    lines.append('<i>💰 Preço baixo para esta rota</i>')
+                elif band == '🟡':
+                    lines.append('<i>💹 Preço na média</i>')
+                elif band == '🔴':
+                    lines.append('<i>📈 Preço acima da média</i>')
         return lines
 
     lines = _build_lines(rows)
