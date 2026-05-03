@@ -884,44 +884,41 @@ def main():
                     group_key = f"round_{user_id}_{cycle_started_iso}"
                     num_routes = len(route_rows)
                     
-                    # Cria UM job por usuário com todas as rotas (evita stale recovery entre rotas)
-                    routes_payload = []
                     for route in route_rows:
                         route_id = route['id'] if isinstance(route, dict) else route[0]
                         origin = route['origin'] if isinstance(route, dict) else route[1]
                         destination = route['destination'] if isinstance(route, dict) else route[2]
                         outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
                         inbound_date = route['inbound_date'] if isinstance(route, dict) else route[4] or ''
-                        routes_payload.append({
-                            'id': route_id,
-                            'origin': origin,
-                            'destination': destination,
-                            'outbound_date': outbound_date,
-                            'inbound_date': inbound_date,
-                        })
-                    
-                    payload = json.dumps({
-                        'round_started_at': cycle_started_iso,
-                        'routes': routes_payload,
-                        'group_info': {
-                            'total_routes': num_routes,
-                            'label': label,
-                        }
-                    }, ensure_ascii=False)
-                    
-                    insert_result = conn.execute(
-                        sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
-                        (user_id, chat_id, payload, 1, group_key),
-                    )
-                    conn.commit()
-                    job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
-                    if not job_id:
-                        last_id_row = conn.execute(sql("SELECT LAST_INSERT_ID() AS id")).fetchone()
-                        job_id = int((last_id_row['id'] if isinstance(last_id_row, dict) else last_id_row[0]) or 0)
-                    if job_id:
-                        created_job_ids.append(job_id)
                         
-                    logger.info("[bot-scheduler] %s | %s rotas em 1 job (group=%s)", label, num_routes, group_key)
+                        payload = json.dumps({
+                            'round_started_at': cycle_started_iso,
+                            'route': {
+                                'id': route_id,
+                                'origin': origin,
+                                'destination': destination,
+                                'outbound_date': outbound_date,
+                                'inbound_date': inbound_date,
+                            },
+                            'group_info': {
+                                'total_routes': num_routes,
+                                'label': label,
+                            }
+                        }, ensure_ascii=False)
+                        
+                        insert_result = conn.execute(
+                            sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
+                            (user_id, chat_id, payload, 1, group_key),
+                        )
+                        conn.commit()
+                        job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
+                        if not job_id:
+                            last_id_row = conn.execute(sql("SELECT LAST_INSERT_ID() AS id")).fetchone()
+                            job_id = int((last_id_row['id'] if isinstance(last_id_row, dict) else last_id_row[0]) or 0)
+                        if job_id:
+                            created_job_ids.append(job_id)
+                        
+                    logger.info("[bot-scheduler] %s | %s jobs de rota criados (group=%s)", label, num_routes, group_key)
                     cycle_stats['sent_users'] += 1
                 except Exception as exc:
                     logger.error("[bot-scheduler] erro ao criar job para user %s: %s", user.get('user_id'), exc)
