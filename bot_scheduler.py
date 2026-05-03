@@ -625,8 +625,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         """), params).fetchone()
 
         received = conn_report.execute(sql(f"""
-            SELECT bu.first_name,
-                   COUNT(*) as total,
+            SELECT bu.user_id, bu.first_name,
                    ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)), 0) as total_dur
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
@@ -636,14 +635,31 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         """), params).fetchall()
 
         erros = conn_report.execute(sql(f"""
-            SELECT bu.first_name, COALESCE(MAX(j.error_message), 'erro') AS erro,
-                   COUNT(*) as qtd
+            SELECT bu.user_id, bu.first_name, COALESCE(MAX(j.error_message), 'erro') AS erro
             FROM scan_jobs j
             JOIN bot_users bu ON bu.user_id = j.user_id
             WHERE j.id IN ({placeholders}) AND j.status = 'error'
             GROUP BY bu.user_id, bu.first_name, j.error_message
             ORDER BY bu.first_name
         """), params).fetchall()
+
+        # Get route counts from payload JSON and user_routes
+        all_uid_ids = set()
+        for r in received: all_uid_ids.add(int(r['user_id']))
+        for r in erros: all_uid_ids.add(int(r['user_id']))
+        user_payload_routes = {}  # routes sent in payload
+        user_active_routes = {}   # routes in user_routes table
+        if all_uid_ids:
+            uid_list_str = ','.join(str(u) for u in all_uid_ids)
+            try:
+                for row in conn_report.execute(sql(f"""SELECT j.user_id, COALESCE(JSON_LENGTH(JSON_EXTRACT(j.payload, '$.routes')), 0) as cnt FROM scan_jobs j WHERE j.id IN ({placeholders}) AND j.user_id IN ({uid_list_str})"""), params).fetchall():
+                    user_payload_routes[int(row['user_id'])] = int(row['cnt'])
+            except Exception as e:
+                pass
+            try:
+                for row in conn_report.execute(sql(f"""SELECT user_id, COUNT(*) as c FROM user_routes WHERE user_id IN ({uid_list_str}) AND active=1 GROUP BY user_id""")).fetchall():
+                    user_active_routes[int(row['user_id'])] = int(row['c'])
+            except: pass
 
         reasons = cycle_stats.get('reasons', {}) or {}
         lines = []
@@ -656,17 +672,29 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         def _fmt_dur(s):
             s = int(s)
             return f'{s//60}m{s%60}s' if s >= 60 else f'{s}s'
+        def _route_fmt(uid, is_done):
+            total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
+            if total <= 1:
+                return ''
+            if is_done:
+                return f' {total}/{total}r'
+            # Para erro: tenta estimar quantas completaram
+            # Se não temos dados de resultado, mostra 0
+            return f' 0/{total}r'
         for r in received:
+            uid = int(r['user_id'])
             name = (r['first_name'] or '---').split()[0][:12]
-            tot = int(r['total'])
             dur = _fmt_dur(r['total_dur'])
-            dur_fmt = dur if tot == 1 else f'{dur} ({tot}r)'
-            lines.append(f'  ✅ {name}  ⏱{dur_fmt}')
+            rf = _route_fmt(uid, True)
+            lines.append(f'  ✅ {name}  ⏱{dur}{rf}')
         for r in erros:
+            uid = int(r['user_id'])
             name = (r['first_name'] or '---').split()[0][:12]
             err = str(r['erro'] or 'erro')[:18]
             icon = '⚠️' if 'stale' in err or 'timeout' in err else '❌'
-            lines.append(f'  {icon} {name}  {err}')
+            total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
+            rf = f' 0/{total}r' if total > 1 else ''
+            lines.append(f'  {icon} {name}  {err}{rf}')
         lines.append('')
         lines.append('⚙️')
         if cpu_pct is not None:
