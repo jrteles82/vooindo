@@ -755,7 +755,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         if all_uid_ids:
             uid_list_str = ','.join(str(u) for u in all_uid_ids)
             try:
-                payload_sql = sql(f"""SELECT j.user_id, COALESCE(JSON_LENGTH(JSON_EXTRACT(j.payload, '$.routes')), 0) as cnt FROM scan_jobs j WHERE j.id IN ({placeholders}) AND j.user_id IN ({uid_list_str})""")
+                payload_sql = sql(f"""SELECT j.user_id, COALESCE(JSON_EXTRACT(j.payload, '$.group_info.total_routes'), 0) as cnt FROM scan_jobs j WHERE j.id IN ({placeholders}) AND j.user_id IN ({uid_list_str})""")
                 payload_rows = conn_report.execute(payload_sql, params).fetchall()
                 for row in payload_rows:
                     user_payload_routes[int(row['user_id'])] = int(row['cnt'])
