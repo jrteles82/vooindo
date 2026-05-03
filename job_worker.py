@@ -744,7 +744,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         _route_count = len(_build_user_routes(conn, user_id))
     except Exception:
         _route_count = 1
-    _JOB_TIMEOUT = max(180, 120 + _route_count * 90)  # min 180s, ~90s por rota com booking (dá folga pra retry)
+    _JOB_TIMEOUT = max(300, 120 + _route_count * 120)  # min 300s, ~120s por rota com booking (dá folga pra retry + fila)
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
