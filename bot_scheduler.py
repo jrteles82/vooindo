@@ -503,6 +503,100 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
     return True, 'enviado', sent_count
 
 
+_LAST_REPORT_PATH = Path('/tmp/vooindo_last_reported_round.txt')
+
+
+def _last_reported_round() -> str | None:
+    try:
+        return _LAST_REPORT_PATH.read_text().strip() or None
+    except (OSError, IOError):
+        return None
+
+
+def _mark_round_reported(label: str):
+    try:
+        _LAST_REPORT_PATH.write_text(label)
+    except (OSError, IOError):
+        pass
+
+
+def _recover_missed_report(conn, bot, loop):
+    """Na inicialização, verifica se há jobs de rodada completa sem relatório enviado."""
+    now = now_local()
+    interval = get_scan_interval_seconds(conn)
+    
+    # Pega a última rodada completa (todos os jobs done/error) nas últimas 3h
+    for h in range(1, 4):
+        round_start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h)
+        round_end = round_start + timedelta(seconds=interval)
+        
+        jobs = conn.execute(sql("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
+                   SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+                   SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+            FROM scan_jobs
+            WHERE job_type = 'scheduled'
+              AND created_at >= %s AND created_at < %s
+        """), (round_start.strftime('%Y-%m-%d %H:%M:%S'), round_end.strftime('%Y-%m-%d %H:%M:%S'))).fetchone()
+        
+        if not jobs or jobs['total'] == 0:
+            continue
+        if jobs['running'] > 0 or jobs['pending'] > 0:
+            continue  # Ainda não completou
+        
+        # Rodada completa! Gerar e enviar relatório
+        round_label = round_start.strftime('%H:%M')
+        if _last_reported_round() == round_label:
+            continue  # Já reportamos (persistido)
+        
+        logger.info('[bot-scheduler][recovery] recuperando relatório perdido para rodada %s', round_label)
+        
+        # Buscar job_ids da rodada
+        job_rows = conn.execute(sql("""
+            SELECT id FROM scan_jobs
+            WHERE job_type = 'scheduled'
+              AND created_at >= %s AND created_at < %s
+            ORDER BY id
+        """), (round_start.strftime('%Y-%m-%d %H:%M:%S'), round_end.strftime('%Y-%m-%d %H:%M:%S'))).fetchall()
+        job_ids = [int(r['id']) for r in job_rows]
+        
+        if not job_ids:
+            continue
+        
+        # Sincroniza stats
+        wait_result = {
+            'complete': True,
+            'elapsed_seconds': 0,
+            'counts': {
+                'done': int(jobs['done']),
+                'error': int(jobs['erro']),
+                'running': 0,
+                'pending': 0,
+            }
+        }
+        cycle_stats = {
+            'eligible_users': 0,
+            'sent_users': 0,
+            'skipped_users': 0,
+            'errors': 0,
+            'reasons': {},
+        }
+        
+        report_text = _build_round_report(round_start.isoformat(), 0, cycle_stats, job_ids, wait_result)
+        admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
+        if admin_chat_id and report_text:
+            try:
+                loop.run_until_complete(_send_message(bot, admin_chat_id, report_text))
+                logger.info('[bot-scheduler][recovery] relatório rodada %s enviado ✅', round_label)
+            except Exception as exc:
+                logger.warning('[bot-scheduler][recovery] erro ao enviar relatório: %s', exc)
+        
+        _mark_round_reported(round_label)
+        break  # Só envia o mais recente
+
+
 def sleep_until_next_slot(interval_seconds: int):
     now = now_local()
     next_slot = now.replace(minute=0, second=0, microsecond=0) + timedelta(seconds=interval_seconds)
@@ -679,6 +773,9 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             user_payload_routes.get(int(r['user_id']), user_active_routes.get(int(r['user_id']), 0))
             for r in (received or []) + (erros or [])
         )
+        def _fmt_dur(s):
+            s = int(s)
+            return f'{s//60}m{s%60}s' if s >= 60 else f'{s}s'
         avg_dur = _fmt_dur(job_stats['avg_duration_s'] or 0)
         lines.append(f"📊 RODADA {cycle_started_iso[11:16]}")
         lines.append(f'✅ {job_stats["done"]}/{job_stats["total"]} | ❌ {job_stats["erro"]}')
@@ -686,9 +783,6 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
         lines.append(f'⏱ {round_s//60}m{round_s%60}s  📍 {total_users} users | {total_routes} rotas | {avg_dur}/rota')
         lines.append('')
         lines.append('📋 USUÁRIOS')
-        def _fmt_dur(s):
-            s = int(s)
-            return f'{s//60}m{s%60}s' if s >= 60 else f'{s}s'
         for r in received:
             uid = int(r['user_id'])
             name = (r['first_name'] or '---').split()[0][:12]
@@ -696,9 +790,7 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
             rf = ''
             if total > 1:
-                # Count how many of this user's jobs were done
-                done_count = sum(1 for rr in received if int(rr['user_id']) == uid)
-                rf = f' {done_count}/{total}r'
+                rf = f' {total}/{total}r'
             lines.append(f'  ✅ {name}  ⏱{dur}{rf}')
         for r in erros:
             uid = int(r['user_id'])
@@ -706,11 +798,11 @@ def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_st
             err = str(r['erro'] or 'erro')[:18]
             icon = '⚠️' if 'stale' in err or 'timeout' in err else '❌'
             total = user_payload_routes.get(uid, user_active_routes.get(uid, 0))
-            done_count = sum(1 for rr in received if int(rr['user_id']) == uid)
             qtd_erro = int(r['qtd_erro'])
             rf = ''
             if total > 1:
-                rf = f' {done_count}/{total}r'
+                done = total - qtd_erro
+                rf = f' {done}/{total}r'
             rota_info = ''
             if r.get('rotas_erro'):
                 rota_info = f'  🗺️ {r["rotas_erro"]}'[:40]
@@ -789,6 +881,9 @@ def main():
                         "[bot-scheduler] resetados %s jobs 'running' presos para 'pending'",
                         stuck_count,
                     )
+
+                # Recuperar relatório de rodada perdida (scheduler reiniciou antes de enviar)
+                _recover_missed_report(conn, bot, loop)
 
                 # Verificar se há jobs pendentes órfãos
                 orphan_count = conn.execute(
