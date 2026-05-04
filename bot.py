@@ -11,6 +11,7 @@ import logging
 import unicodedata
 import pymysql
 import pymysql.cursors
+from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ForceReply, ReplyKeyboardRemove, Bot
@@ -3770,6 +3771,19 @@ async def agora(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
     except Exception:
         pass
+
+    # Verificar sessão Google antes do scan manual
+    try:
+        import subprocess
+        score_file = Path(__file__).resolve().parent / 'check_google_session.py'
+        result = subprocess.run(
+            [sys.executable, str(score_file)],
+            capture_output=True, text=True, timeout=15
+        )
+        if 'Score: 3/3' not in result.stdout:
+            logger.warning('[agora] sessão Google com score baixo para scan manual')
+    except Exception as e:
+        logger.warning('[agora] erro ao verificar sessão Google: %s', e)
 
     # Cria o job em thread separada (pymysql sync) para nao travar event loop
     def _sync_run():

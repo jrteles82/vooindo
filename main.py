@@ -1651,7 +1651,26 @@ def _should_split_result_blocks(trigger: str | None, airline_filters_json: str |
 
 
 def _merge_rows_for_combined_result_view(rows: list[dict]) -> list[dict]:
-    return rows
+    """Agrupa e deduplica linhas: mesmo (origin+destionation+outbound_date+inbound_date+airline+flight_number).
+    Mantém o menor preço entre duplicatas."""
+    seen = {}
+    for row in rows:
+        key = (
+            str(row.get("origin", "")).upper(),
+            str(row.get("destination", "")).upper(),
+            str(row.get("outbound_date", "")),
+            str(row.get("inbound_date", "") or ""),
+            str(row.get("airline", "") or "").lower().strip(),
+            str(row.get("flight_number", "") or "").lower().strip(),
+        )
+        price = row.get("price_raw", 0) or 0
+        if key in seen:
+            existing_price = seen[key].get("price_raw", 0) or 0
+            if price and (not existing_price or price < existing_price):
+                seen[key] = row
+        else:
+            seen[key] = row
+    return list(seen.values())
 
 
 def _rows_for_link_type(rows: list[dict], link_type: str) -> list[dict]:

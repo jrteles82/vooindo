@@ -142,13 +142,17 @@ def check_auth_score():
     try:
         conn = sqlite3.connect(str(cookies_file))
         cur = conn.cursor()
-        cur.execute("SELECT host_key, name FROM cookies WHERE host_key LIKE '%google%' AND name IN ('SAPISID','APISID','HSID','SSID','SID','OSID')")
-        auth_cookies = cur.fetchall()
+        cur.execute("SELECT host_key, name FROM cookies WHERE host_key LIKE '%google%' AND name IN ('SAPISID','APISID','HSID','SSID','SID','OSID','__Host-GAPS')")
+        cookies = cur.fetchall()
+        names = {r[1] for r in cookies}
         conn.close()
-        log(f'Auth cookies found: {len(auth_cookies)}')
-        if len(auth_cookies) >= 3:
+        log(f'Auth cookies found: {len(cookies)} -> {names}')
+        # __Host-GAPS = logged in session (Google's current auth cookie)
+        if '__Host-GAPS' in names:
             return 3
-        elif len(auth_cookies) >= 1:
+        if len(cookies) >= 3:
+            return 3
+        if len(cookies) >= 1:
             return 1
         return 0
     except Exception as e:

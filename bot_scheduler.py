@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -355,7 +357,7 @@ def _recover_missed_report(conn, bot, loop):
         break  # Só envia o mais recente
 
 
-def sleep_until_next_slot(interval_seconds: int):
+def sleep_until_next_slot(interval_seconds: int, check_session: bool = False):
     now = now_local()
     next_slot = now.replace(minute=0, second=0, microsecond=0) + timedelta(seconds=interval_seconds)
     if interval_seconds < 3600:
@@ -363,7 +365,35 @@ def sleep_until_next_slot(interval_seconds: int):
         next_offset = ((elapsed_in_hour // interval_seconds) + 1) * interval_seconds
         next_slot = now.replace(minute=0, second=0, microsecond=0) + timedelta(seconds=next_offset)
     wait_seconds = (next_slot - now).total_seconds()
-    time.sleep(max(1, wait_seconds))
+
+    # Se é o sleep inicial (antes do primeiro ciclo), verificar sessão
+    if check_session and wait_seconds > 0:
+        session_check_time = max(1, wait_seconds - 900)  # 15 min antes
+        logger.info('[bot-scheduler] agendando verificação de sessão Google em %d segundos', session_check_time)
+        time.sleep(session_check_time)
+        _check_google_session_and_notify()
+        # Dorme o restante
+        remaining = wait_seconds - session_check_time
+        if remaining > 0:
+            time.sleep(remaining)
+    else:
+        time.sleep(max(1, wait_seconds))
+
+
+def _check_google_session_and_notify():
+    """Verifica sessão Google 15 min antes da rodada."""
+    try:
+        score_file = Path(__file__).resolve().parent / 'check_google_session.py'
+        if score_file.exists():
+            result = subprocess.run(
+                [sys.executable, str(score_file), '--notify'],
+                capture_output=True, text=True, timeout=30
+            )
+            logger.info('[bot-scheduler] check_google_session: %s', result.stdout.strip())
+            if result.returncode != 0:
+                logger.warning('[bot-scheduler] sessão Google inválida para próxima rodada')
+    except Exception as exc:
+        logger.warning('[bot-scheduler] erro ao verificar sessão Google: %s', exc)
 
 
 def _is_chat_not_found(exc: Exception) -> bool:
@@ -681,10 +711,10 @@ def main():
                         now_local_iso(sep='T'),
                         interval_seconds,
                     )
-                    sleep_until_next_slot(interval_seconds)
+                    sleep_until_next_slot(interval_seconds, check_session=True)
             except Exception as exc:
                 logger.warning("[bot-scheduler] erro ao recuperar jobs órfãos: %s", exc)
-                sleep_until_next_slot(interval_seconds)
+                sleep_until_next_slot(interval_seconds, check_session=True)
 
         try:
             if conn is None:
