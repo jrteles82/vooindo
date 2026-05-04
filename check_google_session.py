@@ -23,16 +23,18 @@ def check_session_score() -> int:
     try:
         conn = sqlite3.connect(str(COOKIES_DB))
         cur = conn.cursor()
-        cur.execute("SELECT name FROM cookies WHERE name = ?", (REQUIRED_COOKIE,))
-        has_gaps = cur.fetchone() is not None
-        cur.execute("SELECT name FROM cookies WHERE name IN ('SAPISID','APISID','HSID','SSID','SID','OSID')")
-        legacy = len(cur.fetchall())
+        cur.execute("SELECT name, value FROM cookies WHERE name = ?", (REQUIRED_COOKIE,))
+        gaps_row = cur.fetchone()
+        has_gaps = gaps_row is not None and len(gaps_row[1] or '') > 0
+        cur.execute("SELECT name, value FROM cookies WHERE name IN ('SAPISID','APISID','HSID','SSID','SID','OSID')")
+        legacy_rows = cur.fetchall()
+        legacy_with_value = [r for r in legacy_rows if len(r[1] or '') > 0]
         conn.close()
         if has_gaps:
             return 3
-        if legacy >= 3:
+        if len(legacy_with_value) >= 3:
             return 3
-        if legacy >= 1:
+        if len(legacy_with_value) >= 1:
             return 1
         return 0
     except Exception as e:
