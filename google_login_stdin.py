@@ -112,29 +112,24 @@ try:
             viewport={'width': 1280, 'height': 900},
             args=[
                 '--no-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-setuid-sandbox',
+                '--disable-infobars',
+                '--ignore-certifcate-errors',
+                '--ignore-certifcate-errors-spki-list',
             ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         Stealth().apply_stealth_sync(page)
         page.set_default_timeout(30000)
 
-        print('STATUS:STEP:Acessando google.com...')
-        page.goto('https://www.google.com/?hl=pt-BR', wait_until='domcontentloaded')
-        time.sleep(2)
-        _screenshot(page, '00_google_home')
-
-        # Clica em "Fazer login" ou similar
-        try:
-            login_btn = page.locator('a:has-text("Fazer login"), a:has-text("Sign in"), a:has-text("Entrar")').first
-            if login_btn.count() > 0:
-                print('STATUS:STEP:Clicando em Fazer Login...')
-                login_btn.click()
-                time.sleep(2)
-            else:
-                print('STATUS:STEP:Botão de login não encontrado, indo direto para signin...')
-                page.goto('https://accounts.google.com/ServiceLogin?hl=pt-BR', wait_until='domcontentloaded')
-        except Exception:
-            page.goto('https://accounts.google.com/ServiceLogin?hl=pt-BR', wait_until='domcontentloaded')
+        # Vai direto para o login — pula google.com que tem mais detecção
+        print('STATUS:STEP:Acessando contas Google...')
+        page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')
+        time.sleep(3)
+        _screenshot(page, '00_google_accounts')
 
         time.sleep(2)
         _screenshot(page, '01_start')
