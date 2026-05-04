@@ -155,6 +155,7 @@ ERROR_STRATEGIES = {
     'cancelled_by_new_request': [],  # não é erro técnico (ignora)
     'usuario_bloqueado': [],  # não é erro técnico (ignora: bloqueado, teto, sem preço)
     'process_killed': [repair_requeue_job],  # SIGTERM/SIGKILL, re-tenta
+    'stale_timeout': [repair_chrome_crash, repair_requeue_job],  # job rodou demais, limpa Chrome + re-tenta
 }
 
 def classify_error(error_message: str) -> list:
@@ -179,6 +180,8 @@ def classify_error(error_message: str) -> list:
         categories.append('job_timeout_300s')
     if 'stale_running' in error_lower:
         categories.append('stale_running_recovered')
+    if error_lower == 'stale_timeout':
+        categories.append('stale_timeout')
     if error_lower == 'stale_group_recovered':
         categories.append('stale_group_recovered')
     if 'cancelled' in error_lower:
