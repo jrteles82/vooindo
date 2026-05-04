@@ -143,6 +143,12 @@ def sync_base_session_to_worker_profiles(num_workers: int | None = None, force: 
             continue
         _copy_profile_tree(SESSION_DIR, profile_dir)
         purge_chrome_singleton_artifacts(profile_dir)
+        # Garante ownership correta no worker copiado
+        try:
+            import subprocess as _sp
+            _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(profile_dir)], capture_output=True, timeout=10)
+        except Exception:
+            pass
         copied.append(profile_dir)
     return copied
 
