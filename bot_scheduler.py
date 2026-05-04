@@ -918,6 +918,7 @@ def main():
             if admin_chat_id:
                 report_text = _build_round_report(cycle_started_iso, cycle_duration_ms, cycle_stats, created_job_ids, wait_result)
                 loop.run_until_complete(_send_message(bot, admin_chat_id, report_text))
+                _mark_round_reported(cycle_started_iso[11:16])
         except Exception as exc:
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 

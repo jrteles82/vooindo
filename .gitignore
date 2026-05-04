@@ -29,3 +29,7 @@ google_session_firefox*/
 google_session_bkp*/
 google_session_pool_*/
 login_auto.py
+
+google_session_pool_*
+/google_session_pool_*/
+

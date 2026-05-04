@@ -482,7 +482,7 @@ def _search_google_result(scraper: GoogleFlightsScraper, route: RouteQuery, fast
         # Perfis disponíveis para paralelismo
         base_dir = Path(__file__).resolve().parent
         available_profiles = [str(base_dir / "google_session")]
-        for i in range(2, 6):
+        for i in range(2, 9):
             p_dir = base_dir / f"google_session_{i}"
             if p_dir.is_dir():
                 available_profiles.append(str(p_dir))
@@ -586,7 +586,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 5  # 5 Chromes simultâneos
+_CHROME_MAX_CONCURRENT = 7  # 7 Chromes simultâneos
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -694,7 +694,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
             # Perfis disponíveis
             base_dir = Path(__file__).resolve().parent
             available_profiles = [str(base_dir / "google_session")]
-            for i in range(2, 6):
+            for i in range(2, 9):
                 p_dir = base_dir / f"google_session_{i}"
                 if p_dir.is_dir():
                     available_profiles.append(str(p_dir))
@@ -715,10 +715,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     cmd.append(r.inbound_date)
                 
                 # Timeout: 250s nacionais, 200s internacionais (com retry +60s em caso de timeout)
-                intl_timeout = 200 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 250
+                intl_timeout = 400 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 480
                 
                 # Semáforo: espera até 300s por um slot Chrome
-                slot_got = ChromeSemaphore.acquire(timeout=300.0)
+                slot_got = ChromeSemaphore.acquire(timeout=480.0)
                 if not slot_got:
                     return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
                        outbound_date=r.outbound_date, inbound_date=r.inbound_date,
@@ -755,7 +755,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
 
                 if _timeout_retry:
                     _longer_timeout = intl_timeout + 60
-                    _slot2 = ChromeSemaphore.acquire(timeout=120.0)
+                    _slot2 = ChromeSemaphore.acquire(timeout=180.0)
                     if not _slot2:
                         return FlightResult(site="google_flights", origin=r.origin, destination=r.destination,
                             outbound_date=r.outbound_date, inbound_date=r.inbound_date,

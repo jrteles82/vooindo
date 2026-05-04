@@ -1254,9 +1254,10 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
         [InlineKeyboardButton('📣 Broadcast', callback_data='painel:broadcast'),
          InlineKeyboardButton('📅 Agendador', callback_data='painel:scheduler_status')],
         [InlineKeyboardButton('🔄 Reiniciar', callback_data='painel:restart_service'),
-         InlineKeyboardButton('🔐 Renovar Google', callback_data='painel:renovar_sessao')],
-        [InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho'),
-         InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
+         InlineKeyboardButton('🔐 Renovar', callback_data='painel:renovar_sessao')],
+        [InlineKeyboardButton('🔍 Verificar Google', callback_data='painel:check_session'),
+         InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho')],
+        [InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
         # Voltar
         [InlineKeyboardButton('🏠 Menu principal', callback_data='menu:back')],
     ])
@@ -3083,6 +3084,65 @@ LIMIT 15
             reply_markup=admin_panel_markup(settings, maintenance_on, show_result_type_filters, admin_unread_support),
         )
         return
+
+    elif action == 'check_session':
+        await query.answer()
+        await query.edit_message_text('🔍 *Verificando sessão Google...*\n\nIsso pode levar até 30 segundos.', parse_mode='Markdown')
+        try:
+            import subprocess, json as _json
+            result = subprocess.run(
+                [sys.executable, '-c', '''
+import json, sys, os
+os.environ.setdefault("USE_SYSTEM_CHROME", "1")
+sys.path.insert(0, "/opt/vooindo")
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+from google_flights_executor import check_session_health
+BASE = Path("/opt/vooindo/google_session")
+for f in BASE.glob("Singleton*"):
+    try: f.unlink()
+    except: pass
+with sync_playwright() as pw:
+    ctx = pw.chromium.launch_persistent_context(
+        str(BASE), headless=True, channel="chrome",
+        args=["--no-sandbox"], timeout=20000
+    )
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    page.goto("https://www.google.com/", wait_until="domcontentloaded", timeout=20000)
+    health = check_session_health(page)
+    ctx.close()
+print(json.dumps(health))
+'''],
+                capture_output=True, text=True, timeout=45
+            )
+            if result.returncode == 0:
+                health = _json.loads(result.stdout.strip())
+                score = health.get('score', 0)
+                msg = health.get('message', '')
+                if score >= 2:
+                    emoji = '\u2705'
+                elif score >= 1:
+                    emoji = '\u26a0\ufe0f'
+                else:
+                    emoji = '\u274c'
+                texto = f'{emoji} *Sessão Google*\n\n*Score:* {score}/3\n*Status:* {"Saudável" if score >= 2 else "Expirando" if score >= 1 else "Expirada"}'
+                if msg:
+                    texto += f'\n{msg}'
+                if score < 2:
+                    texto += '\n\nPara renovar, use o botão "Renovar" no painel.'
+            else:
+                stderr = result.stderr.strip()[:200]
+                texto = f'\u274c *Falha ao verificar sessão*\n\n`{stderr}`'
+        except subprocess.TimeoutExpired:
+            texto = '\u23f0 *Tempo limite excedido*\n\nA verificação demorou mais de 45 segundos.'
+        except Exception as e:
+            texto = f'\u274c *Erro na verificação*\n\n`{str(e)[:200]}`'
+        await query.edit_message_text(
+            texto, parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('\U0001f519 Voltar ao Painel', callback_data='painel:back')]
+            ])
+        )
 
     elif action == 'back':
         await query.answer()

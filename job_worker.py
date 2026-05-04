@@ -819,7 +819,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             _route_count = len(_build_user_routes(conn, user_id))
         except Exception:
             _route_count = 1
-    _JOB_TIMEOUT = max(300, 60 + _route_count * 60)  # min 300s, ~60s por rota + buffer de fila
+    _JOB_TIMEOUT = max(700, 120 + _route_count * 90)  # min 700s (~12min), ~90s/rota + 120s buffer
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
@@ -975,7 +975,10 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         try:
             if _group_key:
                 _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
-            logger.info('[job-worker] job_id=%s | rota processada | %s->%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _t.elapsed())
+            _route_dur = _t.elapsed()
+            if _route_dur > 240_000:
+                logger.warning('[job-worker] job_id=%s | ROTA LENTA | %s->%s | duração_ms=%s (>4min)', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _route_dur)
+            logger.info('[job-worker] job_id=%s | rota processada | %s->%s | duração_ms=%s', job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _route_dur)
         except BaseException as _post_err:
             logger.error('[job-worker] job_id=%s | PER-ROUTE post exception: %s', job_id, _post_err)
         return

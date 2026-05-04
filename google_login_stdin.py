@@ -111,17 +111,7 @@ try:
             timezone_id='America/Porto_Velho',
             viewport={'width': 1280, 'height': 900},
             args=[
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
                 '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-infobars',
-                '--window-position=0,0',
-                '--ignore-certifcate-errors',
-                '--ignore-certifcate-errors-spki-list',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-web-security',
-                '--disable-gpu',
             ],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -189,40 +179,82 @@ try:
             time.sleep(3)
             _screenshot(page, '04_after_password')
         else:
-            print(f'STATUS:STEP:Campo de senha não encontrado (URL: {page.url[:80]}). Limpando cookies e tentando de novo...')
+            print(f'STATUS:STEP:Campo de senha não encontrado (URL: {page.url[:80]}). Tentando tela de rejeição...')
             _screenshot(page, '04_no_password_field')
-            # Limpa todos os cookies do perfil para forçar reautenticação real
-            ctx.clear_cookies()
-            time.sleep(0.5)
-            page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')
-            time.sleep(2)
-            _screenshot(page, '04_after_clear_cookies')
-            # Email field (agora DEVE aparecer)
-            email_input = page.locator('input[type="email"]:visible')
-            if email_input.count() > 0:
-                print('STATUS:STEP:Preenchendo email...')
-                email_input.first.click()
+            rejected_handled = False
+            if 'signin/rejected' in page.url or 'challenge' in page.url:
+                for _ in range(8):
+                    time.sleep(2)
+                    body = _get_body(page)
+                    print('STATUS:STEP:Tela de verificação...')
+                    _screenshot(page, '04_reject_step')
+                    pwd_input = page.locator('input[type="password"]')
+                    if pwd_input.count() > 0:
+                        print('STATUS:STEP:Campo senha apareceu!')
+                        pwd_input.first.click()
+                        time.sleep(0.5)
+                        page.keyboard.type(password, delay=110)
+                        time.sleep(0.5)
+                        page.keyboard.press('Enter')
+                        time.sleep(3)
+                        rejected_handled = True
+                        break
+                    for label in ['Tentar de outra forma', 'Try another way']:
+                        try:
+                            btn = page.get_by_text(label, exact=False).first
+                            if btn.count() > 0:
+                                btn.click(timeout=3000)
+                                print(f'STATUS:STEP:Clicou "{label}"')
+                                time.sleep(2)
+                                break
+                        except: pass
+                    for label in ['Continuar', 'Next', 'Avançar']:
+                        try:
+                            btn = page.get_by_text(label, exact=False).first
+                            if btn.count() > 0:
+                                btn.click(timeout=3000)
+                                time.sleep(2)
+                                break
+                        except: pass
+                    for label in ['SMS', 'Telefone', 'Phone', 'mensagem de texto']:
+                        try:
+                            btn = page.get_by_text(label, exact=False).first
+                            if btn.count() > 0:
+                                btn.click(timeout=3000)
+                                print(f'STATUS:STEP:Selecionou SMS')
+                                time.sleep(1)
+                                for lbl2 in ['Continuar', 'Next', 'Enviar', 'Send']:
+                                    try:
+                                        btn2 = page.get_by_text(lbl2, exact=False).first
+                                        if btn2.count() > 0:
+                                            btn2.click(timeout=3000)
+                                            time.sleep(1)
+                                            break
+                                    except: pass
+                                break
+                        except: pass
+            if not rejected_handled:
+                ctx.clear_cookies()
                 time.sleep(0.5)
-                page.keyboard.type(email, delay=120)
-                time.sleep(0.5)
-                page.keyboard.press('Enter')
-                time.sleep(2.5)
-                _screenshot(page, '04_after_email_retry')
-            # Password field (agora DEVE aparecer)
-            time.sleep(2)
-            pwd_input = page.locator('input[type="password"]')
-            if pwd_input.count() > 0:
-                print('STATUS:STEP:Preenchendo senha...')
-                pwd_input.first.click()
-                time.sleep(0.5)
-                page.keyboard.type(password, delay=130)
-                time.sleep(0.5)
-                page.keyboard.press('Enter')
-                time.sleep(3)
-                _screenshot(page, '04_after_password_retry')
-            else:
-                print('STATUS:ERROR:Campo de senha não apareceu mesmo limpando cookies')
-                _screenshot(page, '04_still_no_password')
+                page.goto('https://accounts.google.com/signin', wait_until='domcontentloaded')
+                time.sleep(2)
+                email_input = page.locator('input[type="email"]:visible')
+                if email_input.count() > 0:
+                    print('STATUS:STEP:Preenchendo email (retry)...')
+                    email_input.first.click()
+                    page.keyboard.type(email, delay=120)
+                    page.keyboard.press('Enter')
+                    time.sleep(2.5)
+                time.sleep(2)
+                pwd_input = page.locator('input[type="password"]')
+                if pwd_input.count() > 0:
+                    print('STATUS:STEP:Preenchendo senha (retry)...')
+                    pwd_input.first.click()
+                    page.keyboard.type(password, delay=130)
+                    page.keyboard.press('Enter')
+                    time.sleep(3)
+                else:
+                    print('STATUS:ERROR:Sem campo senha mesmo limpando cookies')
 
         # Handle challenges
         for attempt in range(12):

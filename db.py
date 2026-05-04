@@ -1,8 +1,7 @@
 """Database adapter module for Vooindo bot.
 
-Original: emulated sqlite3 API over PyMySQL.
-Refactored: native PyMySQL with autocommit=True, DictCursor.
-Compatibility: sql() function translates ? -> %s automatically.
+Native PyMySQL with autocommit=True, DictCursor.
+The sql() function translates ? -> %s for MySQL compatibility.
 """
 
 import os
@@ -178,10 +177,6 @@ class MySqlAdapter(DatabaseAdapter):
 
 def get_adapter() -> DatabaseAdapter:
     return DatabaseAdapter()
-
-
-def is_sqlite() -> bool:
-    return False
 
 
 # ── Core public API ───────────────────────────────────────────
