@@ -232,25 +232,31 @@ def check_google_session() -> dict:
         if _score < 2:
             result['ok'] = False
             result['message'] = f'Sessão Google expirada (score {_score}/3)'
-            # Tenta renovar automaticamente
-            try:
-                renewal_script = str(BASE_DIR / 'google_login_stdin.py')
-                if Path(renewal_script).exists():
-                    app_password = 'rcwv jvmu yyyx okto'
+            # Tenta renovar automaticamente (Firefox primeiro, Chrome fallback)
+            _renewed = False
+            for _name, _script in [
+                ('Firefox', BASE_DIR / 'google_login_firefox_stdin.py'),
+                ('Chrome',  BASE_DIR / 'google_login_stdin.py'),
+            ]:
+                if not _script.exists():
+                    continue
+                try:
                     _proc = subprocess.run(
-                        [_sys.executable, renewal_script, '--email', 'vooindo.bot@gmail.com'],
-                        input=app_password + '\n',
-                        capture_output=True, text=True, timeout=120,
+                        [_sys.executable, str(_script), '--email', 'vooindo.bot@gmail.com'],
+                        input='rcwv jvmu yyyx okto\n',
+                        capture_output=True, text=True, timeout=180,
                     )
                     if 'AUTH_SCORE:1' in _proc.stdout or 'AUTH_SCORE:2' in _proc.stdout:
                         result['ok'] = True
-                        result['message'] = f'Sessão Google renovada automaticamente (era {_score}/3)'
+                        result['message'] = f'Sessão Google renovada via {_name} (era {_score}/3)'
                         result['score'] = 3
-                        print(f'[HEALTHCHECK] Sessão Google renovada automaticamente ✅')
-                    else:
-                        result['message'] = f'Sessão Google ainda inválida após renovação ({_score}/3)'
-            except Exception as _renew_err:
-                result['message'] = f'Sessão Google expirada e renovação falhou: {_renew_err}'
+                        print(f'[HEALTHCHECK] Sessão Google renovada via {_name} ✅')
+                        _renewed = True
+                        break
+                except Exception as _renew_err:
+                    print(f'[HEALTHCHECK] Renovação {_name} falhou: {_renew_err}')
+            if not _renewed:
+                result['message'] = f'Sessão Google ainda inválida após renovação ({_score}/3)'
     except Exception as e:
         result['ok'] = True  # Se falhou ao verificar, não alarmar
         result['message'] = f'Verificação de sessão falhou: {e}'

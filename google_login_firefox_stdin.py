@@ -158,8 +158,14 @@ def _write_firefox_cookies_to_chrome_db(firefox_session_dir: Path, chrome_sessio
             if not path.startswith('/'):
                 path = '/' + path
 
-            # host_key: Chrome uses leading dot for domain cookies, Firefox stores without
-            if not host.startswith('.'):
+            # host_key: Chrome uses leading dot for domain cookies, Firefox stores without.
+            # EXCEPT for __Host- prefixed cookies (like __Host-GAPS) which MUST NOT have
+            # a Domain attribute (no leading dot), per cookie prefix spec.
+            if host.startswith('.'):
+                host = host
+            elif name.startswith('__Host-'):
+                pass  # keep host as-is (no leading dot)
+            else:
                 host = '.' + host
 
             try:

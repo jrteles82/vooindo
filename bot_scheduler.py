@@ -397,26 +397,31 @@ def _check_google_session_and_notify():
         return 0
 
     def _renew_session() -> bool:
-        """Tenta renovar a sessão Google via app password."""
-        renewal_script = base_dir / 'google_login_stdin.py'
-        if not renewal_script.exists():
-            return False
-        try:
-            app_password = 'rcwv jvmu yyyx okto'
-            proc = subprocess.run(
-                [sys.executable, str(renewal_script), '--email', 'vooindo.bot@gmail.com'],
-                input=app_password + '\n',
-                capture_output=True, text=True, timeout=120,
-            )
-            success = 'AUTH_SCORE:1' in proc.stdout or 'AUTH_SCORE:2' in proc.stdout
-            if success:
-                logger.info('[bot-scheduler] sessão Google renovada automaticamente')
-            else:
-                logger.warning('[bot-scheduler] renovação automática falhou: %s', proc.stdout[-300:].strip())
-            return success
-        except Exception as e:
-            logger.warning('[bot-scheduler] erro na renovação: %s', e)
-            return False
+        """Tenta renovar a sessão Google via app password.
+        Tenta Firefox primeiro (menos detectado), fallback Chrome.
+        """
+        app_password = 'rcwv jvmu yyyx okto'
+        scripts = [
+            ('Firefox', base_dir / 'google_login_firefox_stdin.py'),
+            ('Chrome',  base_dir / 'google_login_stdin.py'),
+        ]
+        for name, script in scripts:
+            if not script.exists():
+                continue
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(script), '--email', 'vooindo.bot@gmail.com'],
+                    input=app_password + '\n',
+                    capture_output=True, text=True, timeout=180,
+                )
+                success = 'AUTH_SCORE:1' in proc.stdout or 'AUTH_SCORE:2' in proc.stdout
+                if success:
+                    logger.info('[bot-scheduler] sessão Google renovada via %s', name)
+                    return True
+                logger.warning('[bot-scheduler] renovação %s falhou: %s', name, proc.stdout[-300:].strip())
+            except Exception as e:
+                logger.warning('[bot-scheduler] erro na renovação %s: %s', name, e)
+        return False
 
     try:
         if not score_file.exists():
