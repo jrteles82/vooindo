@@ -145,18 +145,18 @@ def _send_admin_alert_sync(message: str) -> None:
 
 
 def _fix_google_session_permissions():
-    """Corrige permissão da google_session para ubuntu:ubuntu automaticamente."""
-    sess_dir = BASE_DIR / 'google_session'
-    if not sess_dir.is_dir():
-        return
-    try:
-        st = sess_dir.stat()
-        if st.st_uid != os.geteuid() or st.st_gid != os.getegid():
-            import subprocess as _sp
-            _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(sess_dir)], capture_output=True, timeout=5)
-            logger.info('[session_watchdog] google_session permissions fixed → ubuntu:ubuntu')
-    except Exception as exc:
-        logger.warning('[session_watchdog] Falha ao verificar permissão google_session: %s', exc)
+    """Corrige permissão da google_session e workers para ubuntu:ubuntu automaticamente."""
+    import subprocess as _sp
+    for sess_dir in sorted(BASE_DIR.glob('google_session*')):
+        if not sess_dir.is_dir():
+            continue
+        try:
+            st = sess_dir.stat()
+            if st.st_uid != os.geteuid() or st.st_gid != os.getegid():
+                _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(sess_dir)], capture_output=True, timeout=10)
+                logger.info('[session_watchdog] permissões %s → ubuntu:ubuntu', sess_dir.name)
+        except Exception as exc:
+            logger.warning('[session_watchdog] Falha ao verificar %s: %s', sess_dir.name, exc)
 
 
 def main():

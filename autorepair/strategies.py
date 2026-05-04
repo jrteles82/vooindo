@@ -143,6 +143,25 @@ def repair_requeue_job(ctx: dict) -> bool:
 
 # ─── Mapa erro → estratégia ─────────────────────────────────────────
 
+def repair_permission_error(ctx: dict) -> bool:
+    """Corrige permissão de diretórios google_session para ubuntu:ubuntu."""
+    import subprocess as _sp
+    try:
+        base = Path('/opt/vooindo')
+        ok = False
+        for d in sorted(base.glob('google_session*')):
+            if d.is_dir():
+                _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(d)], capture_output=True, timeout=10)
+                ok = True
+        if ok:
+            logger.warning('[repair] permissões google_session* corrigidas para ubuntu:ubuntu')
+            return True
+        return False
+    except Exception as e:
+        logger.error(f'[repair] falha ao corrigir permissões: {e}')
+        return False
+
+
 ERROR_STRATEGIES = {
     'parsed=0': [repair_parse_zero, repair_requeue_job],
     'proc_error_rc1': [repair_chrome_crash, repair_requeue_job],
@@ -156,6 +175,7 @@ ERROR_STRATEGIES = {
     'usuario_bloqueado': [],  # não é erro técnico (ignora: bloqueado, teto, sem preço)
     'process_killed': [repair_requeue_job],  # SIGTERM/SIGKILL, re-tenta
     'stale_timeout': [repair_chrome_crash, repair_requeue_job],  # job rodou demais, limpa Chrome + re-tenta
+    'permission_error': [repair_permission_error, repair_requeue_job],  # ownership root → ubuntu
 }
 
 def classify_error(error_message: str) -> list:
@@ -182,6 +202,8 @@ def classify_error(error_message: str) -> list:
         categories.append('stale_running_recovered')
     if error_lower == 'stale_timeout':
         categories.append('stale_timeout')
+    if 'permission denied' in error_lower or 'errno 13' in error_lower:
+        categories.append('permission_error')
     if error_lower == 'stale_group_recovered':
         categories.append('stale_group_recovered')
     if 'cancelled' in error_lower:
