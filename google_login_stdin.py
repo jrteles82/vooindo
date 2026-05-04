@@ -346,10 +346,12 @@ try:
             except Exception as e:
                 print(f'STATUS:STEP:Aviso: sync falhou: {e}')
         
-        # Garantir permissão ubuntu em toda a sessão
+        # Garantir permissão ubuntu em TODAS as sessões (base + workers)
         import subprocess as _sp
-        _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(SESSION_DIR)], capture_output=True)
-        print('STATUS:STEP:Permissões corrigidas para ubuntu:ubuntu.')
+        for _d in sorted(SESSION_DIR.parent.glob('google_session*')):
+            if _d.is_dir():
+                _sp.run(['chown', '-R', 'ubuntu:ubuntu', str(_d)], capture_output=True, timeout=15)
+        print('STATUS:STEP:Permissões corrigidas para ubuntu:ubuntu (base + workers).')
 
         print(f'STATUS:AUTH_SCORE:{score}')
 
