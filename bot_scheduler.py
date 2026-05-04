@@ -381,19 +381,73 @@ def sleep_until_next_slot(interval_seconds: int, check_session: bool = False):
 
 
 def _check_google_session_and_notify():
-    """Verifica sessão Google 15 min antes da rodada."""
+    """Verifica sessão Google 15 min antes da rodada. Tenta renovar automaticamente se inválida."""
+    base_dir = Path(__file__).resolve().parent
+    score_file = base_dir / 'check_google_session.py'
+
+    def _session_score() -> int:
+        """Retorna 0-3. 3 = válida."""
+        r = subprocess.run([sys.executable, str(score_file)], capture_output=True, text=True, timeout=30)
+        for line in r.stdout.strip().split('\n'):
+            if 'Score:' in line:
+                try:
+                    return int(line.split(':')[1].strip().split('/')[0])
+                except:
+                    return 0
+        return 0
+
+    def _renew_session() -> bool:
+        """Tenta renovar a sessão Google via app password."""
+        renewal_script = base_dir / 'google_login_stdin.py'
+        if not renewal_script.exists():
+            return False
+        try:
+            app_password = 'rcwv jvmu yyyx okto'
+            proc = subprocess.run(
+                [sys.executable, str(renewal_script), '--email', 'vooindo.bot@gmail.com'],
+                input=app_password + '\n',
+                capture_output=True, text=True, timeout=120,
+            )
+            success = 'AUTH_SCORE:1' in proc.stdout or 'AUTH_SCORE:2' in proc.stdout
+            if success:
+                logger.info('[bot-scheduler] sessão Google renovada automaticamente')
+            else:
+                logger.warning('[bot-scheduler] renovação automática falhou: %s', proc.stdout[-300:].strip())
+            return success
+        except Exception as e:
+            logger.warning('[bot-scheduler] erro na renovação: %s', e)
+            return False
+
     try:
-        score_file = Path(__file__).resolve().parent / 'check_google_session.py'
-        if score_file.exists():
-            result = subprocess.run(
+        if not score_file.exists():
+            return
+
+        score = _session_score()
+        logger.info('[bot-scheduler] sessão Google: %d/3', score)
+
+        if score >= 3:
+            return  # tudo ok
+
+        logger.warning('[bot-scheduler] sessão Google %d/3 — tentando renovar...', score)
+        if _renew_session():
+            new_score = _session_score()
+            if new_score >= 3:
+                logger.info('[bot-scheduler] renovação ok — sessão %d/3', new_score)
+            else:
+                logger.warning('[bot-scheduler] renovação não restaurou sessão (ainda %d/3)', new_score)
+        else:
+            logger.warning('[bot-scheduler] renovação automática falhou')
+
+        # Sempre notifica se ainda inválida
+        score = _session_score()
+        if score < 3:
+            notify_result = subprocess.run(
                 [sys.executable, str(score_file), '--notify'],
                 capture_output=True, text=True, timeout=30
             )
-            logger.info('[bot-scheduler] check_google_session: %s', result.stdout.strip())
-            if result.returncode != 0:
-                logger.warning('[bot-scheduler] sessão Google inválida para próxima rodada')
+            logger.info('[bot-scheduler] notificação: %s', notify_result.stdout.strip()[:200])
     except Exception as exc:
-        logger.warning('[bot-scheduler] erro ao verificar sessão Google: %s', exc)
+        logger.warning('[bot-scheduler] erro ao verificar/renovar sessão Google: %s', exc)
 
 
 def _is_chat_not_found(exc: Exception) -> bool:

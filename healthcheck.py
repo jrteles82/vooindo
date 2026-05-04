@@ -231,7 +231,26 @@ def check_google_session() -> dict:
         result['score'] = _score
         if _score < 2:
             result['ok'] = False
-            result['message'] = f'Sessão Google expirada (score {_score}/3). Use 🔐 Renovar Google no painel admin.'
+            result['message'] = f'Sessão Google expirada (score {_score}/3)'
+            # Tenta renovar automaticamente
+            try:
+                renewal_script = str(BASE_DIR / 'google_login_stdin.py')
+                if Path(renewal_script).exists():
+                    app_password = 'rcwv jvmu yyyx okto'
+                    _proc = subprocess.run(
+                        [_sys.executable, renewal_script, '--email', 'vooindo.bot@gmail.com'],
+                        input=app_password + '\n',
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if 'AUTH_SCORE:1' in _proc.stdout or 'AUTH_SCORE:2' in _proc.stdout:
+                        result['ok'] = True
+                        result['message'] = f'Sessão Google renovada automaticamente (era {_score}/3)'
+                        result['score'] = 3
+                        print(f'[HEALTHCHECK] Sessão Google renovada automaticamente ✅')
+                    else:
+                        result['message'] = f'Sessão Google ainda inválida após renovação ({_score}/3)'
+            except Exception as _renew_err:
+                result['message'] = f'Sessão Google expirada e renovação falhou: {_renew_err}'
     except Exception as e:
         result['ok'] = True  # Se falhou ao verificar, não alarmar
         result['message'] = f'Verificação de sessão falhou: {e}'
