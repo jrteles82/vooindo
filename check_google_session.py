@@ -15,8 +15,24 @@ REQUIRED_COOKIE = '__Host-GAPS'
 ADMIN_IDS = [1748352987]  # Teles
 
 
-def check_session_score() -> int:
-    """Retorna 0-3. 3 = autenticado."""
+def check_session_score(verify_with_browser: bool = True) -> int:
+    """Retorna 0-3. 3 = autenticado.
+    
+    Se verify_with_browser=True e SQLite der score >= 2, faz verificação
+    real abrindo Chrome com Playwright (check_session_health) pra evitar
+    falsos positivos (cookies no DB mas sessão não reconhecida).
+    """
+    score = _score_sqlite()
+    if score >= 2 and verify_with_browser:
+        browser_score = _score_with_browser()
+        if browser_score < 2:
+            print(f'⚠️ SQLite deu {score}/3 mas navegação real deu {browser_score}/3')
+            print('⚠️ Os cookies estão no DB mas o Google não reconhece a sessão')
+            return browser_score
+    return score
+
+
+def _score_sqlite() -> int:
     if not COOKIES_DB.exists():
         print(f'❌ Cookie DB não encontrado: {COOKIES_DB}')
         return 0
@@ -40,6 +56,28 @@ def check_session_score() -> int:
     except Exception as e:
         print(f'❌ Erro ao ler cookies: {e}')
         return 0
+
+
+def _score_with_browser() -> int:
+    """Abre Chrome e verifica sessão real com check_session_health."""
+    try:
+        from playwright.sync_api import sync_playwright
+        from google_flights_executor import check_session_health
+        for f in BASE_DIR.glob('google_session/Singleton*'):
+            try: f.unlink()
+            except: pass
+        with sync_playwright() as pw:
+            ctx = pw.chromium.launch_persistent_context(
+                str(BASE_DIR / 'google_session'), headless=True, channel='chrome',
+                args=['--no-sandbox'], timeout=20000)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
+            health = check_session_health(page)
+            ctx.close()
+            return health.get('score', 0)
+    except Exception as e:
+        print(f'⚠️ Browser check falhou: {e}')
+        return -1
 
 
 def notify_admin(score: int, via_bot: bool = True):
