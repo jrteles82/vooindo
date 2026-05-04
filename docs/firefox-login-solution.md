@@ -1,64 +1,48 @@
-# Firefox Login Solution
+# Firefox Login Solution — Descontinuado
 
-## Problema
+## TL;DR
 
-O Chrome/Chromium headless com Playwright é bloqueado pelo Google na página `accounts.google.com/v3/signin/rejected` — mesmo com perfil persistente, stealth habilitado, app password válida. O Firefox com headless=False (via Xvfb) passa despercebido.
+Firefox Playwright **também** é barrado no `signin/rejected`. A conta `vooindo.bot@gmail.com` está na lista negra do Google e não aceita automação (Playwright Chrome ou Firefox).
 
-## Arquivos
+O `__Host-GAPS` obtido da página de erro é um cookie de *challenge*, não de sessão real. Falso positivo detectado após verificação com `check_session_health()`.
 
-| Arquivo | Função |
-|---------|--------|
-| `google_login_firefox_stdin.py` | Login via Firefox Playwright (headful) |
-| `google_login_stdin.py` | Login via Chrome (legado, fallback) |
-| `google_session_firefox/` | Perfil persistente do Firefox |
-| `check_google_session.py` | Verificador de score 0-3 |
+**Única solução funcional:** renovação manual com Chrome headful real (`/renovar_sessao` via bot, ou login manual no navegador com Xvfb).
 
-## Fluxo
+## Histórico do Problema
 
-1. Firefox faz login no Google (Xvfb :98, headless=False, stealth)
-2. Firefox salva cookies no perfil persistente (`google_session_firefox/`)
-3. Script lê cookies do SQLite do Firefox (`moz_cookies`)
-4. Escreve direto no SQLite do Chrome (`google_session/Default/Cookies`)
-5. Sincroniza para workers via `google_session_sync.py`
-6. Ajusta permissões (`chown ubuntu:ubuntu`)
+| Tentativa | Resultado |
+|-----------|-----------|
+| Chrome Playwright headless | `signin/rejected` |
+| Firefox Playwright headless=False + Xvfb | `signin/rejected` (mesma página) |
+| Chrome Playwright headful + Xvfb + perfil persistente | Funcionou na última renovação manual |
 
-## Cookie Transfer — Detalhe Crítico
+O Google está bloqueando **automação programática**, não o navegador em si. A automação manual (humano interagindo com Chrome headful) funciona porque o Google não detecta o comportamento como robótico.
 
-A transferência é feita via SQLite direto (não `add_cookies()` do Playwright) porque:
+## Diagnóstico
 
-- `add_cookies()` não persiste cookies `__Host-*` corretamente no disco
-- Chrome usa formato Windows epoch (microdesde 1601-01-01)
-- Firefox usa Unix epoch (milissegundo desde 1970-01-01)
+- `check_session_health()` → score 0-1/3 (login prompt visível)
+- `check_google_session.py` SQLite → 3/3 (falso positivo — cookie no DB mas não reconhecido)
+- `check_google_session.py` com Playwright → 1/3 (real)
 
-**Regra de ouro para `__Host-GAPS`:**
-- NÃO adicionar leading dot no host (`accounts.google.com`, não `.accounts.google.com`)
-- Prefixo `__Host-` exige Domain attribute vazio (RFC 6265)
+## Scripts
 
-```python
-if name.startswith('__Host-'):
-    host = host  # mantém como está, sem ponto
-else:
-    host = '.' + host  # adiciona ponto pra domain cookies
-```
-
-Cookies transferidos: NID, OTZ (×2), **__Host-GAPS**, __Secure-BUCKET.
+| Arquivo | Status | Função |
+|---------|--------|--------|
+| `google_login_firefox_stdin.py` | ❌ Bloqueado | Tentativa Firefox, detecta rejected e falha |
+| `google_login_stdin.py` | ❌ Bloqueado | Tentativa Chrome, detecta rejected e falha |
+| `google_login_firefox.py` | ❌ Bloqueado | Versão interativa do Firefox |
+| `check_google_session.py` | ✅ Corrigido | Verificação dupla (SQLite + Playwright real) |
 
 ## Auto-Renewal
 
-Tanto `bot_scheduler.py` quanto `healthcheck.py` tentam nesta ordem:
+O cascade em `bot_scheduler.py` e `healthcheck.py` ainda tenta Firefox → Chrome no auto-renewal, mas ambos falham com `signin/rejected`. A notificação de sessão inválida é enviada ao admin via Telegram.
 
-1. `google_login_firefox_stdin.py` (Firefox)
-2. `google_login_stdin.py` (Chrome, fallback)
+## Próximos passos possíveis
 
-Se nenhum funcionar, o admin é notificado via Telegram.
-
-## Verificação
-
-```bash
-cd /opt/vooindo
-.venv/bin/python3 check_google_session.py
-# Esperado: Score: 3/3 ✅ Sessão Google válida
-```
+1. **Login manual periódico** (`/renovar_sessao`) — funciona, tolerância de ~12h antes da sessão expirar
+2. **Undetected Chromedriver** — biblioteca que patcha o Chrome pra evitar detecção
+3. **Selenium com perfil real** — alternativa ao Playwright
+4. **Curl + cookies copiados manualmente** — baixa tecnologia, confiável
 
 ## App Password
 
