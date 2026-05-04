@@ -1,3 +1,1 @@
-2026/05/02-19:11:24.991 633eb Table #4: 1 entries OK
-2026/05/02-19:11:24.991 633eb Archiving /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001: OK
-2026/05/02-19:11:24.993 633eb **** Repaired leveldb /opt/vooindo/google_session/Default/Site Characteristics Database; recovered 1 files; 130 bytes. Some data may have been lost. ****
+2026/05/03-15:08:35.392 a6d53 Reusing MANIFEST /opt/vooindo/google_session/Default/Site Characteristics Database/MANIFEST-000001

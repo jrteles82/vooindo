@@ -640,139 +640,153 @@ def _save_route_result(conn, job_id: int, user_id: int, chat_id: str, route_info
 
 
 def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, group_key: str, settings, pool: str, charge_now: bool, _t) -> None:
-    """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia."""
+    """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia.
+
+    Usa GET_LOCK do MySQL pra evitar que múltiplos workers enviem duplicado
+    quando vários jobs do mesmo grupo terminam no mesmo instante.
+    """
     import json as _json
     
-    # Seguranca: verifica se TODOS os jobs do grupo sao do mesmo usuario
-    _user_check = conn.execute(sql('''
-        SELECT COUNT(DISTINCT user_id) AS uc, COUNT(DISTINCT chat_id) AS cc
-        FROM scan_jobs
-        WHERE group_key = %s
-    '''), (group_key,)).fetchone()
-    if _user_check:
-        _uc = _user_check['uc'] if isinstance(_user_check, dict) else _user_check[0]
-        _cc = _user_check['cc'] if isinstance(_user_check, dict) else _user_check[1]
-        if _uc > 1 or _cc > 1:
-            logger.warning('[job-worker] group_key=%s | MULTIPLOS usuarios (%s uids, %s chats) no mesmo grupo — IGNORANDO consolidacao', group_key, _uc, _cc)
-            return
-    
-    # Verifica se ainda há jobs pendentes/rodando no grupo
-    pending = conn.execute(sql('''
-        SELECT COUNT(*) AS c, MAX(started_at) AS recent_started
-        FROM scan_jobs
-        WHERE group_key = %s AND status IN ('pending', 'running')
-    '''), (group_key,)).fetchone()
-    _pend_count = (pending['c'] if isinstance(pending, dict) else pending[0]) if pending else 0
-    _recent_started = (pending.get('recent_started') if isinstance(pending, dict) else None) if pending else None
-    
-    if _pend_count > 0:
-        # Verifica se jobs pendentes estão stale (>5min rodando sem resposta)
-        if _recent_started:
-            import datetime as _dt
-            _now = _dt.datetime.now()
-            _started = _recent_started
-            if isinstance(_started, str):
-                try:
-                    _started = _dt.datetime.strptime(_started, '%Y-%m-%d %H:%M:%S')
-                except ValueError:
-                    _started = _now
-            _stale_seconds = (_now - _started).total_seconds() if _started else 0
-            if _stale_seconds > 600:
-                logger.warning('[job-worker] group_key=%s | %s jobs stale (>%ds) — consolidando mesmo assim', group_key, _pend_count, _stale_seconds)
-                # Marca jobs stale como error pra não ficarem presos
-                conn.execute(sql('''
-                    UPDATE scan_jobs SET status = 'error', error_message = 'stale_timeout', finished_at = NOW()
-                    WHERE group_key = %s AND status IN ('pending', 'running') AND started_at < NOW() - INTERVAL 10 MINUTE
-                '''), (group_key,))
-                conn.commit()
+    # Lock no banco: primeiro worker a pegar consolida, os outros desistem
+    _lock_name = f'consolidate_{group_key}'
+    _got_lock = conn.execute(sql("SELECT GET_LOCK(%s, 0) AS got_lock"), (_lock_name,)).fetchone()
+    _locked = int((_got_lock['got_lock'] if isinstance(_got_lock, dict) else _got_lock[0]) or 0)
+    if not _locked:
+        logger.info('[job-worker] group_key=%s | lock já adquirido por outro worker — pulando consolidação', group_key)
+        return
+    try:
+        # Seguranca: verifica se TODOS os jobs do grupo sao do mesmo usuario
+        _user_check = conn.execute(sql('''
+            SELECT COUNT(DISTINCT user_id) AS uc, COUNT(DISTINCT chat_id) AS cc
+            FROM scan_jobs
+            WHERE group_key = %s
+        '''), (group_key,)).fetchone()
+        if _user_check:
+            _uc = _user_check['uc'] if isinstance(_user_check, dict) else _user_check[0]
+            _cc = _user_check['cc'] if isinstance(_user_check, dict) else _user_check[1]
+            if _uc > 1 or _cc > 1:
+                logger.warning('[job-worker] group_key=%s | MULTIPLOS usuarios (%s uids, %s chats) no mesmo grupo — IGNORANDO consolidacao', group_key, _uc, _cc)
+                return
+        
+        # Verifica se ainda há jobs pendentes/rodando no grupo
+        pending = conn.execute(sql('''
+            SELECT COUNT(*) AS c, MAX(started_at) AS recent_started
+            FROM scan_jobs
+            WHERE group_key = %s AND status IN ('pending', 'running')
+        '''), (group_key,)).fetchone()
+        _pend_count = (pending['c'] if isinstance(pending, dict) else pending[0]) if pending else 0
+        _recent_started = (pending.get('recent_started') if isinstance(pending, dict) else None) if pending else None
+        
+        if _pend_count > 0:
+            # Verifica se jobs pendentes estão stale (>5min rodando sem resposta)
+            if _recent_started:
+                import datetime as _dt
+                _now = _dt.datetime.now()
+                _started = _recent_started
+                if isinstance(_started, str):
+                    try:
+                        _started = _dt.datetime.strptime(_started, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        _started = _now
+                _stale_seconds = (_now - _started).total_seconds() if _started else 0
+                if _stale_seconds > 600:
+                    logger.warning('[job-worker] group_key=%s | %s jobs stale (>%ds) — consolidando mesmo assim', group_key, _pend_count, _stale_seconds)
+                    # Marca jobs stale como error pra não ficarem presos
+                    conn.execute(sql('''
+                        UPDATE scan_jobs SET status = 'error', error_message = 'stale_timeout', finished_at = NOW()
+                        WHERE group_key = %s AND status IN ('pending', 'running') AND started_at < NOW() - INTERVAL 10 MINUTE
+                    '''), (group_key,))
+                    conn.commit()
+                else:
+                    return  # Jobs ainda estão dentro do tempo esperado
             else:
-                return  # Jobs ainda estão dentro do tempo esperado
-        else:
-            return  # Jobs pendentes sem started_at (aguardando worker)
-    
-    # Buscar dados JSON salvos das rotas do grupo
-    route_results = conn.execute(sql('''
-        SELECT origin, destination, num_results, result_data FROM scan_job_route_results
-        WHERE group_key = %s ORDER BY id
-    '''), (group_key,)).fetchall()
-    
-    if not route_results:
-        logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
-        return
-    
-    total_results = sum(
-        int(r['num_results'] if isinstance(r, dict) else r[2])
-        for r in route_results
-    )
-    logger.info('[job-worker] group_key=%s | consolidando %s rotas (%s resultados)', group_key, len(route_results), total_results)
-    
-    # Reconstruir lista de dicts a partir dos JSONs salvos
-    all_rows = []
-    for r in route_results:
-        rd = dict(r) if isinstance(r, dict) else {}
-        raw = rd.get('result_data')
-        if not raw:
-            continue
+                return  # Jobs pendentes sem started_at (aguardando worker)
+        
+        # Buscar dados JSON salvos das rotas do grupo
+        route_results = conn.execute(sql('''
+            SELECT origin, destination, num_results, result_data FROM scan_job_route_results
+            WHERE group_key = %s ORDER BY id
+        '''), (group_key,)).fetchall()
+        
+        if not route_results:
+            logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
+            return
+        
+        total_results = sum(
+            int(r['num_results'] if isinstance(r, dict) else r[2])
+            for r in route_results
+        )
+        logger.info('[job-worker] group_key=%s | consolidando %s rotas (%s resultados)', group_key, len(route_results), total_results)
+        
+        # Reconstruir lista de dicts a partir dos JSONs salvos
+        all_rows = []
+        for r in route_results:
+            rd = dict(r) if isinstance(r, dict) else {}
+            raw = rd.get('result_data')
+            if not raw:
+                continue
+            try:
+                parsed_rows = _json.loads(raw)
+                all_rows.extend(parsed_rows)
+            except Exception as _je:
+                logger.warning('[job-worker] group_key=%s | erro ao parsear resultado de %s->%s: %s', group_key, rd.get('origin','?'), rd.get('destination','?'), _je)
+        
+        if not all_rows:
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+            return
+        
+        # Aplicar filtros (mesma lógica do fluxo original)
         try:
-            parsed_rows = _json.loads(raw)
-            all_rows.extend(parsed_rows)
-        except Exception as _je:
-            logger.warning('[job-worker] group_key=%s | erro ao parsear resultado de %s->%s: %s', group_key, rd.get('origin','?'), rd.get('destination','?'), _je)
-    
-    if not all_rows:
-        loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
-        return
-    
-    # Aplicar filtros (mesma lógica do fluxo original)
-    try:
-        airline_filters_json = str(settings.get('airline_filters_json') or '')
-    except (KeyError, IndexError):
-        airline_filters_json = ''
-    show_result_type_filters = should_show_result_type_filters(conn)
-    
-    expanded = expand_rows_by_result_type(all_rows, airline_filters_json, show_result_type_filters=show_result_type_filters)
-    max_price_val = normalize_max_price(settings.get('max_price'))
-    filtered_price = filter_rows_by_max_price(expanded, max_price_val)
-    filtered_norm = normalize_rows_for_airline_priority(filtered_price, airline_filters_json)
-    filtered_vendor = filter_rows_with_vendor(filtered_norm)
-    filtered_airlines = filter_rows_by_airlines(filtered_vendor, airline_filters_json, show_result_type_filters=show_result_type_filters)
-    filtered_merged = _merge_rows_for_combined_result_view(filtered_airlines) if False else filtered_airlines
-    
-    if not filtered_merged:
-        loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
-        return
-    
-    # Gerar imagem e enviar
-    image_path = build_scan_results_image(filtered_merged, trigger='agendada')
-    if not image_path:
-        fallback_msg = build_booking_links_message(filtered_merged)
-        if fallback_msg:
-            _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
-        return
-    
-    try:
-        send_photo(bot, loop, chat_id, image_path)
-        links_msg = build_booking_links_message(filtered_merged)
-        if links_msg:
-            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-        else:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+            airline_filters_json = str(settings.get('airline_filters_json') or '')
+        except (KeyError, IndexError):
+            airline_filters_json = ''
+        show_result_type_filters = should_show_result_type_filters(conn)
+        
+        expanded = expand_rows_by_result_type(all_rows, airline_filters_json, show_result_type_filters=show_result_type_filters)
+        max_price_val = normalize_max_price(settings.get('max_price'))
+        filtered_price = filter_rows_by_max_price(expanded, max_price_val)
+        filtered_norm = normalize_rows_for_airline_priority(filtered_price, airline_filters_json)
+        filtered_vendor = filter_rows_with_vendor(filtered_norm)
+        filtered_airlines = filter_rows_by_airlines(filtered_vendor, airline_filters_json, show_result_type_filters=show_result_type_filters)
+        filtered_merged = _merge_rows_for_combined_result_view(filtered_airlines) if False else filtered_airlines
+        
+        if not filtered_merged:
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+            return
+        
+        # Gerar imagem e enviar
+        image_path = build_scan_results_image(filtered_merged, trigger='agendada')
+        if not image_path:
+            fallback_msg = build_booking_links_message(filtered_merged)
+            if fallback_msg:
+                _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
+            return
+        
+        try:
+            send_photo(bot, loop, chat_id, image_path)
+            links_msg = build_booking_links_message(filtered_merged)
+            if links_msg:
+                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+            else:
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+        finally:
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
+        
+        try:
+            mark_sent(conn, user_id, send_type='scheduled')
+        except TypeError:
+            mark_sent(conn, user_id)
+        
+        if charge_now:
+            conn.execute(sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"), (chat_id,))
+            conn.commit()
+        
+        logger.info('[job-worker] group_key=%s | consolidação enviada | %s resultados | duração_ms=%s', group_key, len(filtered_merged), _t.elapsed())
     finally:
-        try:
-            os.remove(image_path)
-        except OSError:
-            pass
-    
-    try:
-        mark_sent(conn, user_id, send_type='scheduled')
-    except TypeError:
-        mark_sent(conn, user_id)
-    
-    if charge_now:
-        conn.execute(sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"), (chat_id,))
-        conn.commit()
-    
-    logger.info('[job-worker] group_key=%s | consolidação enviada | %s resultados | duração_ms=%s', group_key, len(filtered_merged), _t.elapsed())
+        conn.execute(sql("SELECT RELEASE_LOCK(%s)"), (_lock_name,))
 
 
 def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
