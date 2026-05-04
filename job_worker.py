@@ -1,7 +1,6 @@
 import asyncio
 import atexit
 import os
-import re
 import signal
 import sys
 import time
@@ -23,10 +22,9 @@ from access_policy import (
     should_charge_user,
 )
 from audit import audit
-from config import TOKEN, now_local
+from config import TOKEN
 from db import auto_pk_column, connect as connect_db, indexed_text_column, now_expression, sql, text_column, DatabaseRateLimitError
-from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, _rows_by_result_type, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
-from ai_assistant import generate_ai_message
+from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from google_session_sync import sync_current_worker_profile_from_base
 

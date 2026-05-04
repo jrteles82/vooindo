@@ -199,7 +199,7 @@ def check_stale_jobs(hours: int = 2) -> dict:
         row = cur.fetchone()
         result['stale_count'] = int(row['cnt'] if isinstance(row, dict) else row[0])
         if result['stale_count'] > 0:
-            result['message'] = f"⚠️ {result['stale_count']} stale_running_recovered nas últimas {h}h"
+            result['message'] = f"⚠️ {result['stale_count']} stale_running_recovered nas últimas {hours}h"
         conn.close()
     except Exception as e:
         result['message'] = f'Falha ao verificar stales: {e}'

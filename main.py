@@ -24,7 +24,8 @@ from db import auto_pk_column, connect as connect_db, id_ref_column, is_integrit
 from app_logging import get_logger
 
 from models import FlightResult, RouteQuery, Database
-from skyscanner import format_brl
+from skyscanner import format_brl, GoogleFlightsScraper
+from typing import Optional
 
 def format_brl(value: float) -> str:
     if not isinstance(value, (int, float)):
@@ -310,7 +311,7 @@ def notify_full_scan(parsed: list[dict], trigger: str = "manual", send_fn=None, 
     display_rows = _filter_rows_no_vendor(filtered)
     try:
         from bot import should_show_result_type_filters
-        conn = get_db_connection(auth_db_path())
+        conn = connect_db()
         try:
             show_result_type_filters = should_show_result_type_filters(conn)
         finally:
@@ -371,13 +372,15 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
 
 
 def _routes_for_request_user() -> list[RouteQuery]:
-    user = current_user()
-    if user:
-        conn = get_auth_db()
-        routes = _build_user_routes(conn, int(user["id"]))
-        if routes:
-            return routes
-    return build_db_queries()
+    conn = connect_db()
+    try:
+        cur = conn.execute(sql("SELECT user_id FROM bot_users LIMIT 1"))
+        row = cur.fetchone()
+        if row:
+            return _build_user_routes(conn, int(row["user_id"]))
+    finally:
+        conn.close()
+    return []
 
 
 def _result_to_row(result: FlightResult, price_band: str) -> dict:
@@ -405,6 +408,23 @@ def _result_to_row(result: FlightResult, price_band: str) -> dict:
         "best_airline_price": getattr(result, "best_airline_price", None),
         "best_airline_url": getattr(result, "best_airline_url", None),
     }
+
+
+def get_global_max_price_limit() -> float | None:
+    """Retorna o limite global de preço para exibição."""
+    conn = connect_db()
+    try:
+        row = conn.execute(
+            sql("SELECT max_price_display FROM app_settings WHERE id = 1")
+        ).fetchone()
+        if row:
+            val = row["max_price_display"]
+            return float(val) if val is not None else None
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
 
 
 def _expand_result_rows(row: dict) -> list[dict]:
@@ -909,7 +929,18 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
 
 def run_full_scan(on_row=None):
     global _scan_last_run_at
-    parsed = run_scan_for_routes(build_db_queries(), on_row=on_row)
+    conn = connect_db()
+    try:
+        cur = conn.execute(sql("SELECT user_id FROM bot_users LIMIT 1"))
+        row = cur.fetchone()
+        if not row:
+            return []
+        routes = _build_user_routes(conn, int(row["user_id"]))
+    finally:
+        conn.close()
+    if not routes:
+        return []
+    parsed = run_scan_for_routes(routes, on_row=on_row)
     _scan_last_run_at = now_local_iso(sep="T")
     return parsed
 
@@ -934,7 +965,7 @@ def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
     except Exception:
         pass
 
-    retry_conn = get_db_connection(auth_db_path())
+    retry_conn = connect_db()
     try:
         retry_conn.execute(
             sql("UPDATE user_runs SET finished_at = %s, status = %s, summary = %s WHERE id = %s"),
@@ -946,7 +977,7 @@ def _finish_user_run(conn, run_id: int, status: str, summary: str) -> None:
 
 
 def get_scheduler_settings() -> tuple[int, int, float | None]:
-    conn = get_db_connection(auth_db_path())
+    conn = connect_db()
     try:
         row = conn.execute(
             sql("SELECT cron_enabled, scan_interval_minutes, max_price_display FROM app_settings WHERE id = 1")
@@ -1026,7 +1057,7 @@ def _cleanup_stale_running_user_runs(conn, stale_minutes: int = 5) -> int:
 
 
 def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = True, send_text: bool = False):
-    conn = get_db_connection(auth_db_path())
+    conn = connect_db()
     run_id = _create_user_run(conn, user_id, trigger=trigger)
     try:
         routes = _build_user_routes(conn, user_id)
@@ -1086,7 +1117,7 @@ def _auto_scan_loop():
                 time.sleep(max(30, USER_SCAN_POLL_SECONDS))
                 continue
 
-            auth_conn = get_db_connection(auth_db_path())
+            auth_conn = connect_db()
             try:
                 cleaned = _cleanup_stale_running_user_runs(auth_conn, stale_minutes=5)
                 if cleaned:
@@ -1106,7 +1137,7 @@ def _auto_scan_loop():
             sent_count = 0
             for user_id in user_ids:
                 try:
-                    check_conn = get_db_connection(auth_db_path())
+                    check_conn = connect_db()
                     try:
                         if _user_has_running_scan(check_conn, user_id):
                             print(f"[auto-scan] usuário {user_id} já possui execução running; pulando")
@@ -1736,7 +1767,7 @@ def send_user_telegram_message(
     airline_filters_json: str | None = None,
     show_result_type_filters: bool = True,
 ) -> None:
-    conn = get_db_connection(auth_db_path())
+    conn = connect_db()
     try:
         row = conn.execute(
             sql("SELECT bot_token, chat_id FROM user_telegram WHERE user_id = %s"),
