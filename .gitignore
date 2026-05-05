@@ -25,3 +25,4 @@ debug_dumps/
 logs/
 run_all.lock
 google_storage_state.json
+.guardian_*.py

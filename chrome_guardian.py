@@ -83,6 +83,16 @@ def find_chrome() -> Optional[str]:
 def ensure_xvfb(display: str = ":99") -> bool:
     subprocess.run(["killall", "Xvfb"], capture_output=True, timeout=3)
     time.sleep(0.5)
+    # Limpa sockets/residuos do X11 que podem impedir restart
+    disp_num = display.lstrip(":")
+    lock_file = Path(f"/tmp/.X{disp_num}-lock")
+    socket_file = Path(f"/tmp/.X11-unix/X{disp_num}")
+    try:
+        lock_file.unlink(missing_ok=True)
+        socket_file.unlink(missing_ok=True)
+        Path("/tmp/.X11-unix").mkdir(mode=0o1777, exist_ok=True)
+    except Exception:
+        pass
     try:
         proc = subprocess.Popen(
             ["Xvfb", display, "-screen", "0", "1280x900x24", "-ac"],
@@ -415,6 +425,13 @@ finally:
 
         while self.running:
             try:
+                # Verifica se Xvfb ainda ta vivo; se morreu, restart
+                xvfb_alive = subprocess.run(["xdpyinfo", "-display", self.display],
+                    capture_output=True, timeout=5).returncode == 0
+                if not xvfb_alive:
+                    log("xvfb_died_restarting")
+                    ensure_xvfb(self.display)
+
                 alive = self.process is not None and self.process.poll() is None
                 if not alive:
                     log("chrome_down_restarting")
