@@ -80,16 +80,26 @@ def find_chrome() -> Optional[str]:
     return None
 
 # ── Xvfb ────────────────────────────────────────────────────────────
+_guardian_chrome_pid: Optional[int] = None
+
 def cleanup_orphan_chromes() -> None:
     """Mata qualquer processo Chrome órfão que use nosso profile.
-    Previne acúmulo de Chromes zumbis em restart loops."""
+    Previne acúmulo de Chromes zumbis em restart loops.
+    Preserva o Chrome do próprio guardian (se estiver rodando)."""
+    my_pid = _guardian_chrome_pid
     for line in subprocess.run(
         ["pgrep", "-a", "chrome"], capture_output=True, text=True, timeout=5
     ).stdout.splitlines():
         if str(SESSION_DIR) in line:
-            pid = line.split()[0]
+            pid_str = line.split()[0]
             try:
-                os.kill(int(pid), signal.SIGKILL)
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if my_pid and pid == my_pid:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
                 log(f"kill_orphan_chrome pid={pid}")
             except (ProcessLookupError, ValueError):
                 pass
@@ -209,6 +219,8 @@ class ChromeGuardian:
 
                 log("starting_chrome", port=self.cdp_port)
                 self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+                global _guardian_chrome_pid
+                _guardian_chrome_pid = self.process.pid
 
                 def _wait_chrome() -> Optional[bool]:
                     for step in range(30):
@@ -232,9 +244,12 @@ class ChromeGuardian:
                     self.kill_chrome()
                     time.sleep(2)
                     continue
+                if not result:
+                    _guardian_chrome_pid = None
                 return result if result is not None else False
 
             log("chrome_not_ready_timeout")
+            _guardian_chrome_pid = None
             self.kill_chrome()
             return False
 
