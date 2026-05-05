@@ -1716,14 +1716,8 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                 if insight:
                     lines.append(f'<i>{escape(insight)}</i>')
             else:
-                # Fallback: gera dica baseada no price_band
-                band = str(row.get('price_band', '') or '').strip()
-                if band == '🟢':
-                    lines.append('<i>💰 Preço baixo para esta rota</i>')
-                elif band == '🟡':
-                    lines.append('<i>💹 Preço na média</i>')
-                elif band == '🔴':
-                    lines.append('<i>📈 Preço acima da média</i>')
+                # Fallback único
+                lines.append('<i>💹 Preço na média</i>')
         return lines
 
     lines = _build_lines(rows)
