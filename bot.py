@@ -4964,26 +4964,27 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str =
         email = _GOOGLE_EMAIL
         pwd = password or _GOOGLE_PASSWORD
 
-        # Check if session is already valid before attempting renewal
+        # Check if session is already valid before attempting renewal (via CDP do guardian)
         try:
-            import pathlib as _pl, json
-            for _f in _pl.Path('/opt/vooindo/google_session').glob('Singleton*'):
-                try: _f.unlink()
-                except: pass
-            os.environ.setdefault('USE_SYSTEM_CHROME', '1')
+            import urllib.request as _ur, json as _json
             _score = 0
-            from playwright.sync_api import sync_playwright
-            from google_flights_executor import check_session_health
-            with sync_playwright() as _pw:
-                _ctx = _pw.chromium.launch_persistent_context(
-                    '/opt/vooindo/google_session', headless=True, channel='chrome',
-                    args=['--no-sandbox'], timeout=20000
-                )
-                _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
-                _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
-                _health = check_session_health(_page)
-                _score = _health.get('score', 0)
-                _ctx.close()
+            _ws = ''
+            with _ur.urlopen('http://127.0.0.1:9230/status', timeout=5) as _r:
+                _st = _json.loads(_r.read())
+                _inst = _st.get('instances', [])
+                if _inst and _inst[0].get('ws_endpoint'):
+                    _ws = _inst[0]['ws_endpoint']
+            if _ws:
+                from playwright.sync_api import sync_playwright
+                from google_flights_executor import check_session_health
+                with sync_playwright() as _pw:
+                    _browser = _pw.chromium.connect_over_cdp(_ws)
+                    _context = _browser.contexts[0] if _browser.contexts else _browser.new_context()
+                    _page = _context.pages[0] if _context.pages else _context.new_page()
+                    _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=30000)
+                    _health = check_session_health(_page)
+                    _score = _health.get('score', 0)
+                    _browser.close()
             if _score >= 2:
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')]])
                 await bot.edit_message_text(
@@ -4996,6 +4997,17 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str =
                 return
         except Exception as _e:
             logger.warning('Pre-check da sessão falhou (continuando): %s', _e)
+
+        # Para o guardian temporariamente para liberar o profile pra renovacao
+        _guardian_stopped = False
+        try:
+            import subprocess as _sp
+            _sp.run(['systemctl', 'stop', 'chrome-guardian.service'], capture_output=True, timeout=10)
+            await _asyncio.sleep(2)
+            _guardian_stopped = True
+            logger.info('Guardian stopped for session renewal')
+        except Exception as _ge:
+            logger.warning('Failed to stop guardian: %s', _ge)
 
         proc = await _asyncio.create_subprocess_exec(
             sys.executable, '/opt/vooindo/google_login_subprocess.py',
@@ -5073,27 +5085,38 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str =
 
         await proc.wait()
 
-        # Fallback: always check auth score directly with Playwright
+        # Restarta o guardian apos renovacao
+        if _guardian_stopped:
+            try:
+                import subprocess as _sp
+                _sp.run(['systemctl', 'start', 'chrome-guardian.service'], capture_output=True, timeout=30)
+                await _asyncio.sleep(5)
+                logger.info('Guardian restarted after session renewal')
+            except Exception as _ge:
+                logger.warning('Failed to restart guardian: %s', _ge)
+
+        # Fallback: always check auth score via CDP do guardian
         if not _got_final[0]:
             try:
-                import pathlib as _pl
-                for _f in _pl.Path('/opt/vooindo/google_session').glob('Singleton*'):
-                    try: _f.unlink()
-                    except: pass
-                os.environ.setdefault('USE_SYSTEM_CHROME', '1')
-                sys.path.insert(0, '/opt/vooindo')
-                from playwright.sync_api import sync_playwright
-                from google_flights_executor import check_session_health
-                with sync_playwright() as _pw:
-                    _ctx = _pw.chromium.launch_persistent_context(
-                        '/opt/vooindo/google_session', headless=True, channel='chrome',
-                        args=['--no-sandbox'], timeout=20000
-                    )
-                    _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
-                    _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
-                    _health = check_session_health(_page)
-                    _score = _health.get('score', 0)
-                    _ctx.close()
+                import urllib.request as _ur, json as _json
+                _ws = ''
+                with _ur.urlopen('http://127.0.0.1:9230/status', timeout=5) as _r:
+                    _st = _json.loads(_r.read())
+                    _inst = _st.get('instances', [])
+                    if _inst and _inst[0].get('ws_endpoint'):
+                        _ws = _inst[0]['ws_endpoint']
+                _score = 0
+                if _ws:
+                    from playwright.sync_api import sync_playwright
+                    from google_flights_executor import check_session_health
+                    with sync_playwright() as _pw:
+                        _browser = _pw.chromium.connect_over_cdp(_ws)
+                        _context = _browser.contexts[0] if _browser.contexts else _browser.new_context()
+                        _page = _context.pages[0] if _context.pages else _context.new_page()
+                        _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=30000)
+                        _health = check_session_health(_page)
+                        _score = _health.get('score', 0)
+                        _browser.close()
                 if _score >= 2:
                     _got_final[0] = True
                     text = f'✅ *Sessão renovada!* (score {_score}/3)\n\nOs workers usarão a nova sessão nas próximas buscas.'
@@ -5143,6 +5166,14 @@ async def _run_login_task(bot, chat_id: str, status_msg_id: int, password: str =
         if proc is not None:
             try:
                 proc.kill()
+            except Exception:
+                pass
+        # Garante que o guardian volte mesmo em caso de erro
+        if _guardian_stopped:
+            try:
+                import subprocess as _sp
+                _sp.run(['systemctl', 'start', 'chrome-guardian.service'], capture_output=True, timeout=30)
+                await _asyncio.sleep(3)
             except Exception:
                 pass
         _login_sessions.pop(chat_id, None)
