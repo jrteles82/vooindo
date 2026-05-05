@@ -883,6 +883,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         return False  # sempre continua — varre todos os cards
 
     booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 6000
+    _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
 
     def _effective_max() -> int:
         if is_international:
@@ -896,6 +897,9 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     processed_cards = 0
     current_limit = min(len(airline_candidates), start_cards)
     while processed_cards < min(len(airline_candidates), _effective_max()):
+        if time.perf_counter() > _booking_loop_deadline:
+            notes.append(f'booking_loop_timeout_{int(time.perf_counter() - (time.perf_counter() - 25))}s')
+            break
         window_end = min(len(airline_candidates), current_limit)
         for idx in range(processed_cards + 1, window_end + 1):
             price, card, txt, selector_used = airline_candidates[idx - 1]
@@ -947,7 +951,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         if is_international and not found_airline_prices and processed_cards < len(airline_candidates):
             current_limit = min(len(airline_candidates), processed_cards + step_cards)
             continue
-        if len(found_airline_prices) >= max(1, MIN_AIRLINE_PRICES_TO_COMPARE):
+        if len(found_airline_prices) >= max(1, MIN_AIRLINE_PRICES_TO_COMPARE) and best_airline and best_airline[4]:
             break
         if processed_cards >= min(len(airline_candidates), _effective_max()):
             break
@@ -1104,6 +1108,10 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             notes.append(f'cards_body_len={len(cards_body)}')
             _debug = cards_body[:500].replace('\n', '\\n')
             notes.append(f'cards_body_preview={_debug}')
+            # Aborta rapido se nao tem resultados
+            if 'Nenhum resultado encontrado' in cards_body or 'Algo deu errado' in cards_body:
+                notes.append('no_results_fast_abort')
+                return False, "", None, None, [], "", None, None, ""
             # Tenta extrair preços — se não encontrar, faz refresh e tenta de novo
             REFRESH_MAX_RETRIES = 3
             retry_count = 0
