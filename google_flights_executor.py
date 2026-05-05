@@ -725,11 +725,6 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     candidate_locators = [
         ".mxvQLc",  # container principal de cada card (2026-05)
-        "[role='main'] [role='listitem']",
-        "[role='main'] li",
-        "[role='main'] [role='link']",
-        "[role='listitem']",
-        "div[data-ved]",
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
@@ -914,20 +909,16 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
 
             for target, target_name in click_targets:
                 try:
-                    target.dispatch_event('click')
-                    human_pause(0.2, 0.4)
+                    # Tenta clique via JS (funciona no novo layout do Google)
+                    _clicked = page.evaluate('''(sel) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return false;
+                        el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window}));
+                        return true;
+                    }''', selector_used)
+                    if _clicked:
+                        human_pause(0.3, 0.6)
                     current_url = page.url or ""
-                    # Fallback: se clique Playwright nao funcionou, tenta JS MouseEvent
-                    if "/travel/flights/booking" not in current_url:
-                        try:
-                            page.evaluate('''(selector) => {
-                                const el = document.querySelector(selector);
-                                if (el) el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window}));
-                            }''', selector_used if selector_used.startswith('.') else '.mxvQLc')
-                            human_pause(0.3, 0.6)
-                            current_url = page.url or ""
-                        except Exception:
-                            pass
                     if "/travel/flights/booking" in current_url:
                         if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                             wait_for_booking_options_stable(page)
@@ -1016,7 +1007,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             browser = p.chromium.connect_over_cdp(guardian_ws)
             # Usa o primeiro context existente (já tem sessão Google)
             context = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = context.pages[0] if context.pages else context.new_page()
+            page = context.new_page()
         else:
             notes.append("chrome_source=launch_persistent")
             # Apenas Chrome (Firefox removido — instável com recursos do VPS)
@@ -1187,11 +1178,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                             if followed and not booking_url and _bk_attempt < 2:
                                 notes.append(f'booking_url_empty_retry_{_bk_attempt}')
                                 page.reload(wait_until='domcontentloaded')
-                                import time
-                                time.sleep(5)
+                                import sys as _sys
+                                _sys.stdout.flush()
+                                time.sleep(3)
                                 # Re-navega pra pagina de busca e tenta de novo
                                 page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                                time.sleep(8)
+                                time.sleep(5)
                                 continue
                             break
                         except Exception as _be:
@@ -1333,17 +1325,17 @@ def main(argv: list[str]) -> int:
     inbound_date = argv[4] if len(argv) > 4 else ""
     profile_dir = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooindo/google_session')
     
-    max_retries = 2
+    max_retries = 0  # sem retry — cada scan é rápido o suficiente
     last_result = None
     renewed = False
     for attempt in range(1 + max_retries):
         try:
-            # Timeout global de 150s por tentativa via signal.alarm
+            # Timeout global de 60s por tentativa
             import signal as _sig
             def _timeout_handler(_signum, _frame):
-                raise TimeoutError('scan_timeout_150s')
+                raise TimeoutError('scan_timeout_60s')
             _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(150)
+            _sig.alarm(60)
             try:
                 result = run(origin, destination, outbound_date, inbound_date)
             finally:
