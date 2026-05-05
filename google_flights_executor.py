@@ -35,7 +35,7 @@ TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS", os.getenv("GOOG
 if os.getenv("GOOGLE_FLIGHTS_SHORT_TIMEOUT"):
     TIMEOUT_MS = min(TIMEOUT_MS, 60000)
 SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
-BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "3000"))
+BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "15000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}
 SKIP_BOOKING = os.getenv("GOOGLE_FLIGHTS_SKIP_BOOKING", "0").strip().lower() in {"1", "true", "yes", "on"}
 MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "5"))
@@ -815,6 +815,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         """Extrai opções de booking, lidando com fluxo em 2 etapas (detalhes → booking).
         Continua varrendo todos os cards para garantir prioridade absoluta a qualquer companhia aérea encontrada."""
         nonlocal best_airline, best_agency, first_agency_fallback, final_price_insight
+
         
         # Espera o texto de insights de preço se não tiver capturado
         if not final_price_insight:
@@ -882,7 +883,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
-    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 6000
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 15000
     _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
 
     def _effective_max() -> int:
@@ -1018,10 +1019,11 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 proxy_settings['password'] = proxy_pass
 
         # Usa Chrome do Guardian via CDP (única fonte)
+        # Cria contexto próprio para não fechar o contexto compartilhado do guardian no finally.
         notes.append("chrome_source=guardian_cdp")
         browser = p.chromium.connect_over_cdp(guardian_ws)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.pages[0] if context.pages else context.new_page()
+        context = browser.new_context()
+        page = context.new_page()
 
         Stealth().apply_stealth_sync(page)
         page.set_default_timeout(TIMEOUT_MS)
@@ -1302,7 +1304,7 @@ def main(argv: list[str]) -> int:
             def _timeout_handler(_signum, _frame):
                 raise TimeoutError('scan_timeout_60s')
             _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(60)
+            _sig.alarm(120)
             try:
                 result = run(origin, destination, outbound_date, inbound_date)
             finally:
