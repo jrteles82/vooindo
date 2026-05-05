@@ -844,15 +844,12 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         if options:
             notes.append(f"options_card_{idx}=airline:{_n_airline} agency:{_n_agency} vendors:{[o['vendor'] for o in options[:6]]}")
 
-        current_booking_url = page_booking_url or page.url or ""
-        # Se a URL atual é de busca mas o booking overlay está aberto, monta URL de booking
-        if "/travel/flights/search" in current_booking_url and "/travel/flights/booking" not in current_booking_url:
-            current_booking_url = current_booking_url.replace("/travel/flights/search", "/travel/flights/booking")
+        current_booking_url = page_booking_url or ""
         airline_options = [o for o in options if o.get('is_airline')]
         best_airline_in_booking = None
         if airline_options:
             best_airline_in_booking = min(airline_options, key=lambda o: float(o['price']))
-            vendor_link = extract_continuar_link(page, best_airline_in_booking['vendor']) or current_booking_url
+            vendor_link = extract_continuar_link(page, best_airline_in_booking['vendor'])
             key = (str(best_airline_in_booking['vendor']), float(best_airline_in_booking['price']))
             found_airline_prices[key] = (
                 best_airline_in_booking['vendor'],
@@ -875,7 +872,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
 
         # Atualiza melhor agência
         for ao in [o for o in options if not o.get('is_airline')]:
-            vendor_link = extract_continuar_link(page, ao['vendor']) or current_booking_url
+            vendor_link = extract_continuar_link(page, ao['vendor'])
             if first_agency_fallback is None:
                 first_agency_fallback = (str(ao['vendor']), float(ao['price']), vendor_link)
             if best_agency is None or ao['price'] < best_agency[1]:
@@ -1194,14 +1191,10 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
 
             # Se booking abriu mas sem URL apos 3 tentativas, descarta
             if booking_followed and not booking_url:
-                _fallback_url = ''
-                if '/travel/flights/search' in (page.url or '') and 'tfs=' in (page.url or ''):
-                    _fallback_url = page.url.replace('/travel/flights/search', '/travel/flights/booking')
-                if not _fallback_url:
-                    notes.append('booking_discarded_no_url_after_retry')
-                    final_price = None
-                    best_vendor = ""
-                    _booking_price = None
+                notes.append('booking_discarded_no_url_after_retry')
+                final_price = None
+                best_vendor = ""
+                _booking_price = None
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)
@@ -1242,19 +1235,15 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             # Propaga nome da companhia aérea para best_vendor quando disponível
             if not best_vendor and best_airline_vendor:
                 best_vendor = best_airline_vendor
-            # Se booking_url veio vazio, tenta construir a partir da URL de busca
-            _final_booking_url = booking_url
-            if not _final_booking_url and '/travel/flights/search' in (page.url or '') and 'tfs=' in (page.url or ''):
-                _final_booking_url = page.url.replace('/travel/flights/search', '/travel/flights/booking')
             return {
-                "ok": final_price is not None,
+                "ok": final_price is not None and bool(booking_url),
                 "origin": origin,
                 "destination": destination,
                 "outbound_date": outbound_date,
                 "inbound_date": inbound_date,
                 "trip_type": "roundtrip" if inbound_date else "oneway",
                 "url": page.url,
-                "booking_url": _final_booking_url,
+                "booking_url": booking_url,
                 "summary_price": summary_price,
                 "main_min": main_min,
                 "other_min": other_min,
