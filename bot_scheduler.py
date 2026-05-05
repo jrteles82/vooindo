@@ -400,7 +400,7 @@ def _check_google_session_and_notify():
         """Tenta renovar a sessão Google via app password.
         Tenta Firefox primeiro (menos detectado), fallback Chrome.
         """
-        app_password = 'rcwv jvmu yyyx okto'
+        app_password = 'Vooindo#8212'
         scripts = [
             ('Firefox', base_dir / 'google_login_firefox_stdin.py'),
             ('Chrome',  base_dir / 'google_login_stdin.py'),
@@ -750,8 +750,9 @@ def main():
                         stuck_count,
                     )
 
-                # Recuperar relatório de rodada perdida (scheduler reiniciou antes de enviar)
-                _recover_missed_report(conn, bot, loop)
+                # Recuperar relatório de rodada perdida — DESLIGADO: tracking em /tmp/ não persiste restart
+                # e causa reenvio de relatórios antigos.
+                # _recover_missed_report(conn, bot, loop)
 
                 # Verificar se há jobs pendentes órfãos
                 orphan_count = conn.execute(
@@ -783,6 +784,28 @@ def main():
             cycle_started_iso = now_local_iso(sep='T')
             cycle_metrics = record_cycle_start()
             cycle_metrics['_start_time'] = time.time()
+
+            # Verificar sessão do guardian — só inicia a rodada se estiver OK
+            try:
+                import urllib.request, json as _json
+                _req = urllib.request.urlopen('http://127.0.0.1:9230/status', timeout=5)
+                _status = _json.loads(_req.read().decode())
+                if not _status.get('session_ok', False):
+                    logger.warning('[bot-scheduler] sessão Google INVÁLIDA (session_ok=false). Pulando rodada.')
+                    cycle_stats['errors'] += 1
+                    cycle_stats['reasons']['sessao_invalida'] = 1
+                    record_cycle_end(cycle_metrics)
+                    _append_cycle_metrics(cycle_stats)
+                    break
+                logger.info('[bot-scheduler] sessão Google OK, iniciando rodada')
+            except Exception as _e:
+                logger.warning('[bot-scheduler] erro ao verificar sessão guardian: %s. Pulando rodada.', _e)
+                cycle_stats['errors'] += 1
+                cycle_stats['reasons']['sessao_indisponivel'] = 1
+                record_cycle_end(cycle_metrics)
+                _append_cycle_metrics(cycle_stats)
+                break
+
             maintenance_on = is_maintenance_mode(conn)
             users = list(iter_users(conn))
             random.shuffle(users)

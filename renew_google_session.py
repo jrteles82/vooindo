@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).with_name(".cache/ms-playwright")))
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(Path(__file__).resolve().parent / ".cache/ms-playwright"))
 
 try:
     from playwright.sync_api import sync_playwright

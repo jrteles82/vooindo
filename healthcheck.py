@@ -243,7 +243,7 @@ def check_google_session() -> dict:
                 try:
                     _proc = subprocess.run(
                         [_sys.executable, str(_script), '--email', 'vooindo.bot@gmail.com'],
-                        input='rcwv jvmu yyyx okto\n',
+                        input='Vooindo#8212\n',
                         capture_output=True, text=True, timeout=180,
                     )
                     if 'AUTH_SCORE:1' in _proc.stdout or 'AUTH_SCORE:2' in _proc.stdout:

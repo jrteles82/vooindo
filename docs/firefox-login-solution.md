@@ -47,5 +47,5 @@ O cascade em `bot_scheduler.py` e `healthcheck.py` ainda tenta Firefox → Chrom
 ## App Password
 
 ```
-rcwv jvmu yyyx okto
+Vooindo#8212
 ```

@@ -875,9 +875,15 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 6000
+
     def _effective_max() -> int:
-        if is_international and not found_airline_prices:
-            return len(airline_candidates)
+        if is_international:
+            # Continua varrendo até ter pelo menos 2 preços de cia pra comparar
+            if len(found_airline_prices) < MIN_AIRLINE_PRICES_TO_COMPARE:
+                return len(airline_candidates)
+            # Após achar 2 preços, ainda varre até 20 cards (melhor preço pode estar no 19º)
+            return max(max_cards_limit, 20)
         return max_cards_limit
 
     processed_cards = 0
@@ -904,7 +910,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                     human_pause(0.2, 0.4)
                     current_url = page.url or ""
                     if "/travel/flights/booking" in current_url:
-                        if wait_for_booking_content(page, timeout_ms=BOOKING_CONTENT_TIMEOUT_MS):
+                        if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                             wait_for_booking_options_stable(page)
                             _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
                             break
@@ -952,9 +958,28 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     return False, "", None, None, [], "", best_airline, best_agency, final_price_insight
 
 
+def _get_guardian_ws() -> str | None:
+    """Tenta obter WebSocket URL do Chrome Guardian via pool HTTP."""
+    try:
+        import urllib.request
+        resp = urllib.request.urlopen("http://127.0.0.1:9230/status", timeout=3)
+        data = json.loads(resp.read().decode())
+        for inst in data.get("instances", []):
+            if inst.get("alive") and inst.get("ready") and inst.get("ws_endpoint"):
+                return inst["ws_endpoint"]
+    except Exception:
+        pass
+    return None
+
+
 def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "") -> dict:
     notes: list[str] = []
     url = build_url(origin, destination, outbound_date, inbound_date)
+
+    # Tentar conectar ao Chrome Guardian (CDP) se disponível
+    guardian_ws = _get_guardian_ws()
+    use_guardian = guardian_ws is not None and os.getenv("GOOGLE_FLIGHTS_USE_GUARDIAN", "1") in {"1", "true", "yes", "on"}
+
     with sync_playwright() as p:
         proxy_settings = {}
         proxy_url = os.getenv('GOOGLE_FLIGHTS_PROXY')
@@ -965,38 +990,49 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if proxy_user and proxy_pass:
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
-        # Apenas Chrome (Firefox removido — instável com recursos do VPS)
-        _launch_kwargs = {}
-        if USE_SYSTEM_CHROME:
-            _launch_kwargs["channel"] = "chrome"
-        context = p.chromium.launch_persistent_context(
-            str(SESSION_DIR),
-            headless=HEADLESS,
-            slow_mo=SLOW_MO,
-            **_launch_kwargs,
-                locale="pt-BR",
-                user_agent=USER_AGENT,
-                proxy=proxy_settings if proxy_settings else None,
-                viewport={"width": 1280, "height": 900},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-gpu",
-                    "--disable-dev-shm-usage",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-infobars",
-                    "--ignore-certifcate-errors",
-                    "--remote-debugging-port=0",
-                    "--disable-extensions",
-                    "--disable-component-extensions-with-background-pages",
-                    "--disable-software-rasterizer",
-                ] + ([] if USE_SYSTEM_CHROME else ["--single-process"]) + [
-                    "--disable-crashpad",
-                    "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
-                ],
-            )
-        configure_context_routing(context)
-        page = context.pages[0] if context.pages else context.new_page()
+
+        if use_guardian:
+            # Conecta ao Chrome já logado do Guardian via CDP
+            notes.append("chrome_source=guardian_cdp")
+            browser = p.chromium.connect_over_cdp(guardian_ws)
+            # Usa o primeiro context existente (já tem sessão Google)
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.pages[0] if context.pages else context.new_page()
+        else:
+            notes.append("chrome_source=launch_persistent")
+            # Apenas Chrome (Firefox removido — instável com recursos do VPS)
+            _launch_kwargs = {}
+            if USE_SYSTEM_CHROME:
+                _launch_kwargs["channel"] = "chrome"
+            context = p.chromium.launch_persistent_context(
+                str(SESSION_DIR),
+                headless=HEADLESS,
+                slow_mo=SLOW_MO,
+                **_launch_kwargs,
+                    locale="pt-BR",
+                    user_agent=USER_AGENT,
+                    proxy=proxy_settings if proxy_settings else None,
+                    viewport={"width": 1280, "height": 900},
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-infobars",
+                        "--ignore-certifcate-errors",
+                        "--remote-debugging-port=0",
+                        "--disable-extensions",
+                        "--disable-component-extensions-with-background-pages",
+                        "--disable-software-rasterizer",
+                    ] + ([] if USE_SYSTEM_CHROME else ["--single-process"]) + [
+                        "--disable-crashpad",
+                        "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
+                    ],
+                )
+            configure_context_routing(context)
+            page = context.pages[0] if context.pages else context.new_page()
+
         Stealth().apply_stealth_sync(page)
         page.set_default_timeout(TIMEOUT_MS)
         try:
@@ -1229,7 +1265,7 @@ def _try_renew_session(profile_dir: str | None = None) -> bool:
     if not os.path.exists(script):
         return False
     try:
-        app_password = 'rcwv jvmu yyyx okto'
+        app_password = 'Vooindo#8212'
         env = os.environ.copy()
         if profile_dir:
             env['GOOGLE_PERSISTENT_PROFILE_DIR'] = profile_dir

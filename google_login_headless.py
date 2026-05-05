@@ -17,7 +17,7 @@ def step(msg):
     print(f'STATUS:STEP:{msg}', flush=True)
 
 email = 'vooindo.bot@gmail.com'
-password = 'rcwv jvmu yyyx okto'
+password = 'Vooindo#8212'
 
 # Lê senha do stdin (pra compatibilidade com o bot)
 password_from_stdin = ''

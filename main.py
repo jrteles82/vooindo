@@ -704,6 +704,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 env = os.environ.copy()
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
+                env["GOOGLE_FLIGHTS_USE_GUARDIAN"] = "1"
                 if allow_agencies is not None:
                     env["GOOGLE_FLIGHTS_ALLOW_AGENCIES"] = "1" if allow_agencies else "0"
                 if skip_booking:
