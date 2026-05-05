@@ -38,10 +38,10 @@ SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
 BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "15000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}
 SKIP_BOOKING = os.getenv("GOOGLE_FLIGHTS_SKIP_BOOKING", "0").strip().lower() in {"1", "true", "yes", "on"}
-MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "5"))
-MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "12"))
+MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "2"))
+MAX_CARDS_MAX = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_MAX", "5"))
 MAX_CARDS_STEP = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS_STEP", "1"))
-MIN_AIRLINE_PRICES_TO_COMPARE = int(os.getenv("GOOGLE_FLIGHTS_MIN_AIRLINE_PRICES_TO_COMPARE", "2"))
+MIN_AIRLINE_PRICES_TO_COMPARE = int(os.getenv("GOOGLE_FLIGHTS_MIN_AIRLINE_PRICES_TO_COMPARE", "1"))
 USE_SYSTEM_CHROME = os.getenv("USE_SYSTEM_CHROME", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -883,7 +883,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
-    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 15000
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 12000
     _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
 
     def _effective_max() -> int:
