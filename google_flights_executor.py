@@ -1170,21 +1170,38 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     final_price_source = 'summary_fast'
             else:
                 if _booking_price is not None:
-                    try:
-                        followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                        booking_followed = followed
-                    except Exception as _be:
-                        # Booking crashou mas já temos dados do card principal — retorna parcial
-                        notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
-                        # Tenta extrair vendor do body salvo antes do crash
-                        if not best_vendor and cards_body:
-                            card_vendor = extract_vendor_from_body(cards_body)
-                            if card_vendor:
-                                best_vendor = card_vendor
-                                notes.append(f'vendor_from_crash_fallback={best_vendor}')
-                        if best_vendor and _booking_price:
-                            best_vendor_price = _booking_price
-                            visible_card_price = _booking_price
+                    for _bk_attempt in range(3):  # tenta booking, com refresh se falhar
+                        try:
+                            followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                            booking_followed = followed
+                            # Se booking abriu mas URL veio vazia, refresh e tenta de novo (max 2x)
+                            if followed and not booking_url and _bk_attempt < 2:
+                                notes.append(f'booking_url_empty_retry_{_bk_attempt}')
+                                page.reload(wait_until='domcontentloaded')
+                                import time
+                                time.sleep(5)
+                                # Re-navega pra pagina de busca e tenta de novo
+                                page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                                time.sleep(8)
+                                continue
+                            break
+                        except Exception as _be:
+                            notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                            if _bk_attempt < 2:
+                                page.reload(wait_until='domcontentloaded')
+                                continue
+                            break
+
+            # Se booking abriu mas sem URL apos 3 tentativas, descarta
+            if booking_followed and not booking_url:
+                _fallback_url = ''
+                if '/travel/flights/search' in (page.url or '') and 'tfs=' in (page.url or ''):
+                    _fallback_url = page.url.replace('/travel/flights/search', '/travel/flights/booking')
+                if not _fallback_url:
+                    notes.append('booking_discarded_no_url_after_retry')
+                    final_price = None
+                    best_vendor = ""
+                    _booking_price = None
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)
