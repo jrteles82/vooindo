@@ -845,6 +845,9 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             notes.append(f"options_card_{idx}=airline:{_n_airline} agency:{_n_agency} vendors:{[o['vendor'] for o in options[:6]]}")
 
         current_booking_url = page_booking_url or page.url or ""
+        # Se a URL atual é de busca mas o booking overlay está aberto, monta URL de booking
+        if "/travel/flights/search" in current_booking_url and "/travel/flights/booking" not in current_booking_url:
+            current_booking_url = current_booking_url.replace("/travel/flights/search", "/travel/flights/booking")
         airline_options = [o for o in options if o.get('is_airline')]
         best_airline_in_booking = None
         if airline_options:

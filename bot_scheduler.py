@@ -32,7 +32,7 @@ from cycle_monitor import record_cycle_start, record_cycle_end
 from route_optimizer import compute_priorities, log_cycle_result
 
 # Número de workers paralelos para scheduler
-_NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '3'))
+_NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '4'))
 
 logger = get_logger('bot_scheduler')
 

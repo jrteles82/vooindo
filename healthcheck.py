@@ -298,7 +298,82 @@ def check_google_session() -> dict:
     return result
 
 
+def show_dashboard():
+    """Exibe dashboard com histórico das rodadas."""
+    try:
+        sys.path.insert(0, str(BASE_DIR))
+        from db import connect as db_connect
+        conn = db_connect()
+        cur = conn.cursor()
+        
+        # Relatorios do bot_scheduler
+        import subprocess
+        r = subprocess.run(['journalctl', '-u', 'vooindo.service', '--no-pager', '--since', '12 hours ago'],
+            capture_output=True, text=True, timeout=15)
+        
+        rodadas = []
+        for line in r.stdout.splitlines():
+            if 'rodada' in line and 'finalizada' in line and 'done=' in line:
+                import re
+                m = re.search(r'rodada (\S+) finalizada.*?done=(\d+).*?error=(\d+).*?wait_s=([\d.]+)', line)
+                if m:
+                    rodadas.append({'h': m.group(1)[11:16], 'done': int(m.group(2)), 'err': int(m.group(3)), 'wait_s': float(m.group(4))})
+
+        print('\\n📊 DASHBOARD VOOINDO')
+        if rodadas:
+            print()
+            print(f'{"Hora":<8} {"Rotas":<7} {"✅":<5} {"❌":<5} {"⏱":<10} {"Tend":<12}')
+            print('-' * 47)
+            prev_s = None
+            for rod in rodadas[-7:]:
+                total = rod['done'] + rod['err']
+                m = int(rod['wait_s'] // 60)
+                s = int(rod['wait_s'] % 60)
+                tempo = f'{m}m{s:02d}s'
+                if prev_s:
+                    ratio = rod['wait_s'] / prev_s if prev_s else 1
+                    trend = '⬆️ +rápido' if ratio < 0.90 else ('⬇️ +lento' if ratio > 1.10 else '➡️ estável')
+                else:
+                    trend = '—'
+                icon = '✅' if rod['err'] == 0 else '⚠️'
+                print(f'{icon} {rod["h"]:<6} {total:<7} {rod["done"]:<5} {rod["err"]:<5} {tempo:<10} {trend}')
+                prev_s = rod['wait_s']
+            td = sum(r['done'] for r in rodadas)
+            te = sum(r['err'] for r in rodadas)
+            print('-' * 47)
+            print(f'      {td+te:<7} {td:<5} {te:<5}')
+            print(f'      {"0 erros" if te == 0 else f"{te} erros"}')
+        else:
+            print('Nenhuma rodada encontrada nos logs')
+
+        # Usuarios mais lentos
+        cur.execute('''SELECT bu.first_name, ROUND(AVG(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at))) as avg_s, MAX(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)) as max_s, COUNT(*) as total FROM scan_jobs j JOIN bot_users bu ON bu.user_id = j.user_id WHERE j.finished_at >= NOW() - INTERVAL 3 HOUR AND j.status = "done" AND j.started_at IS NOT NULL GROUP BY bu.first_name ORDER BY avg_s DESC LIMIT 5''')
+        lentos = cur.fetchall()
+        if lentos:
+            print()
+            print('⏱ Mais lentos (média 3h):')
+            for l in lentos:
+                print(f'  {l["first_name"]:15} ⏱{l["avg_s"]:>4}s | pico {l["max_s"]:>4}s | {l["total"]} scans')
+
+        # Guardian
+        import urllib.request
+        try:
+            g = json.loads(urllib.request.urlopen('http://127.0.0.1:9230/status', timeout=3).read())
+            gs = '✅ OK' if g.get('ready') and g.get('session_ok') else '⚠️ PROBLEMA'
+            print(f'\\n🛡️ Guardian: {gs}')
+        except:
+            print('\\n🛡️ Guardian: ❌ inacessível')
+
+        conn.close()
+    except Exception as e:
+        print(f'Dashboard: {e}', file=sys.stderr)
+
+
 def main():
+    if '--dashboard' in sys.argv or '-d' in sys.argv:
+        show_dashboard()
+        return
+
     health = check_service()
     guardian = check_guardian()
     fixed = False
