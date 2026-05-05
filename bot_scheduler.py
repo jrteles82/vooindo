@@ -871,7 +871,9 @@ def main():
                         cycle_stats['reasons']['execucao_em_andamento'] = cycle_stats['reasons'].get('execucao_em_andamento', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | execucao em andamento", label)
                         continue
-                    if was_sent_recently(str(user.get('last_scheduled_sent_at') or user['last_sent_at']), window_seconds=user_cooldown_seconds):
+                    # Cooldown só pra quem fez scan manual recentemente
+                    # Scans automáticos não entram em cooldown (o intervalo de rodada já regula)
+                    if was_sent_recently(str(user.get('last_manual_sent_at') or ''), window_seconds=user_cooldown_seconds):
                         cycle_stats['skipped_users'] += 1
                         cycle_stats['reasons']['cooldown'] = cycle_stats['reasons'].get('cooldown', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s", label, user['last_sent_at'])
