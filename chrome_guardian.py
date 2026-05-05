@@ -475,6 +475,7 @@ finally:
 
         while self.running:
             try:
+                now = time.time()
                 # Verifica se Xvfb ainda ta vivo; se morreu, restart
                 xvfb_alive = subprocess.run(["xdpyinfo", "-display", self.display],
                     capture_output=True, timeout=5).returncode == 0
