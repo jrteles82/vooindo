@@ -183,10 +183,6 @@ class ChromeGuardian:
             # Limpa Chromes órfãos antes de iniciar novo
             cleanup_orphan_chromes()
 
-            for f in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
-                (SESSION_DIR / f).unlink(missing_ok=True)
-            (SESSION_DIR / "DevToolsActivePort").unlink(missing_ok=True)
-
             cmd = [
                 self.chrome_path,
                 f"--remote-debugging-port={self.cdp_port}",
@@ -202,22 +198,41 @@ class ChromeGuardian:
                 "--start-maximized",
                 f"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
             ]
-            log("starting_chrome", port=self.cdp_port)
-
             env = os.environ.copy()
             env["DISPLAY"] = self.display
-            self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
 
-            for attempt in range(30):
-                time.sleep(1)
-                if self.process.poll() is not None:
-                    log("chrome_died_early", attempt=attempt, rc=self.process.returncode)
+            for _retry in range(3):
+                # Remove locks imediatamente antes do Popen (workers podem recriar)
+                for f in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+                    (SESSION_DIR / f).unlink(missing_ok=True)
+                (SESSION_DIR / "DevToolsActivePort").unlink(missing_ok=True)
+
+                log("starting_chrome", port=self.cdp_port)
+                self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+                def _wait_chrome() -> Optional[bool]:
+                    for step in range(30):
+                        time.sleep(1)
+                        if self.process.poll() is not None:
+                            log("chrome_died_early", step=step, rc=self.process.returncode)
+                            rc = self.process.returncode
+                            if rc in (17, 21):
+                                return None  # lock conflict, retry
+                            return False  # fatal
+                        ws = self._get_ws_endpoint()
+                        if ws:
+                            self.ws_endpoint = ws
+                            log("chrome_ready", port=self.cdp_port, ws=ws[:60])
+                            return True
                     return False
-                ws = self._get_ws_endpoint()
-                if ws:
-                    self.ws_endpoint = ws
-                    log("chrome_ready", port=self.cdp_port, ws=ws[:60])
-                    return True
+
+                result = _wait_chrome()
+                if result is None:
+                    log("chrome_retry_singleton_lock", retry=_retry+1)
+                    self.kill_chrome()
+                    time.sleep(2)
+                    continue
+                return result if result is not None else False
 
             log("chrome_not_ready_timeout")
             self.kill_chrome()
