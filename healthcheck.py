@@ -182,6 +182,41 @@ def send_alert(message: str, state: dict) -> None:
         print(f'Falha ao enviar alerta: {exc}', file=sys.stderr)
 
 
+def check_guardian() -> dict:
+    """Verifica o Chrome Guardian via HTTP."""
+    result = {'healthy': False, 'ready': False, 'session_ok': False, 'message': ''}
+    try:
+        import urllib.request
+        resp = urllib.request.urlopen('http://127.0.0.1:9230/status', timeout=5)
+        data = json.loads(resp.read().decode())
+        result['ready'] = data.get('ready', 0) == 1
+        result['session_ok'] = data.get('session_ok', False)
+        result['healthy'] = result['ready'] and result['session_ok']
+        if not result['ready']:
+            result['message'] = 'Chrome guardian: Chrome não está pronto'
+        elif not result['session_ok']:
+            result['message'] = 'Chrome guardian: sessão Google inválida'
+        else:
+            result['message'] = '✅ Guardian OK'
+    except Exception as e:
+        result['message'] = f'Chrome guardian inacessível: {e}'
+    return result
+
+
+def try_guardian_fix() -> bool:
+    """Tenta restartar o guardian se estiver com problemas."""
+    try:
+        subprocess.run(['systemctl', 'restart', 'chrome-guardian.service'], timeout=30)
+        time.sleep(10)
+        # Verifica se subiu
+        import urllib.request
+        resp = urllib.request.urlopen('http://127.0.0.1:9230/status', timeout=5)
+        data = json.loads(resp.read().decode())
+        return data.get('ready', 0) == 1 and data.get('session_ok', False)
+    except Exception:
+        return False
+
+
 def check_stale_jobs(hours: int = 2) -> dict:
     """Verifica quantos stale_running_recovered nas últimas N horas."""
     result = {'stale_count': 0, 'message': ''}
@@ -265,7 +300,9 @@ def check_google_session() -> dict:
 
 def main():
     health = check_service()
+    guardian = check_guardian()
     fixed = False
+    guardian_fixed = False
     
     # Verifica sessão Google
     session = check_google_session()
@@ -277,7 +314,16 @@ def main():
     if stales['stale_count'] > 0:
         send_alert(stales['message'], {})
     
-    # Tenta auto-fix
+    # Auto-fix: guardian
+    if not guardian['healthy']:
+        print(f"[HEALTHCHECK] Guardian: {guardian['message']} — tentando restart...")
+        if try_guardian_fix():
+            guardian = check_guardian()
+            if guardian['healthy']:
+                guardian_fixed = True
+                print(f"[HEALTHCHECK] Guardian reiniciado com sucesso ✅")
+    
+    # Auto-fix: vooindo
     if not health['healthy']:
         state = load_state()
         if try_auto_fix(health, state):
@@ -292,8 +338,10 @@ def main():
                 f"Bot: {'vivo' if health['bot_alive'] else 'morto'}",
                 f"Scheduler: {'vivo' if health['scheduler_alive'] else 'morto'}",
                 f"Workers: {health['workers_alive']}",
+                f"Guardian: {guardian['message']}",
                 f"Stales (2h): {stales['stale_count']}",
-                f"Auto-fix: {'✅ aplicado' if fixed else '❌ não aplicado (cooldown)'}",
+                f"Auto-fix vooindo: {'✅' if fixed else '❌ (cooldown)'}",
+                f"Auto-fix guardian: {'✅' if guardian_fixed else '—'}",
             ]
             if health['recent_errors']:
                 msg_lines.append('\nErros recentes:')
@@ -306,13 +354,21 @@ def main():
             state['consecutive_failures'] = 0
             save_state(state)
         if stales['stale_count'] > 0:
-            stale_msg = stales['message']
-            send_alert(stale_msg, state)
-        if state.get('consecutive_failures', 0) == 0:
-            pass  # saudável, sem stales, sem problemas recentes
+            send_alert(stales['message'], state)
 
-    stale_info = f" | stales_2h={stales['stale_count']}" if stales['stale_count'] > 0 else ''
-    print(f"[HEALTHCHECK] {health['message']} | fix={fixed}{stale_info}")
+    # Resumo da saída
+    parts = [f"[HEALTHCHECK] v={health['message'].split('|')[0].strip()}"]
+    if not guardian['healthy']:
+        parts.append(f"g=⚠️")
+    else:
+        parts.append(f"g=✅")
+    if fixed:
+        parts.append("fix_vooindo=✅")
+    if guardian_fixed:
+        parts.append("fix_guardian=✅")
+    if stales['stale_count'] > 0:
+        parts.append(f"stales_2h={stales['stale_count']}")
+    print(' | '.join(parts))
 
 
 if __name__ == '__main__':
