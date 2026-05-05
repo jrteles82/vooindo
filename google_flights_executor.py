@@ -840,12 +840,14 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         if options:
             notes.append(f"options_card_{idx}=airline:{_n_airline} agency:{_n_agency} vendors:{[o['vendor'] for o in options[:6]]}")
 
-        current_booking_url = page_booking_url or ""
+        current_booking_url = page_booking_url or (page.url if '/travel/flights/booking' in (page.url or '') else "")
         airline_options = [o for o in options if o.get('is_airline')]
         best_airline_in_booking = None
         if airline_options:
             best_airline_in_booking = min(airline_options, key=lambda o: float(o['price']))
             vendor_link = extract_continuar_link(page, best_airline_in_booking['vendor'])
+            if not vendor_link and '/travel/flights/booking' in current_booking_url:
+                vendor_link = current_booking_url
             key = (str(best_airline_in_booking['vendor']), float(best_airline_in_booking['price']))
             found_airline_prices[key] = (
                 best_airline_in_booking['vendor'],
@@ -869,6 +871,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         # Atualiza melhor agência
         for ao in [o for o in options if not o.get('is_airline')]:
             vendor_link = extract_continuar_link(page, ao['vendor'])
+            if not vendor_link and '/travel/flights/booking' in current_booking_url:
+                vendor_link = current_booking_url
             if first_agency_fallback is None:
                 first_agency_fallback = (str(ao['vendor']), float(ao['price']), vendor_link)
             if best_agency is None or ao['price'] < best_agency[1]:
@@ -1007,7 +1011,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             browser = p.chromium.connect_over_cdp(guardian_ws)
             # Usa o primeiro context existente (já tem sessão Google)
             context = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
         else:
             notes.append("chrome_source=launch_persistent")
             # Apenas Chrome (Firefox removido — instável com recursos do VPS)
@@ -1170,28 +1174,11 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     final_price_source = 'summary_fast'
             else:
                 if _booking_price is not None:
-                    for _bk_attempt in range(3):  # tenta booking, com refresh se falhar
-                        try:
-                            followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                            booking_followed = followed
-                            # Se booking abriu mas URL veio vazia, refresh e tenta de novo (max 2x)
-                            if followed and not booking_url and _bk_attempt < 2:
-                                notes.append(f'booking_url_empty_retry_{_bk_attempt}')
-                                page.reload(wait_until='domcontentloaded')
-                                import sys as _sys
-                                _sys.stdout.flush()
-                                time.sleep(3)
-                                # Re-navega pra pagina de busca e tenta de novo
-                                page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                                time.sleep(5)
-                                continue
-                            break
-                        except Exception as _be:
-                            notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
-                            if _bk_attempt < 2:
-                                page.reload(wait_until='domcontentloaded')
-                                continue
-                            break
+                    try:
+                        followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                        booking_followed = followed
+                    except Exception as _be:
+                        notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
 
             # Se booking abriu mas sem URL apos 3 tentativas, descarta
             if booking_followed and not booking_url:
