@@ -1225,6 +1225,10 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             # Propaga nome da companhia aérea para best_vendor quando disponível
             if not best_vendor and best_airline_vendor:
                 best_vendor = best_airline_vendor
+            # Se booking_url veio vazio, tenta construir a partir da URL de busca
+            _final_booking_url = booking_url
+            if not _final_booking_url and '/travel/flights/search' in (page.url or '') and 'tfs=' in (page.url or ''):
+                _final_booking_url = page.url.replace('/travel/flights/search', '/travel/flights/booking')
             return {
                 "ok": final_price is not None,
                 "origin": origin,
@@ -1233,7 +1237,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 "inbound_date": inbound_date,
                 "trip_type": "roundtrip" if inbound_date else "oneway",
                 "url": page.url,
-                "booking_url": booking_url,
+                "booking_url": _final_booking_url,
                 "summary_price": summary_price,
                 "main_min": main_min,
                 "other_min": other_min,
