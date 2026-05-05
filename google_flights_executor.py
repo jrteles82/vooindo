@@ -994,9 +994,17 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
     notes: list[str] = []
     url = build_url(origin, destination, outbound_date, inbound_date)
 
-    # Tentar conectar ao Chrome Guardian (CDP) se disponível
-    guardian_ws = _get_guardian_ws()
+    # Tentar conectar ao Chrome Guardian (CDP)
+    # Espera até 30s se o guardian estiver reiniciando
+    guardian_ws = None
+    for _gw in range(6):
+        guardian_ws = _get_guardian_ws()
+        if guardian_ws:
+            break
+        time.sleep(5)
     use_guardian = guardian_ws is not None and os.getenv("GOOGLE_FLIGHTS_USE_GUARDIAN", "1") in {"1", "true", "yes", "on"}
+    if not use_guardian:
+        return {"ok": False, "error": "guardian_indisponivel", "message": "chrome guardian nao respondeu apos 30s"}
 
     with sync_playwright() as p:
         proxy_settings = {}
@@ -1009,47 +1017,11 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 proxy_settings['username'] = proxy_user
                 proxy_settings['password'] = proxy_pass
 
-        if use_guardian:
-            # Conecta ao Chrome já logado do Guardian via CDP
-            notes.append("chrome_source=guardian_cdp")
-            browser = p.chromium.connect_over_cdp(guardian_ws)
-            # Usa o primeiro context existente (já tem sessão Google)
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = context.pages[0] if context.pages else context.new_page()
-        else:
-            notes.append("chrome_source=launch_persistent")
-            # Apenas Chrome (Firefox removido — instável com recursos do VPS)
-            _launch_kwargs = {}
-            if USE_SYSTEM_CHROME:
-                _launch_kwargs["channel"] = "chrome"
-            context = p.chromium.launch_persistent_context(
-                str(SESSION_DIR),
-                headless=HEADLESS,
-                slow_mo=SLOW_MO,
-                **_launch_kwargs,
-                    locale="pt-BR",
-                    user_agent=USER_AGENT,
-                    proxy=proxy_settings if proxy_settings else None,
-                    viewport={"width": 1280, "height": 900},
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-gpu",
-                        "--disable-dev-shm-usage",
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-infobars",
-                        "--ignore-certifcate-errors",
-                        "--remote-debugging-port=0",
-                        "--disable-extensions",
-                        "--disable-component-extensions-with-background-pages",
-                        "--disable-software-rasterizer",
-                    ] + ([] if USE_SYSTEM_CHROME else ["--single-process"]) + [
-                        "--disable-crashpad",
-                        "--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider",
-                    ],
-                )
-            configure_context_routing(context)
-            page = context.pages[0] if context.pages else context.new_page()
+        # Usa Chrome do Guardian via CDP (única fonte)
+        notes.append("chrome_source=guardian_cdp")
+        browser = p.chromium.connect_over_cdp(guardian_ws)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = context.pages[0] if context.pages else context.new_page()
 
         Stealth().apply_stealth_sync(page)
         page.set_default_timeout(TIMEOUT_MS)

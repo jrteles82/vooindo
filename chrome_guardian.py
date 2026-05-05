@@ -473,16 +473,8 @@ finally:
         last_relogin = 0
         health_count = 0
 
-        last_orphan_cleanup = 0
-
         while self.running:
             try:
-                # Verifica periodicamente Chromes zumbis usando nosso profile
-                now = time.time()
-                if now - last_orphan_cleanup > HEALTH_INTERVAL:
-                    cleanup_orphan_chromes()
-                    last_orphan_cleanup = now
-
                 # Verifica se Xvfb ainda ta vivo; se morreu, restart
                 xvfb_alive = subprocess.run(["xdpyinfo", "-display", self.display],
                     capture_output=True, timeout=5).returncode == 0
