@@ -724,6 +724,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     candidate_locators = [
+        ".mxvQLc",  # container principal de cada card (2026-05)
         "[role='main'] [role='listitem']",
         "[role='main'] li",
         "[role='main'] [role='link']",
@@ -916,6 +917,17 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                     target.dispatch_event('click')
                     human_pause(0.2, 0.4)
                     current_url = page.url or ""
+                    # Fallback: se clique Playwright nao funcionou, tenta JS MouseEvent
+                    if "/travel/flights/booking" not in current_url:
+                        try:
+                            page.evaluate('''(selector) => {
+                                const el = document.querySelector(selector);
+                                if (el) el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window}));
+                            }''', selector_used if selector_used.startswith('.') else '.mxvQLc')
+                            human_pause(0.3, 0.6)
+                            current_url = page.url or ""
+                        except Exception:
+                            pass
                     if "/travel/flights/booking" in current_url:
                         if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                             wait_for_booking_options_stable(page)
