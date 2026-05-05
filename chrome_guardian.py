@@ -80,6 +80,22 @@ def find_chrome() -> Optional[str]:
     return None
 
 # ── Xvfb ────────────────────────────────────────────────────────────
+def cleanup_orphan_chromes() -> None:
+    """Mata qualquer processo Chrome órfão que use nosso profile.
+    Previne acúmulo de Chromes zumbis em restart loops."""
+    for line in subprocess.run(
+        ["pgrep", "-a", "chrome"], capture_output=True, text=True, timeout=5
+    ).stdout.splitlines():
+        if str(SESSION_DIR) in line:
+            pid = line.split()[0]
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                log(f"kill_orphan_chrome pid={pid}")
+            except (ProcessLookupError, ValueError):
+                pass
+    time.sleep(1)
+
+
 def ensure_xvfb(display: str = ":99") -> bool:
     subprocess.run(["killall", "Xvfb"], capture_output=True, timeout=3)
     time.sleep(0.5)
@@ -163,6 +179,9 @@ class ChromeGuardian:
         with self._lock:
             if self.process and self.process.poll() is None:
                 return True
+
+            # Limpa Chromes órfãos antes de iniciar novo
+            cleanup_orphan_chromes()
 
             for f in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
                 (SESSION_DIR / f).unlink(missing_ok=True)
@@ -423,8 +442,16 @@ finally:
         last_relogin = 0
         health_count = 0
 
+        last_orphan_cleanup = 0
+
         while self.running:
             try:
+                # Verifica periodicamente Chromes zumbis usando nosso profile
+                now = time.time()
+                if now - last_orphan_cleanup > HEALTH_INTERVAL:
+                    cleanup_orphan_chromes()
+                    last_orphan_cleanup = now
+
                 # Verifica se Xvfb ainda ta vivo; se morreu, restart
                 xvfb_alive = subprocess.run(["xdpyinfo", "-display", self.display],
                     capture_output=True, timeout=5).returncode == 0
@@ -443,7 +470,6 @@ finally:
                         continue
                     notify_telegram("🔄 Guardian: Chrome reiniciado")
 
-                now = time.time()
                 if now - self.last_auth_check > HEALTH_INTERVAL:
                     health = self.check_session()
                     health_count += 1

@@ -801,25 +801,30 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     job_id = int(job['id'])
     job_type = str(job.get('job_type') or '')
 
-    # Watchdog: timeout dinâmico baseado no número de rotas
-    # Cada rota leva ~90s no modo fast, ~150s no modo normal
-    # Fórmula: 120s (fixo) + (num_rotas - 1) * 60s + 60s margem
-    # Para jobs PER-ROUTE, usa total_routes do payload se disponível
+    # Watchdog: timeout dinâmico baseado no payload ou número de rotas
+    # Se o payload tiver executor_timeout, usa ele; senão, calcula dinamicamente
     import json as _wj
     try:
         _wp = _wj.loads(str(job.get('payload') or '{}'))
+        _et = _wp.get('executor_timeout') if isinstance(_wp, dict) else None
         _gi = _wp.get('group_info', {}) if isinstance(_wp, dict) else {}
         _pr_count = int(_gi.get('total_routes', 0)) if isinstance(_gi, dict) else 0
     except Exception:
+        _et = None
         _pr_count = 0
-    if _pr_count > 0:
+    if _et:
+        _JOB_TIMEOUT = int(_et)
+        logger.info('[job-worker] job_id=%s | timeout personalizado do payload: %ss', job.get('id'), _JOB_TIMEOUT)
+    elif _pr_count > 0:
         _route_count = _pr_count
+        # Fórmula: 120s (fixo) + (num_rotas - 1) * 60s + 60s margem
+        _JOB_TIMEOUT = max(700, 120 + _route_count * 90)  # min 700s (~12min), ~90s/rota + 120s buffer
     else:
         try:
             _route_count = len(_build_user_routes(conn, user_id))
         except Exception:
             _route_count = 1
-    _JOB_TIMEOUT = max(700, 120 + _route_count * 90)  # min 700s (~12min), ~90s/rota + 120s buffer
+        _JOB_TIMEOUT = max(700, 120 + _route_count * 90)
     _wd_fired = [False]
     _wd_job_id = [job_id]
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados

@@ -29,6 +29,7 @@ from db import connect as connect_db, now_expression, sql, DatabaseRateLimitErro
 from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, expand_rows_by_result_type, _merge_rows_for_combined_result_view
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from cycle_monitor import record_cycle_start, record_cycle_end
+from route_optimizer import compute_priorities, log_cycle_result
 
 # Número de workers paralelos para scheduler
 _NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '3'))
@@ -808,7 +809,21 @@ def main():
 
             maintenance_on = is_maintenance_mode(conn)
             users = list(iter_users(conn))
-            random.shuffle(users)
+            # Otimizar ordem: rápidos primeiro, timeout personalizado por user
+            try:
+                priorities = compute_priorities(conn)
+                opt_metrics = priorities['metrics']
+                opt_notes = priorities['optimizations']
+                # Reordenar users com base na prioridade calculada
+                priority_map = {str(u['user_id']): u for u in priorities['user_priorities']}
+                users.sort(key=lambda u: priority_map.get(str(u['user_id']), {}).get('priority_score', 9999))
+                for opt in opt_notes:
+                    logger.info('[route-optimizer] %s', opt)
+                logger.info('[route-optimizer] prioridades calculadas | users=%s | media=%.0fs | otimizacoes=%s',
+                            opt_metrics['users_count'], opt_metrics['avg_cycle_dur'], len(opt_notes))
+            except Exception as _opt_err:
+                logger.warning('[route-optimizer] erro ao calcular prioridades, mantendo ordem original: %s', _opt_err)
+                random.shuffle(users)
             cycle_stats = {
                 'eligible_users': len(users),
                 'sent_users': 0,
@@ -817,7 +832,7 @@ def main():
                 'skipped_users': 0,
                 'errors': 0,
                 'reasons': {},
-                'shuffled_users': True,
+                'shuffled_users': False,
             }
             # --- PARALELIZAÇÃO: Filtrar elegíveis e distribuir no ThreadPool ---
             eligible_users = []
@@ -897,6 +912,15 @@ def main():
                         outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
                         inbound_date = route['inbound_date'] if isinstance(route, dict) else route[4] or ''
                         
+                        # Timeout personalizado por user (do route_optimizer, ou fallback)
+                        _executor_timeout = 300  # fallback padrão
+                        try:
+                            _user_timeout = priorities['user_timeouts'].get(str(user_id))
+                            if _user_timeout:
+                                _executor_timeout = int(_user_timeout)
+                        except Exception:
+                            pass
+                        
                         payload = json.dumps({
                             'round_started_at': cycle_started_iso,
                             'route': {
@@ -909,7 +933,8 @@ def main():
                             'group_info': {
                                 'total_routes': num_routes,
                                 'label': label,
-                            }
+                            },
+                            'executor_timeout': _executor_timeout,
                         }, ensure_ascii=False)
                         
                         insert_result = conn.execute(
@@ -970,6 +995,11 @@ def main():
         }
         record_cycle_end(cycle_metrics, scan_results=scan_results)
         _append_cycle_metrics(metrics_entry)
+        # Registra resultado do ciclo no otimizador
+        try:
+            log_cycle_result(conn)
+        except Exception as _log_err:
+            logger.warning('[route-optimizer] erro ao logar resultado do ciclo: %s', _log_err)
         logger.info(
             "[bot-scheduler] ciclo concluído em %s | duracao_ms=%s | elegiveis=%s | enviaram=%s | sem_envio=%s | ignorados=%s | erros=%s | reasons=%s | aguardando próximo slot de %ss",
             cycle_finished_iso,

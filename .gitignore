@@ -26,3 +26,6 @@ logs/
 run_all.lock
 google_storage_state.json
 .guardian_*.py
+
+# Route optimizer state (auto-generated)
+.optimizer_state.json
