@@ -3089,28 +3089,35 @@ LIMIT 15
         await query.answer()
         await query.edit_message_text('🔍 *Verificando sessão Google...*\n\nIsso pode levar até 30 segundos.', parse_mode='Markdown')
         try:
-            import subprocess, json as _json
+            import subprocess, json as _json, urllib.request
+            # Conecta ao Chrome do Guardian via CDP (evita conflito de profile lock)
             result = subprocess.run(
                 [sys.executable, '-c', '''
-import json, sys, os
-os.environ.setdefault("USE_SYSTEM_CHROME", "1")
+import json, sys, os, urllib.request
 sys.path.insert(0, "/opt/vooindo")
-from pathlib import Path
 from playwright.sync_api import sync_playwright
 from google_flights_executor import check_session_health
-BASE = Path("/opt/vooindo/google_session")
-for f in BASE.glob("Singleton*"):
-    try: f.unlink()
-    except: pass
+
+# Busca ws_endpoint do guardian
+try:
+    with urllib.request.urlopen("http://127.0.0.1:9230/status", timeout=5) as r:
+        status = json.loads(r.read())
+        instances = status.get("instances", [])
+        if not instances or not instances[0].get("ws_endpoint"):
+            print(json.dumps({"ok": False, "score": 0, "error": "guardian_sem_chrome"}))
+            sys.exit(0)
+        ws = instances[0]["ws_endpoint"]
+except Exception as e:
+    print(json.dumps({"ok": False, "score": 0, "error": f"guardian_status_fail: {str(e)[:100]}"}))
+    sys.exit(0)
+
 with sync_playwright() as pw:
-    ctx = pw.chromium.launch_persistent_context(
-        str(BASE), headless=True, channel="chrome",
-        args=["--no-sandbox"], timeout=20000
-    )
-    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-    page.goto("https://www.google.com/", wait_until="domcontentloaded", timeout=20000)
+    browser = pw.chromium.connect_over_cdp(ws)
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
+    page = context.pages[0] if context.pages else context.new_page()
+    page.goto("https://www.google.com/", wait_until="domcontentloaded", timeout=30000)
     health = check_session_health(page)
-    ctx.close()
+    browser.close()
 print(json.dumps(health))
 '''],
                 capture_output=True, text=True, timeout=45

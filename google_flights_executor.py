@@ -170,26 +170,33 @@ def check_session_health(page) -> dict:
         '[jsname*="account"]',
         'a[href*="https://myaccount.google"]',
     ]
+    profile_found = False
     for sel in profile_selectors:
         try:
             if page.locator(sel).count() > 0:
                 score += 1
                 indicators["profile_selector"] = sel
+                profile_found = True
                 break
         except Exception:
             pass
 
-    # Check 2: sem tela de login visível no body
-    try:
-        body = page.locator("body").inner_text(timeout=2000)
-        low = (body or "").lower()
-        if "fazer login" not in low and "entrar" not in low and "sign in" not in low:
-            score += 1
-            indicators["no_login_prompt"] = "ok"
-        else:
-            indicators["no_login_prompt"] = "login_prompt_detected"
-    except Exception:
-        pass
+    # Check 3: sem tela de login visível no body
+    # Só avalia se NÃO achou profile — se já achou avatar, login prompt é falso positivo
+    if profile_found:
+        score += 1
+        indicators["no_login_prompt"] = "ok_skipped_profile_confirmed"
+    else:
+        try:
+            body = page.locator("body").inner_text(timeout=2000)
+            low = (body or "").lower()
+            if "fazer login" not in low and "entrar" not in low and "sign in" not in low:
+                score += 1
+                indicators["no_login_prompt"] = "ok"
+            else:
+                indicators["no_login_prompt"] = "login_prompt_detected"
+        except Exception:
+            pass
 
     return {"ok": score >= 1, "score": score, "indicators": indicators}
 
