@@ -83,14 +83,15 @@ def find_chrome() -> Optional[str]:
 _guardian_chrome_pid: Optional[int] = None
 
 def cleanup_orphan_chromes() -> None:
-    """Mata qualquer processo Chrome órfão que use nosso profile.
-    Previne acúmulo de Chromes zumbis em restart loops.
+    """Mata Chromes zumbis que usam a PORTA CDP (9222) do guardian.
+    Só mata Chromes com --remote-debugging-port=9222 — evita matar
+    Chromes que workers iniciaram como fallback.
     Preserva o Chrome do próprio guardian (se estiver rodando)."""
     my_pid = _guardian_chrome_pid
     for line in subprocess.run(
         ["pgrep", "-a", "chrome"], capture_output=True, text=True, timeout=5
     ).stdout.splitlines():
-        if str(SESSION_DIR) in line:
+        if str(SESSION_DIR) in line and "--remote-debugging-port=9222" in line:
             pid_str = line.split()[0]
             try:
                 pid = int(pid_str)
