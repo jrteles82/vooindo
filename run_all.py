@@ -189,11 +189,15 @@ def main():
         # Perfil 1 = google_session, Perfil 2 = google_session_2
         # Perfil 3 = google_session_3, Perfil 4 = google_session_4
         # Perfil 5 = google_session_5, Perfil 6 = google_session_6, Perfil 7 = google_session_7
+        # Perfil 8 = google_session_8, Perfil 9 = google_session_9, Perfil 10 = google_session_10
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(1)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(2)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(5)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(6)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(7)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(8)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(9)},
+        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(10)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(3)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(4)},
         # Workers de integração e suporte
