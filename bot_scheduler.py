@@ -785,6 +785,14 @@ def main():
             cycle_started_iso = now_local_iso(sep='T')
             cycle_metrics = record_cycle_start()
             cycle_metrics['_start_time'] = time.time()
+            cycle_stats = {
+                'duration_seconds': 0.0,
+                'eligible_users': 0,
+                'sent_users': 0,
+                'skipped_users': 0,
+                'errors': 0,
+                'reasons': {},
+            }
 
             # Verificar sessão do guardian — só inicia a rodada se estiver OK
             try:

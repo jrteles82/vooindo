@@ -471,7 +471,7 @@ finally:
         log("guardian_starting")
         SESSION_DIR.mkdir(exist_ok=True)
         last_relogin = 0
-        last_proactive_restart = now
+        last_proactive_restart = time.time()
         health_count = 0
         RESTART_INTERVAL = 4 * 3600  # 4h: evita degradação do Chrome
 
