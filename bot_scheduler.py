@@ -1028,6 +1028,108 @@ def main():
                 wait_result.get('counts', {}).get('pending', 0),
                 wait_result.get('elapsed_seconds', 0),
             )
+            
+            # --- RETRY: jobs com erro na rodada principal ---
+            MAX_RETRIES = 3
+            current_ids = list(created_job_ids)
+            conn_retry = get_db()
+            try:
+                for retry_num in range(1, MAX_RETRIES + 1):
+                    # Buscar jobs com erro (done + error_message)
+                    placeholders = ', '.join(['%s'] * len(current_ids)) if current_ids else 'NULL'
+                    if not current_ids:
+                        break
+                    errored = conn_retry.execute(sql(f'''
+                        SELECT j.id, j.user_id, j.chat_id, j.payload, bu.first_name
+                        FROM scan_jobs j
+                        JOIN bot_users bu ON bu.user_id = j.user_id
+                        WHERE j.id IN ({placeholders})
+                          AND j.status IN ('done', 'error')
+                          AND (j.error_message IS NOT NULL AND j.error_message != '')
+                    '''), tuple(current_ids)).fetchall()
+                    
+                    if not errored:
+                        logger.info('[bot-scheduler] rodada %s | sem erros p/ retry', cycle_started_iso[:16])
+                        break
+                    
+                    # Agrupar por user_id
+                    users_to_retry = {}
+                    for er in errored:
+                        uid = int(er['user_id'])
+                        if uid not in users_to_retry:
+                            users_to_retry[uid] = {
+                                'chat_id': str(er['chat_id']),
+                                'first_name': er['first_name'],
+                                'routes': set(),
+                            }
+                        # Extrair rota do payload
+                        try:
+                            pay = json.loads(er['payload'])
+                            route = pay.get('route', {})
+                            users_to_retry[uid]['routes'].add((
+                                route.get('origin',''),
+                                route.get('destination',''),
+                                route.get('outbound_date',''),
+                                route.get('inbound_date','') or '',
+                            ))
+                        except Exception:
+                            pass
+                    
+                    logger.info(
+                        '[bot-scheduler] rodada %s | retry #%s: %s usuários | %s rotas',
+                        cycle_started_iso[:16], retry_num, len(users_to_retry),
+                        sum(len(u['routes']) for u in users_to_retry.values()),
+                    )
+                    
+                    # Criar jobs de retry
+                    retry_job_ids = []
+                    for uid, info in users_to_retry.items():
+                        group_key = f"round_{uid}_{cycle_started_iso}_retry_{retry_num}"
+                        for origin, dest, outbound, inbound in info['routes']:
+                            payload = json.dumps({
+                                'round_started_at': cycle_started_iso,
+                                'route': {
+                                    'id': 0,
+                                    'origin': origin,
+                                    'destination': dest,
+                                    'outbound_date': outbound,
+                                    'inbound_date': inbound,
+                                },
+                                'group_info': {
+                                    'total_routes': len(info['routes']),
+                                    'label': info['first_name'],
+                                },
+                                'executor_timeout': 480,
+                                'retry': retry_num,
+                            }, ensure_ascii=False)
+                            insert_result = conn_retry.execute(
+                                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
+                                (uid, info['chat_id'], payload, 1, group_key),
+                            )
+                            conn_retry.commit()
+                            jid = int(getattr(insert_result, 'lastrowid', 0) or 0)
+                            if jid:
+                                retry_job_ids.append(jid)
+                    
+                    if not retry_job_ids:
+                        break
+                    
+                    # Aguardar retry
+                    retry_result = _wait_for_round_completion(retry_job_ids, timeout_seconds=600)
+                    logger.info(
+                        '[bot-scheduler] rodada %s | retry #%s finalizado | done=%s | error=%s | total_s=%s',
+                        cycle_started_iso[:16], retry_num,
+                        retry_result.get('counts', {}).get('done', 0),
+                        retry_result.get('counts', {}).get('error', 0),
+                        retry_result.get('elapsed_seconds', 0),
+                    )
+                    current_ids = retry_job_ids
+            finally:
+                try:
+                    conn_retry.close()
+                except Exception:
+                    pass
+            
             admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
             if admin_chat_id:
                 report_text = _build_round_report(cycle_started_iso, cycle_duration_ms, cycle_stats, created_job_ids, wait_result)
