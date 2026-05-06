@@ -893,7 +893,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         return False  # sempre continua — varre todos os cards
 
     booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 12000
-    _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
+    _booking_loop_deadline = time.perf_counter() + 60  # 60s: cards demoram pra carregar no novo Google Flights
 
     def _effective_max() -> int:
         if is_international:
