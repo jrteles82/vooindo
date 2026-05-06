@@ -724,10 +724,10 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     candidate_locators = [
-        ".mxvQLc",   # container principal de cada card (2026-05)
-        ".BVAVmf",   # fallback: card container (2026-05-05, classes rotacionadas)
-        ".POX3ye",   # fallback 2
-        ".jLMuyc",   # fallback 3
+        ".BVAVmf",   # card container (classes rotacionadas pelo Google)
+        ".POX3ye",   # fallback 1
+        ".jLMuyc",   # fallback 2
+        ".mxvQLc",   # fallback antigo (era o principal 2026-05)
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
