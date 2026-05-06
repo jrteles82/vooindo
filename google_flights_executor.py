@@ -887,7 +887,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         return False  # sempre continua — varre todos os cards
 
     booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 8000
-    _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
+    _booking_loop_deadline = time.perf_counter() + 45  # max 45s no loop de booking (subiu de 20s — 3 cards × 8s já consome 24s)
 
     def _effective_max() -> int:
         if is_international:
