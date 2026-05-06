@@ -724,13 +724,12 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     # Seletores semânticos estáveis — classes rotacionadas pelo Google
-    # Cards agora são <li role="button" class="lPyEac P0ukfb"> — mudou de div pra li
+    # Ordem por eficácia comprovada (dom_detective.py --test)
     candidate_locators = [
-        "li.lPyEac[role='button']",   # principal (2026-06) — elementos li com role=button
-        ".BVAVmf",   # card container (2026-05)
-        ".POX3ye",   # fallback 1
-        ".jLMuyc",   # fallback 2
-        ".mxvQLc",   # fallback antigo
+        ".mxvQLc",   # principal (2026-06) — 18 cards, mais confiável
+        ".BVAVmf",   # 54 cards, inclui elementos extra
+        ".POX3ye",   # 36 cards
+        ".jLMuyc",   # 6 cards, mais restrito
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
@@ -917,7 +916,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             _need_refresh = False
             # Re-encontra cards usando os mesmos seletores
             refreshed = []
-            for sel in ["li.lPyEac[role='button']", ".mxvQLc", ".BVAVmf", ".POX3ye", ".jLMuyc"]:
+            for sel in [".mxvQLc", ".BVAVmf", ".POX3ye", ".jLMuyc"]:
                 try:
                     cards = page.locator(sel)
                     n = cards.count()

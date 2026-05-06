@@ -1,0 +1,15 @@
+[Unit]
+Description=DOM Detective — check and fix Google Flights selectors
+After=network.target chrome-guardian.service
+Wants=chrome-guardian.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/vooindo
+EnvironmentFile=-/etc/default/vooindo
+Environment=PYTHONUNBUFFERED=1
+Environment=USE_SYSTEM_CHROME=1
+ExecStart=/opt/vooindo/.venv/bin/python /opt/vooindo/dom_detective.py --apply
+StandardOutput=journal
+StandardError=journal
