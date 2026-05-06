@@ -224,14 +224,41 @@ def main():
             time.sleep(max(0.0, START_DELAY_SECONDS))
 
     _last_session_check = time.monotonic()
+    _last_cleanup_check = time.monotonic()
     _check_interval = 300  # 5 minutos
 
     while True:
         time.sleep(2)
+        now = time.monotonic()
+        
+        # Limpar zumbis de executor periodicamente
+        if now - _last_cleanup_check > 300:
+            try:
+                import psutil
+                cleaned = 0
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+                    try:
+                        cmd = ' '.join(proc.info.get('cmdline') or [])
+                        if 'google_flights_executor.py' not in cmd and 'minimal_flights_scraper.py' not in cmd:
+                            continue
+                        created = proc.info.get('create_time')
+                        if created and (time.time() - created) > 600:
+                            proc.kill()
+                            proc.wait(timeout=3)
+                            cleaned += 1
+                            logger.warning('[cleanup] zumbi morto | pid=%s | cmd=%s...', proc.info['pid'], cmd[:60])
+                    except Exception:
+                        pass
+                if cleaned:
+                    logger.info('[cleanup] %s zumbis mortos', cleaned)
+            except Exception as exc:
+                logger.warning('[cleanup] erro: %s', exc)
+            _last_cleanup_check = now
+        
         # Verificar permissão da google_session periodicamente
-        if time.monotonic() - _last_session_check > _check_interval:
+        if now - _last_session_check > _check_interval:
             _fix_google_session_permissions()
-            _last_session_check = time.monotonic()
+            _last_session_check = now
         for i, proc in enumerate(processes):
             code = proc.poll()
             if code is None:

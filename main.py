@@ -1057,7 +1057,43 @@ def _cleanup_stale_running_user_runs(conn, stale_minutes: int = 5) -> int:
     return len(stale_ids)
 
 
+def _cleanup_stuck_executors():
+    """Mata processos executor travados (rodando > 10 min)."""
+    import psutil
+    killed = 0
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            cmdline = ' '.join(proc.info.get('cmdline') or [])
+            if 'google_flights_executor.py' not in cmdline:
+                continue
+            created = proc.info.get('create_time')
+            if created and (time.time() - created) > 600:  # > 10 min
+                proc.kill()
+                killed += 1
+                logger.warning('[cleanup] executor zumbi morto | pid=%s | tempo=%.0fs',
+                              proc.info['pid'], time.time() - created)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if killed:
+        logger.info('[cleanup] %s executor(es) zumbi(s) mortos', killed)
+    # Também limpa zumbis do minimal_scraper
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+        try:
+            cmdline = ' '.join(proc.info.get('cmdline') or [])
+            if 'minimal_flights_scraper.py' not in cmdline:
+                continue
+            created = proc.info.get('create_time')
+            if created and (time.time() - created) > 600:
+                proc.kill()
+                killed += 1
+                logger.warning('[cleanup] minimal_scraper zumbi morto | pid=%s', proc.info['pid'])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
 def run_user_scan(user_id: int, trigger: str = "manual-user", notify: bool = True, send_text: bool = False):
+    # Limpa zumbis antes de começar uma consulta manual
+    _cleanup_stuck_executors()
     conn = connect_db()
     run_id = _create_user_run(conn, user_id, trigger=trigger)
     try:
