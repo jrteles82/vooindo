@@ -240,9 +240,9 @@ def expand_results(page, notes: list[str], is_international: bool = False) -> fl
         try:
             btn = page.get_by_text(label, exact=False)
             if btn.count() > 0:
-                btn.first.scroll_into_view_if_needed(timeout=2500)
-                human_pause(0.5, 1.0)
-                btn.first.click(timeout=4000)
+                btn.first.scroll_into_view_if_needed(timeout=1500)
+                human_pause(0.3, 0.7)
+                btn.first.click(timeout=2500)
                 notes.append("clicked_show_more=1")
                 human_pause(1.5, 2.6)
                 clicked = True
@@ -886,7 +886,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
-    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 12000
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 8000
     _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
 
     def _effective_max() -> int:
