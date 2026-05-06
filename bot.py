@@ -861,7 +861,6 @@ def _render_user_list(conn) -> tuple[str, InlineKeyboardMarkup]:
         LEFT JOIN user_access ua ON ua.chat_id = b.chat_id
         LEFT JOIN bot_settings bs ON bs.user_id = b.user_id
         ORDER BY COALESCE(NULLIF(TRIM(b.first_name), ''), NULLIF(TRIM(b.username), ''), b.chat_id) ASC
-        LIMIT 20
         """)
     ).fetchall()
     _count_row = conn.execute(sql('SELECT COUNT(*) AS cnt FROM bot_users')).fetchone()
