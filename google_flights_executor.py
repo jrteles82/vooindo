@@ -906,12 +906,41 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
 
     processed_cards = 0
     current_limit = min(len(airline_candidates), start_cards)
+    _need_refresh = False  # se True, re-achar cards apos go_back
     while processed_cards < min(len(airline_candidates), _effective_max()):
         if time.perf_counter() > _booking_loop_deadline:
             notes.append(f'booking_loop_timeout_{int(time.perf_counter() - (time.perf_counter() - 25))}s')
             break
+
+        # Se navegou pra booking e voltou, re-achar os cards (referencias antigas sao stale)
+        if _need_refresh:
+            _need_refresh = False
+            # Re-encontra cards usando os mesmos seletores
+            refreshed = []
+            for sel in ["li.lPyEac[role='button']", ".mxvQLc", ".BVAVmf", ".POX3ye", ".jLMuyc"]:
+                try:
+                    cards = page.locator(sel)
+                    n = cards.count()
+                    for i in range(min(n, max_cards_limit)):
+                        try:
+                            card = cards.nth(i)
+                            txt = card.inner_text(timeout=1000).strip()
+                            prices = [p for p in parse_prices(txt) if p >= 300]
+                            price = min(prices) if prices else 0
+                            # Aceita cards com preco OU info de voo
+                            has_price = any(c in txt for c in ["R\$", "\$", "€"])
+                            has_flight = bool(re.search(r'\d{1,2}:\d{2}', txt))
+                            if has_price or has_flight:
+                                refreshed.append((price, card, txt, sel))
+                        except Exception: pass
+                except Exception: pass
+            if refreshed:
+                airline_candidates[:] = refreshed
+
         window_end = min(len(airline_candidates), current_limit)
         for idx in range(processed_cards + 1, window_end + 1):
+            if idx > len(airline_candidates):
+                break
             price, card, txt, selector_used = airline_candidates[idx - 1]
             try:
                 card.scroll_into_view_if_needed(timeout=1500)
@@ -941,19 +970,24 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                         if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                             wait_for_booking_options_stable(page)
                             _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
+                            _need_refresh = True
                             break
                         else:
                             _try_go_back()
+                            _need_refresh = True
                             break
                     elif wait_for_booking(page):
                         _extract_booking_with_two_step(idx, price)
+                        _need_refresh = True
                         break
                     elif is_details_panel_open(page):
                         if _try_click_selecionar_voo():
                             if wait_for_booking(page):
                                 _extract_booking_with_two_step(idx, price)
+                                _need_refresh = True
                                 break
                         _try_go_back()
+                        _need_refresh = True
                         break
                 except Exception: pass
 
