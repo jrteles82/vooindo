@@ -240,9 +240,9 @@ def expand_results(page, notes: list[str], is_international: bool = False) -> fl
         try:
             btn = page.get_by_text(label, exact=False)
             if btn.count() > 0:
-                btn.first.scroll_into_view_if_needed(timeout=1500)
-                human_pause(0.3, 0.7)
-                btn.first.click(timeout=2500)
+                btn.first.scroll_into_view_if_needed(timeout=2500)
+                human_pause(0.5, 1.0)
+                btn.first.click(timeout=4000)
                 notes.append("clicked_show_more=1")
                 human_pause(1.5, 2.6)
                 clicked = True
@@ -886,9 +886,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
-    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 8000
-    _booking_loop_start = time.perf_counter()
-    _booking_loop_deadline = time.perf_counter() + 90  # max 90s no loop de booking: 5 cards × 8s + overhead
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 12000
+    _booking_loop_deadline = time.perf_counter() + 20  # max 20s no loop de booking
 
     def _effective_max() -> int:
         if is_international:
@@ -903,7 +902,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     current_limit = min(len(airline_candidates), start_cards)
     while processed_cards < min(len(airline_candidates), _effective_max()):
         if time.perf_counter() > _booking_loop_deadline:
-            notes.append(f'booking_loop_deadline_at_{round(time.perf_counter() - _booking_loop_start, 1)}s')
+            notes.append(f'booking_loop_timeout_{int(time.perf_counter() - (time.perf_counter() - 25))}s')
             break
         window_end = min(len(airline_candidates), current_limit)
         for idx in range(processed_cards + 1, window_end + 1):
