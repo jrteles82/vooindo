@@ -928,7 +928,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                             prices = [p for p in parse_prices(txt) if p >= 300]
                             price = min(prices) if prices else 0
                             # Aceita cards com preco OU info de voo
-                            has_price = any(c in txt for c in ["R\$", "\$", "€"])
+                            has_price = any(c in txt for c in ['R$', '$', '€'])
                             has_flight = bool(re.search(r'\d{1,2}:\d{2}', txt))
                             if has_price or has_flight:
                                 refreshed.append((price, card, txt, sel))
@@ -956,15 +956,9 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
 
             for target, target_name in click_targets:
                 try:
-                    # Tenta clique via JS (funciona no novo layout do Google)
-                    _clicked = page.evaluate('''(sel) => {
-                        const el = document.querySelector(sel);
-                        if (!el) return false;
-                        el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, view: window}));
-                        return true;
-                    }''', selector_used)
-                    if _clicked:
-                        human_pause(0.3, 0.6)
+                    # Clica no elemento diretamente (nao via selector global)
+                    target.click(timeout=3000, force=True)
+                    human_pause(0.3, 0.6)
                     current_url = page.url or ""
                     if "/travel/flights/booking" in current_url:
                         if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
