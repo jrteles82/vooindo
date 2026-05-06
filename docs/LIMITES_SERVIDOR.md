@@ -68,5 +68,44 @@ _CHROME_MAX_CONCURRENT = 7  # máximo comprovado: 7
 sudo systemctl restart vooindo
 ```
 
+## Bottleneck Real
+
+O tempo de cada job NÃO é limitado por CPU, RAM, workers ou Chrome.
+O gargalo real é o **Google Flights**:
+
+| Etapa | Tempo típico |
+|-------|:-----------:|
+| Navegação até página de busca | ~3-5s |
+| Aguardar resultados carregarem | ~3-9s |
+| Expandir resultados (show more) | ~9-13s |
+| Booking loop (2 cartões × ~12s) | ~24s |
+| Extração de preço + URL | ~2-5s |
+| **Total por job** | **~40-75s** (sem fila) |
+| + Fila de semáforo (contenção) | +30-120s |
+| **Total observado** | **~100-190s** |
+
+### Por que aumentar workers não acelera?
+
+Com 7 workers e Chrome 7, cada job leva ~40-75s de tempo real de Google Flights.
+O restante (~60-115s) é espera no semáforo de Chrome — todos os workers disputam os mesmos 7 slots.
+
+Aumentar workers de 7 → 10 **não reduz o tempo por job**, apenas aumenta a contenção:
+- Mais workers disputando os mesmos 7 Chromes
+- Mesmo tempo de espera no semáforo
+- Mais CPU/RAM para gerenciar workers ociosos
+
+### O que REALMENTE reduz o tempo?
+
+As únicas otimizações que impactam:
+1. **Booking loop**: processar menos cartões (já em 2, limite inferior)
+2. **Timeout de booking**: reduzir de 12s para menos (risco de perder URL)
+3. **skip_booking**: pula navegação dos cards (já desligado no scheduler — booking é obrigatório)
+4. **Google Flights**: fora do nosso controle
+
+### Conclusão
+
+7 workers + Chrome 7 é o **ponto ótimo** para 2 vCPUs / 8GB RAM.
+A curva de performance é plana acima disso — mais recursos do servidor não traduzem em scans mais rápidos.
+
 ## Nota
 Os perfis de worker (google_session_N) são sincronizados automaticamente do profile base (`google_session/`) via `sync_current_worker_profile_from_base()` na inicialização de cada worker. Novos perfis são criados automaticamente se não existirem.
