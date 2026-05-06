@@ -848,8 +848,9 @@ def clear_pending_input_state(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 
-def _render_user_list(conn) -> tuple[str, InlineKeyboardMarkup]:
-    """Retorna (texto, markup) com a lista de usuários para o painel."""
+def _render_user_list(conn, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    """Retorna (texto, markup) com a lista paginada de usuários para o painel."""
+    PAGE_SIZE = 20
     users = conn.execute(
         sql("""
         SELECT b.user_id, b.chat_id, b.first_name, b.username, b.confirmed,
@@ -865,23 +866,39 @@ def _render_user_list(conn) -> tuple[str, InlineKeyboardMarkup]:
     ).fetchall()
     _count_row = conn.execute(sql('SELECT COUNT(*) AS cnt FROM bot_users')).fetchone()
     total = _count_row['cnt'] if isinstance(_count_row, dict) else _count_row[0]
-    linhas_info = []
-    text = f"👤 *Usuários Registrados* ({total} total)\n\nSelecione para gerenciar:\n"
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = min(max(0, page), total_pages - 1)
+    
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    page_users = users[start:end]
+    
+    text = f"👤 *Usuários Registrados* ({total} total)\n\n"
+    text += f"Página {page + 1}/{total_pages}\n\n"
+    text += "Selecione para gerenciar:\n"
+    
     keyboard = []
-    for idx, u in enumerate(users, start=1):
+    for local_idx, u in enumerate(page_users, start=start + 1):
         nome = (u['first_name'] or 'Sem nome')[:18]
         status = u['status'] or 'free'
         bloq = ' 🚫' if int(u['blocked'] or 0) else ''
         test_badge = ' 🧪' if int(u.get('is_test_user', 0) or 0) else ''
         filtro_valor = normalize_max_price(u['max_price'])
         filtro_txt = 'Sem limite' if filtro_valor is None else f"R$ {int(float(filtro_valor)) if float(filtro_valor).is_integer() else format_money_br(float(filtro_valor))}"
-        linhas_info.append(f"{idx}. {nome}{test_badge}{bloq} | {status} | {filtro_txt}")
+        text += f"{local_idx}. {nome}{test_badge}{bloq} | {status} | {filtro_txt}\n"
         keyboard.append([InlineKeyboardButton(
-            f"{idx}. {nome}{test_badge}{bloq}",
+            f"{local_idx}. {nome}{test_badge}{bloq}",
             callback_data=f"painel:usr:{u['chat_id']}"
         )])
-    if linhas_info:
-        text += '\n'.join(linhas_info[:20])
+    
+    # Navegação
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton('◀ Anterior', callback_data=f"painel:usuarios:{page - 1}"))
+    if page + 1 < total_pages:
+        nav_row.append(InlineKeyboardButton('Próximo ▶', callback_data=f"painel:usuarios:{page + 1}"))
+    if nav_row:
+        keyboard.append(nav_row)
     keyboard.append([InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')])
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -1905,9 +1922,15 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = ':'.join(parts[1:]) if len(parts) > 1 else ''
     ensure_owner_test_access(conn)
 
-    if action == 'usuarios':
+    if action == 'usuarios' or action.startswith('usuarios:'):
         await query.answer()
-        text, markup = _render_user_list(conn)
+        page = 0
+        if ':' in action:
+            try:
+                page = max(0, int(action.split(':', 1)[1]))
+            except (ValueError, IndexError):
+                page = 0
+        text, markup = _render_user_list(conn, page=page)
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=markup)
 
     elif action.startswith('usr:'):
