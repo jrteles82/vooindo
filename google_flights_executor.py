@@ -1307,7 +1307,7 @@ def main(argv: list[str]) -> int:
             def _timeout_handler(_signum, _frame):
                 raise TimeoutError('scan_timeout_60s')
             _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(120)
+            _sig.alarm(180)
             try:
                 result = run(origin, destination, outbound_date, inbound_date)
             finally:

@@ -471,7 +471,9 @@ finally:
         log("guardian_starting")
         SESSION_DIR.mkdir(exist_ok=True)
         last_relogin = 0
+        last_proactive_restart = now
         health_count = 0
+        RESTART_INTERVAL = 4 * 3600  # 4h: evita degradação do Chrome
 
         while self.running:
             try:
@@ -502,6 +504,15 @@ finally:
                     if health.get("ok"):
                         self.session_ok = True
                         self.last_auth_check = now
+                        # Restart proativo a cada 4h para evitar degradação do Chrome
+                        if now - last_proactive_restart > RESTART_INTERVAL:
+                            last_proactive_restart = now
+                            log("proactive_restart")
+                            self.kill_chrome()
+                            time.sleep(3)
+                            if self.start_chrome():
+                                self.last_auth_check = now
+                                notify_telegram("🔄 Guardian: Reinício programado (4h)")
                     else:
                         self.session_ok = False
                         log("session_bad", score=health.get("score", 0),
