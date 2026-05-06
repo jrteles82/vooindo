@@ -723,11 +723,14 @@ def _vendor_from_card_text(txt: str) -> str:
 def maybe_open_booking(page, summary_price: float | None, notes: list[str], allow_agencies: bool = False, is_international: bool = False) -> tuple[bool, str, float | None, float | None, list[dict], str, tuple[str, float, float | None, list[dict], str] | None, tuple[str, float, float | None, list[dict], str] | None, str]:
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
+    # Seletores semânticos estáveis — classes rotacionadas pelo Google
+    # Cards agora são <li role="button" class="lPyEac P0ukfb"> — mudou de div pra li
     candidate_locators = [
-        ".BVAVmf",   # card container (classes rotacionadas pelo Google)
+        "li.lPyEac[role='button']",   # principal (2026-06) — elementos li com role=button
+        ".BVAVmf",   # card container (2026-05)
         ".POX3ye",   # fallback 1
         ".jLMuyc",   # fallback 2
-        ".mxvQLc",   # fallback antigo (era o principal 2026-05)
+        ".mxvQLc",   # fallback antigo
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
@@ -745,7 +748,10 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             except Exception:
                 continue
             # Suporta R$, $, €, ARS, etc.
-            if not any(curr in txt for curr in ["R$", "$", "€", "ARS", "BRL", "USD"]):
+            # Aceita cards com preço (R$, $, €) OU com info de voo (horário + cia)
+            has_price = any(curr in txt for curr in ["R$", "$", "€", "ARS", "BRL", "USD"])
+            has_flight_info = bool(re.search(r'\d{1,2}:\d{2}', txt)) and any(a in txt for a in ["Azul", "Gol", "LATAM", "COPA", "American", "United", "Avianca", "Aerolineas", "Delta", "Air France", "KLM", "Iberia", "British", "Lufthansa", "TAP", "Emirates", "Turkish", "Qatar", "Ethiopian"])
+            if not (has_price or has_flight_info):
                 continue
             prices = [p for p in parse_prices(txt) if p >= 300]
             if not prices:
