@@ -109,3 +109,22 @@ A curva de performance é plana acima disso — mais recursos do servidor não t
 
 ## Nota
 Os perfis de worker (google_session_N) são sincronizados automaticamente do profile base (`google_session/`) via `sync_current_worker_profile_from_base()` na inicialização de cada worker. Novos perfis são criados automaticamente se não existirem.
+
+## Histórico de Correções
+
+### 06/05/2026 — rc1 crashes (booking URL ausente em rotas lentas)
+
+**Sintoma:** Algumas rotas (ex: FOR→PVH 16/06) retornavam sem URL de booking,
+mostrando apenas `minimal_scraper_fallback` a partir da rodada das 13:00.
+
+**Causa raiz:** O executor `google_flights_executor.py` roda como subprocesso
+com um SIGALRM interno de 120s. O Chrome do guardian acumula memória ao longo
+do dia (~5h+ uptime), deixando o Google Flights mais lento para responder.
+Quando o executor não conclui em 120s, o SIGALRM mata o processo com exit code 1
+sem stderr → `rc1`. O retry loop tenta 3x mas todas falham pelo mesmo motivo
+→ fallback para `minimal_scraper` que só extrai preço (sem URL).
+
+**Correções (commit a9ff5f1):**
+1. **SIGALRM: 120s → 180s** — margem extra para rotas lentas com Chrome degradado
+2. **Guardian auto-restart a cada 4h** — previne degradação do Chrome
+   kill+restart preventivo para manter Chrome responsivo
