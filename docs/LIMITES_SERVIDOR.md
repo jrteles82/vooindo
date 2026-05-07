@@ -128,3 +128,34 @@ sem stderr → `rc1`. O retry loop tenta 3x mas todas falham pelo mesmo motivo
 1. **SIGALRM: 120s → 180s** — margem extra para rotas lentas com Chrome degradado
 2. **Guardian auto-restart a cada 4h** — previne degradação do Chrome
    kill+restart preventivo para manter Chrome responsivo
+
+### 06/05/2026 — Google Flights DOM change (booking URLs missing from ~13:00)
+
+**Sintoma:** Todas as rotas pararam de extrair URL de booking a partir das 13:00.
+Resultados mostravam `final_price_source=booking_agency_fallback` (sem URL).
+
+**Causa raiz:** Google Flights mudou a estrutura do DOM — três problemas:
+
+1. **Preços inline sumiram** — cards passaram a mostrar "R$ " sem valor.
+   O filtro `parse_prices(txt)` eliminava todos os candidatos (0 cards).
+
+2. **Clique JS no seletor errado** — `document.querySelector(sel)` sempre clicava
+   no 1º elemento da página, nunca no N-ésimo card.
+
+3. **Elementos stale após go_back()** — referências Playwright ficavam inválidas
+   após navegar para booking e voltar.
+
+**Correções (commits d104515 + 1eb31a0 + 7c714b7):**
+1. **Filtro ampliado** — aceita cards com horário + cia aérea (sem exigir R$)
+2. **`.click(force=True)` direto no elemento** — não usa `document.querySelector` global
+3. **Re-find cards após go_back** — reconstroi lista de candidatos após navegação
+4. **Booking loop deadline 20s → 60s** — margem para UI mais lenta do novo Google Flights
+5. **DOM Detective** — script que roda a cada 2h, detecta mudanças no DOM e
+   atualiza seletores automaticamente. Notifica admin via Telegram se todos falharem.
+
+**Resultado:** URLs voltaram (~75-80% de taxa de sucesso vs 0% antes). O ~20% restante
+é crash normal de executor (rc1) que já existia antes da mudança do DOM.
+
+**Arquivos criados:**
+- `dom_detective.py` — script de auto-detecção
+- `systemd/dom-detective.service` + `systemd/dom-detective.timer` — execução a cada 2h
