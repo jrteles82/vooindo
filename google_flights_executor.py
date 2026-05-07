@@ -1209,15 +1209,30 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                                 wait_s = 8.0 + _booking_attempt * 10.0
                                 notes.append(f'booking_retry_{_booking_attempt+1}_no_url_wait_{wait_s}s')
                                 time.sleep(wait_s)
-                                # Recarrega a pagina de busca limpa
                                 page.goto(url, wait_until='domcontentloaded')
                                 wait_for_results(page)
                                 try_click_result_tab(page, notes)
                                 time.sleep(2)
                         except Exception as _be:
-                            notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                            err_name = type(_be).__name__
+                            notes.append(f'booking_crashed={err_name}: {str(_be)[:100]}')
                             if _booking_attempt < 2:
                                 time.sleep(10.0)
+                                # Se o contexto/pagina foi fechado, recria
+                                if 'TargetClosed' in err_name or 'closed' in str(_be).lower():
+                                    try:
+                                        context.close()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        context = browser.new_context()
+                                        page = context.new_page()
+                                        Stealth().apply_stealth_sync(page)
+                                        page.set_default_timeout(TIMEOUT_MS)
+                                        notes.append('booking_retry_new_context')
+                                    except Exception as _ce:
+                                        notes.append(f'booking_retry_new_context_failed={_ce}')
+                                        break
                                 try:
                                     page.goto(url, wait_until='domcontentloaded')
                                     wait_for_results(page)
