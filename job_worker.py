@@ -943,14 +943,9 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         except:
             pass
         _wd_fired[0] = True
-        try:
-            import subprocess as _sp
-            # Mata TODOS os Chromes (mais seguro que isolar por perfil)
-            _sp.run(['pkill', '-9', '-f', 'chrome-headless-shell'], capture_output=True, timeout=5)
-            import main as _main
-            _main.ChromeSemaphore.reset()
-        except:
-            pass
+        # NUNCA mata o Chrome aqui — workers compartilham o guardian via CDP.
+        # Matar o Chrome quebra todos os outros workers simultaneos.
+        # O _purge_stale_chrome() no inicio do proximo process_job limpa orphans.
         # Marca job como erro
         try:
             from db import connect as _db, sql as _sql
@@ -960,7 +955,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             _c.close()
         except:
             pass
-        logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss | Chrome morto + semáforo resetado', _jid, _JOB_TIMEOUT)
+        logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss | marcado como erro (Chrome preservado)', _jid, _JOB_TIMEOUT)
     import threading as _th
     _tw = _th.Thread(target=_job_watchdog, daemon=True)
     _tw.start()
