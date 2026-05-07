@@ -1174,6 +1174,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             best_airline = None
             best_agency = None
             price_insight = ""
+            # Sempre extrai price_insight da pagina principal (funciona mesmo se booking falhar)
+            if cards_body:
+                pi_main = _extract_price_insight_from_body(cards_body)
+                if pi_main:
+                    price_insight = pi_main
+                    notes.append('price_insight_from_main_page')
             _booking_price = overall_min if overall_min is not None else summary_price
             if SKIP_BOOKING:
                 # Modo rápido: pula navegação do booking, usa dados da página principal
