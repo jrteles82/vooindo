@@ -1761,19 +1761,22 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         from html import escape
         lines = []
         for row in block_rows:
-            url = str(row.get("booking_url") or "").strip()
+            url = str(row.get("booking_url") or row.get("best_airline_url") or row.get("url") or "").strip()
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date = str(row.get("outbound_date") or "")
-            # Se nao tem URL de booking, descarta essa rota
-            if not url:
-                continue
+            # Mostra sempre a rota: com link se tiver URL, sem link se não tiver
             try:
                 date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
             except Exception:
                 pass
-            label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
-            lines.append(f"• <a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
+            if url:
+                label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
+                lines.append(f"• <a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
+            else:
+                price_fmt = row.get('price_fmt') or f"R$ {row.get('price', 0):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+                label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date} — {price_fmt} (link indisponível)"
+                lines.append(f"• {escape(label)}")
             # Inclui price_insight formatado quando disponível
             insight = row.get('price_insight', '').strip()
             if insight:
