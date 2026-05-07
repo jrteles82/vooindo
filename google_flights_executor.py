@@ -1198,18 +1198,37 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     final_price_source = 'summary_fast'
             else:
                 if _booking_price is not None:
-                    try:
-                        followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
-                        booking_followed = followed
-                    except Exception as _be:
-                        notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                    booking_followed = False
+                    for _booking_attempt in range(3):
+                        try:
+                            followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                            booking_followed = followed
+                            if booking_url:
+                                break
+                            if _booking_attempt < 2:
+                                wait_s = 8.0 + _booking_attempt * 10.0
+                                notes.append(f'booking_retry_{_booking_attempt+1}_no_url_wait_{wait_s}s')
+                                time.sleep(wait_s)
+                                # Recarrega a pagina de busca limpa
+                                page.goto(url, wait_until='domcontentloaded')
+                                wait_for_results(page)
+                                try_click_result_tab(page, notes)
+                                time.sleep(2)
+                        except Exception as _be:
+                            notes.append(f'booking_crashed={type(_be).__name__}: {_be}')
+                            if _booking_attempt < 2:
+                                time.sleep(10.0)
+                                try:
+                                    page.goto(url, wait_until='domcontentloaded')
+                                    wait_for_results(page)
+                                    try_click_result_tab(page, notes)
+                                    time.sleep(2)
+                                except Exception:
+                                    pass
 
-            # Se booking abriu mas sem URL apos 3 tentativas, descarta
+            # Se mesmo apos retries nao tem URL, mantem o preco extraido mas sem link de booking
             if booking_followed and not booking_url:
-                notes.append('booking_discarded_no_url_after_retry')
-                final_price = None
-                best_vendor = ""
-                _booking_price = None
+                notes.append('booking_no_url_after_retries_keeping_price')
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)
