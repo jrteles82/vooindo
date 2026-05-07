@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -105,6 +106,40 @@ def cleanup_orphan_chromes() -> None:
             except (ProcessLookupError, ValueError):
                 pass
     time.sleep(1)
+
+
+def cleanup_stale_profiles() -> None:
+    """Remove perfis google_session_* órfãos para evitar acúmulo de disco.
+
+    Mantém apenas o SESSION_DIR ativo e eventuais diretórios não-google_session.
+    """
+    active = str(SESSION_DIR.resolve())
+    pattern = str(BASE_DIR / "google_session_")
+    removed = []
+    for entry in sorted(BASE_DIR.iterdir()):
+        path = str(entry)
+        if not entry.is_dir():
+            continue
+        if path == active or path == str(BASE_DIR / "google_session"):
+            continue
+        if path.startswith(pattern):
+            try:
+                size = sum(
+                    f.stat().st_size
+                    for f in entry.rglob("*")
+                    if f.is_file()
+                )
+                size_mb = size / (1024 * 1024)
+            except Exception:
+                size_mb = 0
+            try:
+                shutil.rmtree(entry)
+                removed.append(f"{entry.name} ({size_mb:.0f} MB)")
+                log("cleanup_stale_profile", dir=entry.name, size_mb=round(size_mb, 1))
+            except Exception as exc:
+                log("cleanup_stale_profile_error", dir=entry.name, error=str(exc)[:100])
+    if removed:
+        notify_telegram(f"🧹 Guardian: {len(removed)} perfis removidos\n" + "\n".join(f"  • {r}" for r in removed[:5]) + (f"\n  … +{len(removed)-5}" if len(removed) > 5 else ""))
 
 
 def ensure_xvfb(display: str = ":99") -> bool:
@@ -470,8 +505,12 @@ finally:
     def run(self) -> None:
         log("guardian_starting")
         SESSION_DIR.mkdir(exist_ok=True)
+        cleanup_stale_profiles()
+        last_cleanup_profiles = time.time()
         last_relogin = 0
         last_proactive_restart = time.time()
+        last_cleanup_profiles = time.time()
+        PROFILE_CLEANUP_INTERVAL = 24 * 3600  # Limpeza de perfis a cada 24h
         health_count = 0
         RESTART_INTERVAL = 4 * 3600  # 4h: evita degradação do Chrome
 
@@ -528,6 +567,10 @@ finally:
                             elif r.get("status") == "challenge_required":
                                 log("waiting_for_challenge_5min")
                                 time.sleep(300)
+
+                if now - last_cleanup_profiles > PROFILE_CLEANUP_INTERVAL:
+                    cleanup_stale_profiles()
+                    last_cleanup_profiles = now
 
                 time.sleep(POLL_INTERVAL)
 

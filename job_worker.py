@@ -618,6 +618,96 @@ def mark_sent(conn, user_id: int):
         _cap.close()
 
 
+def _base_group_key(group_key: str) -> str:
+    key = str(group_key or '').strip()
+    if '_retry_' in key:
+        return key.split('_retry_', 1)[0]
+    return key
+
+
+def _family_group_like_pattern(base_group_key: str) -> str:
+    escaped = (
+        str(base_group_key or '')
+        .replace('\\', '\\\\')
+        .replace('%', '\\%')
+        .replace('_', '\\_')
+    )
+    return escaped + '\\_retry\\_%'
+
+
+def _load_group_family_route_results(conn, group_key: str) -> tuple[str, list[dict]]:
+    """Carrega resultados da rodada base + retries e deduplica por rota.
+
+    Para a mesma rota, prefere o resultado mais recente com dados.
+    Isso evita que o retry gere uma notificação parcial com só 1 rota.
+    """
+    import json as _json
+
+    base_group_key = _base_group_key(group_key)
+    rows = conn.execute(sql(r"""
+        SELECT rr.id, rr.job_id, rr.origin, rr.destination, rr.num_results, rr.result_data,
+               rr.created_at, rr.group_key,
+               COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.route.outbound_date')), '') AS outbound_date,
+               COALESCE(JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.route.inbound_date')), '') AS inbound_date
+        FROM scan_job_route_results rr
+        JOIN scan_jobs j ON j.id = rr.job_id
+        WHERE rr.group_key = %s
+           OR rr.group_key LIKE %s ESCAPE '\\'
+        ORDER BY rr.id
+    """), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
+
+    chosen: dict[tuple[str, str, str, str], dict] = {}
+    for row in rows:
+        rd = dict(row) if isinstance(row, dict) else {}
+        route_key = (
+            str(rd.get('origin') or '').upper(),
+            str(rd.get('destination') or '').upper(),
+            str(rd.get('outbound_date') or ''),
+            str(rd.get('inbound_date') or ''),
+        )
+        raw = rd.get('result_data')
+        parsed_rows = []
+        if raw:
+            try:
+                parsed_rows = _json.loads(raw)
+            except Exception:
+                parsed_rows = []
+        rd['_parsed_rows'] = parsed_rows
+
+        prev = chosen.get(route_key)
+        if prev is None:
+            chosen[route_key] = rd
+            continue
+
+        prev_has_rows = bool(prev.get('_parsed_rows'))
+        cur_has_rows = bool(parsed_rows)
+        if cur_has_rows and not prev_has_rows:
+            chosen[route_key] = rd
+            continue
+        if cur_has_rows == prev_has_rows and int(rd.get('id') or 0) >= int(prev.get('id') or 0):
+            chosen[route_key] = rd
+
+    return base_group_key, list(chosen.values())
+
+
+def _expected_family_route_count(conn, group_key: str) -> tuple[str, int]:
+    base_group_key = _base_group_key(group_key)
+    rows = conn.execute(sql(r"""
+        SELECT COALESCE(JSON_EXTRACT(payload, '$.group_info.total_routes'), 0) AS total_routes
+        FROM scan_jobs
+        WHERE group_key = %s
+           OR group_key LIKE %s ESCAPE '\\'
+    """), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
+    totals = []
+    for row in rows:
+        val = row['total_routes'] if isinstance(row, dict) else row[0]
+        try:
+            totals.append(int(val or 0))
+        except Exception:
+            pass
+    return base_group_key, max(totals) if totals else 0
+
+
 def _save_route_result(conn, job_id: int, user_id: int, chat_id: str, route_info: dict, parsed: list[dict], group_key: str) -> None:
     """Salva resultado de uma rota individual no banco como JSON."""
     import json as _json
@@ -700,34 +790,37 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             else:
                 return  # Jobs pendentes sem started_at (aguardando worker)
         
-        # Buscar dados JSON salvos das rotas do grupo
-        route_results = conn.execute(sql('''
-            SELECT origin, destination, num_results, result_data FROM scan_job_route_results
-            WHERE group_key = %s ORDER BY id
-        '''), (group_key,)).fetchall()
-        
+        # Buscar dados JSON salvos da rodada base + retries, sempre deduplicando por rota.
+        family_group_key, route_results = _load_group_family_route_results(conn, group_key)
+        _, expected_routes = _expected_family_route_count(conn, group_key)
+
         if not route_results:
             logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
             return
-        
+        if expected_routes and len(route_results) < expected_routes:
+            logger.info(
+                '[job-worker] group_key=%s | family=%s | aguardando todas as rotas (%s/%s)',
+                group_key, family_group_key, len(route_results), expected_routes,
+            )
+            return
+
         total_results = sum(
-            int(r['num_results'] if isinstance(r, dict) else r[2])
+            len((dict(r) if isinstance(r, dict) else {}).get('_parsed_rows') or [])
             for r in route_results
         )
-        logger.info('[job-worker] group_key=%s | consolidando %s rotas (%s resultados)', group_key, len(route_results), total_results)
-        
+        logger.info(
+            '[job-worker] group_key=%s | family=%s | consolidando %s rotas (%s resultados)',
+            group_key, family_group_key, len(route_results), total_results,
+        )
+
         # Reconstruir lista de dicts a partir dos JSONs salvos
         all_rows = []
         for r in route_results:
             rd = dict(r) if isinstance(r, dict) else {}
-            raw = rd.get('result_data')
-            if not raw:
+            parsed_rows = rd.get('_parsed_rows') or []
+            if not parsed_rows:
                 continue
-            try:
-                parsed_rows = _json.loads(raw)
-                all_rows.extend(parsed_rows)
-            except Exception as _je:
-                logger.warning('[job-worker] group_key=%s | erro ao parsear resultado de %s->%s: %s', group_key, rd.get('origin','?'), rd.get('destination','?'), _je)
+            all_rows.extend(parsed_rows)
         
         if not all_rows:
             loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
