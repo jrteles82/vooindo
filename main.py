@@ -809,6 +809,32 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
 
                 err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
                 result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
+                # Mesmo com rc != 0, tenta extrair dados do stdout (executor sempre imprime JSON)
+                if proc.stdout and proc.stdout.strip():
+                    try:
+                        _data = json.loads(proc.stdout)
+                        if _data.get("price") is not None:
+                            result = FlightResult(
+                                site="google_flights",
+                                origin=r.origin, destination=r.destination,
+                                outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                trip_type=r.trip_type,
+                                price=_data.get("price"), currency="BRL",
+                                url=_data.get("url", ""),
+                                booking_url=_data.get("booking_url", ""),
+                                notes="rc1_recovered | " + " | ".join(_data.get("notes", [])),
+                                best_vendor=_data.get("best_vendor", ""),
+                                best_vendor_price=_data.get("best_vendor_price"),
+                                booking_options_json=json.dumps(_data.get("booking_options", []), ensure_ascii=False),
+                                price_insight=_data.get("price_insight", ""),
+                                best_airline_vendor=_data.get("best_airline_vendor"),
+                                best_airline_price=_data.get("best_airline_price"),
+                                best_airline_url=_data.get("best_airline_url"),
+                                best_airline_visible_price=_data.get("best_airline_visible_price")
+                            )
+                            # Retry loop vai pular pq notes não contém "no_stderr"
+                    except Exception:
+                        pass
 
                 # Retry automático para proc_error_rc1: pode ser OOM que matou o Chrome
                 # Tenta até 3 vezes com delays progressivos

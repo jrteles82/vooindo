@@ -1335,12 +1335,12 @@ def main(argv: list[str]) -> int:
     renewed = False
     for attempt in range(1 + max_retries):
         try:
-            # Timeout global de 60s por tentativa
+            # Timeout global de 480s por tentativa (matching main.py subprocess timeout)
             import signal as _sig
             def _timeout_handler(_signum, _frame):
-                raise TimeoutError('scan_timeout_60s')
+                raise TimeoutError('scan_timeout_480s')
             _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(180)
+            _sig.alarm(480)
             try:
                 result = run(origin, destination, outbound_date, inbound_date)
             finally:
