@@ -108,6 +108,33 @@ def cleanup_orphan_chromes() -> None:
     time.sleep(1)
 
 
+def kill_chrome_orphans() -> int:
+    """Mata processos Chrome órfãos que sobraram de guardian kills anteriores.
+
+    Quando o guardian é morto com SIGKILL (ex: MemoryMax estourado),
+    os processos Chrome filhos ficam zumbis. Isso acumula memória e
+    causa conflitos de porta/perfil na próxima inicialização.
+    """
+    killed = 0
+    try:
+        for pid_str in os.listdir("/proc"):
+            try:
+                pid = int(pid_str)
+                cmdline = (Path(f"/proc/{pid_str}/cmdline").read_bytes()
+                           .replace(b"\x00", b" ").decode(errors="replace"))
+                if "chrome" in cmdline.lower() and "--remote-debugging-port" in cmdline:
+                    os.kill(pid, signal.SIGKILL)
+                    killed += 1
+            except (ValueError, FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+        if killed:
+            log("chrome_orphans_killed", count=killed)
+            time.sleep(2)  # Dá tempo do SO liberar portas
+    except Exception as exc:
+        log("chrome_orphans_kill_error", error=str(exc)[:100])
+    return killed
+
+
 def cleanup_stale_profiles() -> None:
     """Remove perfis google_session_* órfãos para evitar acúmulo de disco.
 
@@ -505,6 +532,7 @@ finally:
     def run(self) -> None:
         log("guardian_starting")
         SESSION_DIR.mkdir(exist_ok=True)
+        kill_chrome_orphans()
         cleanup_stale_profiles()
         last_cleanup_profiles = time.time()
         last_relogin = 0

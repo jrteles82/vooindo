@@ -736,7 +736,8 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
     import json as _json
     
     # Lock no banco: primeiro worker a pegar consolida, os outros desistem
-    _lock_name = f'consolidate_{group_key}'
+    # Usa base_group_key pra que retry não dispare consolidação duplicada
+    _lock_name = f'consolidate_{_base_group_key(group_key)}'
     _got_lock = conn.execute(sql("SELECT GET_LOCK(%s, 0) AS got_lock"), (_lock_name,)).fetchone()
     _locked = int((_got_lock['got_lock'] if isinstance(_got_lock, dict) else _got_lock[0]) or 0)
     if not _locked:
