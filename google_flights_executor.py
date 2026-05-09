@@ -296,7 +296,7 @@ def try_click_result_tab(page, notes: list[str]) -> float:
     return round(time.perf_counter() - started, 3)
 
 
-def wait_for_booking_content(page, timeout_ms: int = 12000) -> bool:
+def wait_for_booking_content(page, timeout_ms: int = 25000) -> bool:
     """Aguarda vendors de booking: 'Reserve com', 'Reservar com' ou 'Comprar com'.
     Não retorna True em 'Opções de reserva' (header carregado antes dos vendors)."""
     try:
