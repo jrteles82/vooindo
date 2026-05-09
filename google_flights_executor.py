@@ -1243,6 +1243,15 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             # Se mesmo apos retries nao tem URL, mantem o preco extraido mas sem link de booking
             if booking_followed and not booking_url:
                 notes.append('booking_no_url_after_retries_keeping_price')
+            if not booking_url:
+                booking_url = page.url
+                notes.append(f'booking_url_fallback_to_page_url={booking_url[:80]}')
+            # Garante price_insight mesmo se maybe_open_booking não retornou
+            if not price_insight and cards_body:
+                pi_fallback = _extract_price_insight_from_body(cards_body)
+                if pi_fallback:
+                    price_insight = pi_fallback
+                    notes.append('price_insight_fallback_from_main_page')
 
             best_vendor_price = _valid_price(best_vendor_price)
             visible_card_price = _valid_price(visible_card_price)
