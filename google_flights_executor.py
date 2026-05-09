@@ -725,12 +725,11 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     # Seletores semânticos estáveis — classes rotacionadas pelo Google
     # Ordem por eficácia comprovada (dom_detective.py --test)
-    candidate_locators = [
-        ".mxvQLc",   # principal (2026-06) — 18 cards, mais confiável
-        ".BVAVmf",   # 54 cards, inclui elementos extra
-        ".POX3ye",   # 36 cards
-        ".jLMuyc",   # 6 cards, mais restrito
-    ]
+    candidate_locators = [.mxvQLc,   # principal (2026-06) — 18 cards, mais confiável
+        .BVAVmf,   # 54 cards, inclui elementos extra
+        .POX3ye,   # 36 cards
+        .jLMuyc,   # 6 cards, mais restrito, .cWbNod,           # fallback 1
+        .yfYxmb,           # fallback 2]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
     for selector in candidate_locators:
@@ -891,7 +890,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
 
-    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 12000
+    booking_timeout_ms = BOOKING_CONTENT_TIMEOUT_MS if is_international else 25000
     _booking_loop_deadline = time.perf_counter() + 60  # 60s: cards demoram pra carregar no novo Google Flights
 
     def _effective_max() -> int:
