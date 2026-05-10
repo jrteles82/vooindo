@@ -103,6 +103,19 @@ def parse_price(text: str) -> float | None:
     return vals[0] if vals else None
 
 
+def _filter_installment_prices(prices: list[float], context_text: str) -> list[float]:
+    """Filtra valores que são parcelas (ex: '12x de R$ 307'), mantendo só preços totais."""
+    if not prices or len(prices) <= 1:
+        return prices
+    # Detecta padrão de parcela: [número]x (de|R$|parcela|parcelas)
+    has_installment_pattern = bool(re.search(r'\d+\s*x\s*(?:de\s*)?(?:R\$|parcel)', context_text or '', re.I))
+    if not has_installment_pattern:
+        return prices
+    # Se tem parcela, usa o maior preço (total) e filtra os menores (parcelas)
+    max_price = max(prices)
+    return [p for p in prices if p >= max_price * 0.5]
+
+
 def _valid_price(value) -> float | None:
     return float(value) if isinstance(value, (int, float)) and value >= 100 else None
 
@@ -732,6 +745,10 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         ".jLMuyc",   # 6 cards, mais restrito
         ".cWbNod",   # fallback 1
         ".yfYxmb",   # fallback 2
+        ".MV3Tbb",   # fallback 3
+        ".OXIGQc",   # fallback 4
+        ".yYl4e",    # fallback 5
+        ".lLfZTe",   # fallback 6
     ]
     raw_candidates: list[tuple[float, object, str, str]] = []
     seen: set[tuple[str, float]] = set()
@@ -757,7 +774,10 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             prices = [p for p in parse_prices(txt) if p >= 300]
             if not prices:
                 continue
-            price = min(prices)
+            prices = _filter_installment_prices(prices, txt)
+            if not prices:
+                continue
+            price = max(prices)  # usa o MAIOR preço (total), não o menor (parcela)
             # dedup por conteúdo + preço (independente do seletor)
             key = (txt[:220], round(price, 2))
             if key in seen:
@@ -780,7 +800,11 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     step_cards = max(1, MAX_CARDS_STEP)
 
     # Sempre abre bookings — preço do card pode não ser o menor do booking
-    airline_candidates = candidates if allow_agencies else [c for c in candidates if _card_looks_like_airline(c[2])]
+    # Mesmo com allow_agencies=False, clicamos em TODOS os cards (incluindo agências)
+    # para extrair URL e opções. Só filtramos na hora de escolher best_airline vs best_agency.
+    # Isso garante que: (1) o link de booking aponte pro card mais barato, mesmo que seja agência,
+    # e (2) se a página booking de uma agência tiver opções de companhias aéreas, elas são capturadas.
+    airline_candidates = candidates
     if not airline_candidates:
         airline_candidates = candidates
     notes.append(f"click_candidates={len(raw_candidates)} deduped={len(candidates)} airline_candidates={len(airline_candidates)} start={start_cards} step={step_cards} max={max_cards_limit} intl={is_international}")
@@ -927,12 +951,14 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                             card = cards.nth(i)
                             txt = card.inner_text(timeout=1000).strip()
                             prices = [p for p in parse_prices(txt) if p >= 300]
-                            price = min(prices) if prices else 0
+                            if prices:
+                                prices = _filter_installment_prices(prices, txt)
+                            card_price = max(prices) if prices else 0
                             # Aceita cards com preco OU info de voo
                             has_price = any(c in txt for c in ['R$', '$', '€'])
                             has_flight = bool(re.search(r'\d{1,2}:\d{2}', txt))
                             if has_price or has_flight:
-                                refreshed.append((price, card, txt, sel))
+                                refreshed.append((card_price, card, txt, sel))
                         except Exception: pass
                 except Exception: pass
             if refreshed:
@@ -955,6 +981,7 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                         click_targets.append((loc.first, sel))
                 except Exception: pass
 
+            _card_opened_ok = False
             for target, target_name in click_targets:
                 try:
                     # Clica no elemento diretamente (nao via selector global)
@@ -966,32 +993,93 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                             wait_for_booking_options_stable(page)
                             _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
                             _need_refresh = True
+                            _card_opened_ok = True
                             break
                         else:
                             _try_go_back()
                             _need_refresh = True
+                            _card_opened_ok = True
                             break
                     elif wait_for_booking(page):
                         _extract_booking_with_two_step(idx, price)
                         _need_refresh = True
+                        _card_opened_ok = True
                         break
                     elif is_details_panel_open(page):
                         if _try_click_selecionar_voo():
                             if wait_for_booking(page):
                                 _extract_booking_with_two_step(idx, price)
                                 _need_refresh = True
+                                _card_opened_ok = True
                                 break
                         _try_go_back()
                         _need_refresh = True
+                        _card_opened_ok = True
                         break
                 except Exception: pass
+            # Se o card falhou ao abrir (nenhum target funcionou), tenta refresh + retry
+            if not _card_opened_ok:
+                notes.append(f'card_{idx}_falha_retry')
+                for _cr in range(2):
+                    try:
+                        page.reload(wait_until='domcontentloaded')
+                        time.sleep(2)
+                        wait_for_results(page)
+                        try_click_result_tab(page, notes)
+                        expand_results(page, notes, is_international=is_intl)
+                        # Re-encontra o card
+                        re_card = None
+                        for sel_r in ['.mxvQLc', '.BVAVmf', '.POX3ye', '.jLMuyc']:
+                            try:
+                                re_cards = page.locator(sel_r)
+                                if re_cards.count() > idx - 1:
+                                    re_card = re_cards.nth(idx - 1)
+                                    break
+                            except Exception: pass
+                        if re_card is None:
+                            break
+                        re_targets = [(re_card, sel_r)]
+                        for sel2 in ["div.JMc5Xc[role='link']", "[jsaction*='click:O1htCb']"]:
+                            try:
+                                loc = re_card.locator(sel2)
+                                if loc.count() > 0:
+                                    re_targets.append((loc.first, sel2))
+                            except Exception: pass
+                        for rt, rt_name in re_targets:
+                            try:
+                                rt.click(timeout=3000, force=True)
+                                human_pause(0.3, 0.6)
+                                cu = page.url or ""
+                                if "/travel/flights/booking" in cu:
+                                    if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
+                                        wait_for_booking_options_stable(page)
+                                        _extract_booking_with_two_step(idx, price, page_booking_url=cu)
+                                        _card_opened_ok = True
+                                        break
+                                    else:
+                                        _try_go_back()
+                                        _card_opened_ok = True
+                                        break
+                                elif wait_for_booking(page):
+                                    _extract_booking_with_two_step(idx, price)
+                                    _card_opened_ok = True
+                                    break
+                            except Exception: pass
+                        if _card_opened_ok:
+                            notes.append(f'card_{idx}_retry_{_cr+1}_ok')
+                            break
+                    except Exception:
+                        pass
+                if not _card_opened_ok:
+                    notes.append(f'card_{idx}_falhou_apos_retry')
 
         processed_cards = window_end
         if is_international and not found_airline_prices and processed_cards < len(airline_candidates):
             current_limit = min(len(airline_candidates), processed_cards + step_cards)
             continue
-        if len(found_airline_prices) >= max(1, MIN_AIRLINE_PRICES_TO_COMPARE) and best_airline and best_airline[4]:
-            break
+        # NÃO interrompe prematuramente: processa TODOS os cards da janela atual
+        # antes de decidir se pode parar. Isso garante que cards mais baratos
+        # (ex: agência antes da cia aérea) sejam considerados.
         if processed_cards >= min(len(airline_candidates), _effective_max()):
             break
         current_limit = min(len(airline_candidates), min(_effective_max(), processed_cards + step_cards))
@@ -1133,6 +1221,10 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 body = page.locator("body").inner_text(timeout=8000)
                 main_prices = [p for p in parse_prices(extract_section(body, "Principais voos", "Outros voos")) if p >= 300]
                 other_prices = [p for p in parse_prices(extract_section(body, "Outros voos", "Mostrar mais voos")) if p >= 300]
+                main_text = extract_section(body, "Principais voos", "Outros voos") or ""
+                other_text = extract_section(body, "Outros voos", "Mostrar mais voos") or ""
+                main_prices = _filter_installment_prices(main_prices, main_text)
+                other_prices = _filter_installment_prices(other_prices, other_text)
                 current_summary = extract_summary_price(body)
                 main_min = min(main_prices) if main_prices else None
                 other_min = min(other_prices) if other_prices else None
