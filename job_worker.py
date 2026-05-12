@@ -879,6 +879,24 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             else:
                 # Cada envio do Telegram é isolado em try/except para que
                 # uma falha de rede (httpx.ReadError, timeout) não mate o resto.
+                # Falhas de rede são retentadas 1x após 3s.
+                def _send_with_retry() -> None:
+                    for _attempt in range(1, 3):
+                        try:
+                            if links_msg:
+                                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                            else:
+                                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                            return
+                        except BaseException as _send_err:
+                            if _attempt >= 2:
+                                raise
+                            _is_retryable = any(_kw in str(_send_err).lower() for _kw in ['readerror', 'timeout', 'connection', 'networkerror', 'remoteclosed'])
+                            if not _is_retryable:
+                                raise
+                            logger.warning('[job-worker] group_key=%s | retry #%s envio: %s', group_key, _attempt, _send_err)
+                            import time as _time
+                            _time.sleep(3)
                 _photo_sent = False
                 try:
                     send_photo(bot, loop, chat_id, image_path)
@@ -887,19 +905,12 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
                     logger.warning('[job-worker] group_key=%s | falha ao enviar foto: %s', group_key, _photo_err)
                 if _photo_sent:
                     try:
-                        if links_msg:
-                            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-                        else:
-                            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                        _send_with_retry()
                     except BaseException as _links_err:
-                        logger.warning('[job-worker] group_key=%s | falha ao enviar links/menu: %s', group_key, _links_err)
+                        logger.warning('[job-worker] group_key=%s | falha ao enviar links/menu apos retry: %s', group_key, _links_err)
                 else:
-                    # Foto falhou — tenta ao menos os links como fallback
                     try:
-                        if links_msg:
-                            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
-                        else:
-                            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                        _send_with_retry()
                     except BaseException as _fallback_err:
                         logger.warning('[job-worker] group_key=%s | falha tambem no fallback: %s', group_key, _fallback_err)
         finally:
