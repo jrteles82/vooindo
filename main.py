@@ -101,7 +101,7 @@ TELEGRAM_API_BASE_URL = _env_required("TELEGRAM_API_BASE_URL").rstrip("/")
 CONFIG = {
     "full_scan_seconds": 3 * 60 * 60,
     "schedule_minutes": 60,
-    "scan_workers": 1,
+    "scan_workers": 3,
     "google_auth_worker_enabled": False,
     "headless": True,
 }
@@ -293,12 +293,12 @@ def _filter_rows_no_vendor(rows: list[dict]) -> list[dict]:
     Exclui 'google_flights' que é fallback sem companhia identificada.
     Se nenhum tiver vendor, retorna [] (não mostra nada sem companhia)."""
     def _has_real_vendor(r):
-        v = (r.get("best_vendor") or "").strip().lower().replace(" ", "_")
-        if not v:
-            return False
-        if v in ("", "google_flights", "google"):
-            return False
-        return True
+        # Verifica best_vendor E best_airline_vendor
+        for field in ['best_vendor', 'best_airline_vendor']:
+            v = (r.get(field) or "").strip().lower().replace(" ", "_")
+            if v and v not in ("", "google_flights", "google"):
+                return True
+        return False
     return [r for r in rows if _has_real_vendor(r)]
 
 
@@ -586,7 +586,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 7  # 7 Chromes simultâneos
+_CHROME_MAX_CONCURRENT = 6  # teste controlado: 6 Chromes simultâneos
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -802,6 +802,27 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                                 best_airline_visible_price=data.get("best_airline_visible_price")
                             )
                         else:
+                            # ok=False mas pode ter preço no JSON (executor voltou sem booking_url)
+                            if data.get("price") is not None:
+                                result_ok_false = FlightResult(
+                                    site="google_flights",
+                                    origin=r.origin, destination=r.destination,
+                                    outbound_date=r.outbound_date, inbound_date=r.inbound_date,
+                                    trip_type=r.trip_type,
+                                    price=data.get("price"), currency="BRL",
+                                    url=data.get("url", ""),
+                                    booking_url=data.get("booking_url", ""),
+                                    notes="ok_false_recovered | " + " | ".join(data.get("notes", [])),
+                                    best_vendor=data.get("best_vendor", ""),
+                                    best_vendor_price=data.get("best_vendor_price"),
+                                    booking_options_json=json.dumps(data.get("booking_options", []), ensure_ascii=False),
+                                    price_insight=data.get("price_insight", ""),
+                                    best_airline_vendor=data.get("best_airline_vendor"),
+                                    best_airline_price=data.get("best_airline_price"),
+                                    best_airline_url=data.get("best_airline_url"),
+                                    best_airline_visible_price=data.get("best_airline_visible_price")
+                                )
+                                return result_ok_false
                             err_from_json = data.get("message") or data.get("error") or "unknown_executor_error"
                             return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"executor_error: {err_from_json}")
                     except Exception as e:
@@ -1341,7 +1362,13 @@ def _price_vendor_display(row: dict) -> str:
     vendor = (row.get("best_vendor") or "").strip()
     booking_options = _load_booking_options(row)
 
-    if booking_options and _is_generic_vendor(vendor):
+    # Prioridade: best_airline_vendor > best_vendor > booking_options > notes > airline > site
+    airline_vendor = (row.get('best_airline_vendor') or '').strip()
+    if airline_vendor and not _is_generic_vendor(airline_vendor):
+        # Usa a companhia aérea em vez da agência/genérico
+        vendor = airline_vendor
+        display_price = row.get('best_airline_price') or display_price
+    elif booking_options and _is_generic_vendor(vendor):
         priced_options = [opt for opt in booking_options if isinstance(opt.get('price'), (int, float))]
         sorted_options = sorted(priced_options or booking_options, key=lambda opt: float(opt.get('price') or 10**12))
         for opt in sorted_options:
