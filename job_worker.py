@@ -877,11 +877,31 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             if family_dry_run:
                 logger.info('[job-worker] group_key=%s | DRY RUN consolidado sem envio | resultados=%s | links=%s', group_key, len(filtered_merged), bool(links_msg))
             else:
-                send_photo(bot, loop, chat_id, image_path)
-                if links_msg:
-                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                # Cada envio do Telegram é isolado em try/except para que
+                # uma falha de rede (httpx.ReadError, timeout) não mate o resto.
+                _photo_sent = False
+                try:
+                    send_photo(bot, loop, chat_id, image_path)
+                    _photo_sent = True
+                except BaseException as _photo_err:
+                    logger.warning('[job-worker] group_key=%s | falha ao enviar foto: %s', group_key, _photo_err)
+                if _photo_sent:
+                    try:
+                        if links_msg:
+                            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                        else:
+                            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                    except BaseException as _links_err:
+                        logger.warning('[job-worker] group_key=%s | falha ao enviar links/menu: %s', group_key, _links_err)
                 else:
-                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                    # Foto falhou — tenta ao menos os links como fallback
+                    try:
+                        if links_msg:
+                            _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                        else:
+                            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                    except BaseException as _fallback_err:
+                        logger.warning('[job-worker] group_key=%s | falha tambem no fallback: %s', group_key, _fallback_err)
         finally:
             try:
                 os.remove(image_path)
