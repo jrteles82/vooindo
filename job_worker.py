@@ -27,6 +27,7 @@ from db import auto_pk_column, connect as connect_db, indexed_text_column, now_e
 from main import _build_user_routes, build_scan_results_image, build_booking_links_message, run_scan_for_routes, filter_rows_by_max_price, filter_rows_with_vendor, normalize_rows_for_airline_priority, expand_rows_by_result_type, _merge_rows_for_combined_result_view, normalize_max_price
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from google_session_sync import sync_current_worker_profile_from_base
+from dry_run_utils import is_dry_run_payload, parse_job_payload
 
 POLL_SECONDS = int(os.getenv("JOB_WORKER_POLL_SECONDS", "5"))
 ADMIN_CHAT_ID = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
@@ -733,8 +734,6 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
     Usa GET_LOCK do MySQL pra evitar que múltiplos workers enviem duplicado
     quando vários jobs do mesmo grupo terminam no mesmo instante.
     """
-    import json as _json
-    
     # Lock no banco: primeiro worker a pegar consolida, os outros desistem
     # Usa base_group_key pra que retry não dispare consolidação duplicada
     _lock_name = f'consolidate_{_base_group_key(group_key)}'
@@ -791,6 +790,17 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             else:
                 return  # Jobs pendentes sem started_at (aguardando worker)
         
+        base_group_key = _base_group_key(group_key)
+        dry_run_rows = conn.execute(sql(r'''
+            SELECT payload
+            FROM scan_jobs
+            WHERE group_key = %s OR group_key LIKE %s ESCAPE '\\'
+        '''), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
+        family_dry_run = bool(dry_run_rows) and all(
+            is_dry_run_payload((row.get('payload') if isinstance(row, dict) else row[0]))
+            for row in dry_run_rows
+        )
+
         # Buscar dados JSON salvos da rodada base + retries, sempre deduplicando por rota.
         family_group_key, route_results = _load_group_family_route_results(conn, group_key)
         _, expected_routes = _expected_family_route_count(conn, group_key)
@@ -824,7 +834,10 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             all_rows.extend(parsed_rows)
         
         if not all_rows:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+            if family_dry_run:
+                logger.info('[job-worker] group_key=%s | DRY RUN sem resultados para consolidar', group_key)
+            else:
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
             return
         
         # Aplicar filtros (mesma lógica do fluxo original)
@@ -843,40 +856,56 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         filtered_merged = _merge_rows_for_combined_result_view(filtered_airlines) if False else filtered_airlines
         
         if not filtered_merged:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+            if family_dry_run:
+                logger.info('[job-worker] group_key=%s | DRY RUN sem resultados após filtros', group_key)
+            else:
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
             return
         
         # Gerar imagem e enviar
         image_path = build_scan_results_image(filtered_merged, trigger='agendada')
         if not image_path:
             fallback_msg = build_booking_links_message(filtered_merged)
-            if fallback_msg:
+            if fallback_msg and not family_dry_run:
                 _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
+            elif family_dry_run:
+                logger.info('[job-worker] group_key=%s | DRY RUN sem imagem | resultados=%s | links=%s', group_key, len(filtered_merged), bool(fallback_msg))
             return
         
         try:
-            send_photo(bot, loop, chat_id, image_path)
             links_msg = build_booking_links_message(filtered_merged)
-            if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+            if family_dry_run:
+                logger.info('[job-worker] group_key=%s | DRY RUN consolidado sem envio | resultados=%s | links=%s', group_key, len(filtered_merged), bool(links_msg))
             else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                send_photo(bot, loop, chat_id, image_path)
+                if links_msg:
+                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                else:
+                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
         finally:
             try:
                 os.remove(image_path)
             except OSError:
                 pass
         
-        try:
-            mark_sent(conn, user_id, send_type='scheduled')
-        except TypeError:
-            mark_sent(conn, user_id)
+        if not family_dry_run:
+            try:
+                mark_sent(conn, user_id, send_type='scheduled')
+            except TypeError:
+                mark_sent(conn, user_id)
         
-        if charge_now:
+        if family_dry_run:
+            logger.info('[job-worker] group_key=%s | DRY RUN — sem cobrança e sem last_sent', group_key)
+        elif charge_now and '_retry_' not in (group_key or ''):
             conn.execute(sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"), (chat_id,))
             conn.commit()
+        elif charge_now and '_retry_' in (group_key or ''):
+            logger.info('[job-worker] group_key=%s | retry — pulando cobrança (já cobrado na rodada original)', group_key)
         
-        logger.info('[job-worker] group_key=%s | consolidação enviada | %s resultados | duração_ms=%s', group_key, len(filtered_merged), _t.elapsed())
+        if family_dry_run:
+            logger.info('[job-worker] group_key=%s | consolidação DRY RUN concluída | %s resultados | duração_ms=%s', group_key, len(filtered_merged), _t.elapsed())
+        else:
+            logger.info('[job-worker] group_key=%s | consolidação enviada | %s resultados | duração_ms=%s', group_key, len(filtered_merged), _t.elapsed())
     finally:
         conn.execute(sql("SELECT RELEASE_LOCK(%s)"), (_lock_name,))
 
@@ -984,16 +1013,11 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         raise RuntimeError('Usuário sem rotas ativas')
 
     access = ensure_user_access(conn, chat_id)
-    charge_now = should_charge_user(conn, chat_id, access) and not is_active_access(access)
-    if charge_now:
-        free_uses = int(access['free_uses'] or 0)
-        free_uses_limit = get_free_uses_limit(conn)
-        if free_uses >= free_uses_limit:
-            audit.access("acesso_bloqueado", chat_id=chat_id, user_id=user_id,
-                         status="blocked",
-                         payload={"free_uses": free_uses, "limite": free_uses_limit,
-                                  "job_id": job['id']})
-            raise RuntimeError('bloqueado_por_monetizacao')
+    # Usuário free não tem bloqueio por quantidade de acessos ou pagamento vencido.
+    # Único bloqueio é se blocked=1 na tabela bot_users (verificado acima).
+    # A cobrança (charge_now) é mantida apenas para contagem informativa,
+    # nunca para bloquear o usuário.
+    charge_now = False
 
     try:
         airline_filters_json = str(settings['airline_filters_json'] or '')
@@ -1004,20 +1028,17 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     # Agências desativadas conforme solicitação
     should_split = False
 
-    import functools, json as _json
+    import functools
     is_manual_now = str(job.get('job_type') or '').strip().lower() == 'manual_now'
     
     # dry_run: executa o scan sem enviar nada para o usuário (testes)
-    is_dry_run = str(job.get('payload') or '').strip() == 'dry_run'
+    is_dry_run = is_dry_run_payload(job.get('payload'))
     if is_dry_run:
         logger.info('[job-worker] job_id=%s | DRY RUN — executando scan sem envio', job_id)
     
     # --- PER-ROUTE JOB: processar rota individual e consolidar grupo ---
     _payload_str = str(job.get('payload') or '{}')
-    try:
-        _payload_data = _json.loads(_payload_str) if _payload_str not in ('', 'dry_run') else {}
-    except Exception:
-        _payload_data = {}
+    _payload_data = parse_job_payload(_payload_str)
     _route_info = _payload_data.get('route') if isinstance(_payload_data, dict) else None
     _group_key = str(job.get('group_key') or '')
     

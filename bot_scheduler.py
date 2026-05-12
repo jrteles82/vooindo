@@ -30,6 +30,7 @@ from main import _build_user_routes, build_scan_results_image, build_booking_lin
 from bot import filter_rows_by_airlines, parse_airline_filters, should_show_result_type_filters
 from cycle_monitor import record_cycle_start, record_cycle_end
 from route_optimizer import compute_priorities, log_cycle_result
+from dry_run_utils import build_route_job_payload, parse_job_payload
 
 # Número de workers paralelos para scheduler
 _NUM_SCHED_WORKERS = int(os.getenv('NUM_SCHED_WORKERS', '4'))
@@ -931,21 +932,19 @@ def main():
                         except Exception:
                             pass
                         
-                        payload = json.dumps({
-                            'round_started_at': cycle_started_iso,
-                            'route': {
+                        payload = build_route_job_payload(
+                            cycle_started_iso=cycle_started_iso,
+                            route={
                                 'id': route_id,
                                 'origin': origin,
                                 'destination': destination,
                                 'outbound_date': outbound_date,
                                 'inbound_date': inbound_date,
                             },
-                            'group_info': {
-                                'total_routes': num_routes,
-                                'label': label,
-                            },
-                            'executor_timeout': _executor_timeout,
-                        }, ensure_ascii=False)
+                            total_routes=num_routes,
+                            label=label,
+                            executor_timeout=_executor_timeout,
+                        )
                         
                         insert_result = conn.execute(
                             sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
@@ -1072,7 +1071,7 @@ def main():
                             }
                         # Extrair rota do payload
                         try:
-                            pay = json.loads(er['payload'])
+                            pay = parse_job_payload(er['payload'])
                             route = pay.get('route', {})
                             users_to_retry[uid]['routes'].add((
                                 route.get('origin',''),
@@ -1080,6 +1079,8 @@ def main():
                                 route.get('outbound_date',''),
                                 route.get('inbound_date','') or '',
                             ))
+                            if pay.get('dry_run'):
+                                users_to_retry[uid]['dry_run'] = True
                         except Exception:
                             pass
                     
@@ -1094,22 +1095,21 @@ def main():
                     for uid, info in users_to_retry.items():
                         group_key = f"round_{uid}_{cycle_started_iso}_retry_{retry_num}"
                         for origin, dest, outbound, inbound in info['routes']:
-                            payload = json.dumps({
-                                'round_started_at': cycle_started_iso,
-                                'route': {
+                            payload = build_route_job_payload(
+                                cycle_started_iso=cycle_started_iso,
+                                route={
                                     'id': 0,
                                     'origin': origin,
                                     'destination': dest,
                                     'outbound_date': outbound,
                                     'inbound_date': inbound,
                                 },
-                                'group_info': {
-                                    'total_routes': len(info['routes']),
-                                    'label': info['first_name'],
-                                },
-                                'executor_timeout': 480,
-                                'retry': retry_num,
-                            }, ensure_ascii=False)
+                                total_routes=len(info['routes']),
+                                label=info['first_name'],
+                                executor_timeout=480,
+                                retry=retry_num,
+                                dry_run=bool(info.get('dry_run')),
+                            )
                             insert_result = conn_retry.execute(
                                 sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
                                 (uid, info['chat_id'], payload, 1, group_key),
