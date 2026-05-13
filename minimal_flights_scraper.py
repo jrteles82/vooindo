@@ -145,6 +145,7 @@ def main(argv: list[str]) -> int:
             "trip_type": "roundtrip" if inbound_date else "oneway",
             "price": price,
             "currency": "BRL",
+            "url": url,
             "best_vendor": vendor or "",
             "best_vendor_price": price,
             "notes": ["minimal_scraper_fallback"],
