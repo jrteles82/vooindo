@@ -3406,6 +3406,7 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data.clear()
+    context.user_data['bot_msg_ids'] = []
     context.user_data['airport_stage'] = 'origem'
     await update.message.reply_text(
         '\n➕ *Nova rota*\n────────────────────────\n\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.\n\nSe quiser sair, use o botão abaixo.',
@@ -3426,17 +3427,19 @@ async def addrota_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
     context.user_data['airport_stage'] = 'origem'
     if not matches:
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             '⚠️ Origem não encontrada.\n\nTente digitar o código IATA, a cidade, o nome do aeroporto ou até o estado.\nExemplos: `PVH`, `Porto Velho`, `Rondônia`, `Guarulhos`, `Florida`.\n\n✍️ Responda esta mensagem com a origem para tentar novamente.',
             parse_mode='Markdown',
             reply_markup=force_reply_markup('Ex.: PVH ou Porto Velho'),
         )
+        context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
         return ASK_ORIGIN
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         f"🔎 Encontrei {len(matches)} opção(ões) para *origem*. Toque na correta abaixo:",
         parse_mode='Markdown',
         reply_markup=airport_search_results_markup('origem', matches, update.message.text),
     )
+    context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
     return ASK_ORIGIN
 
 
@@ -3451,17 +3454,19 @@ async def addrota_destination(update: Update, context: ContextTypes.DEFAULT_TYPE
         conn.close()
     context.user_data['airport_stage'] = 'destino'
     if not matches:
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             '⚠️ Destino não encontrado.\n\nTente digitar o código IATA, a cidade, o nome do aeroporto ou até o estado.\nExemplos: `GRU`, `São Paulo`, `SP`, `Lisboa`, `Florida`.\n\n✍️ Responda esta mensagem com o destino para tentar novamente.',
             parse_mode='Markdown',
             reply_markup=force_reply_markup('Ex.: GRU ou Lisboa'),
         )
+        context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
         return ASK_DESTINATION
-    await update.message.reply_text(
+    sent = await update.message.reply_text(
         f"🔎 Encontrei {len(matches)} opção(ões) para *destino*. Toque na correta abaixo:",
         parse_mode='Markdown',
         reply_markup=airport_search_results_markup('destino', matches, update.message.text),
     )
+    context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
     return ASK_DESTINATION
 
 
@@ -3484,20 +3489,22 @@ async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
         days_diff = (dt_obj - datetime.now().date()).days
         
         if days_diff > 365:
-            await update.message.reply_text(
+            sent = await update.message.reply_text(
                 f'⚠️ *Limite de 1 ano excedido.*\n\nVocê informou uma data para daqui a {days_diff} dias.\nO sistema permite o monitoramento de passagens com no máximo *365 dias* de antecedência.\n\n✍️ Por favor, informe uma data mais próxima.',
                 parse_mode='Markdown',
                 reply_markup=force_reply_markup('Ex.: 25/12/2026'),
             )
+            context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
             return ASK_OUTBOUND
             
         context.user_data['outbound_date'] = dt_str
     except ValueError:
-        await update.message.reply_text(
+        sent = await update.message.reply_text(
             '⚠️ Data inválida.\n\nDigite uma data ou responda "pular" para ignorar.\n\nFormatos aceitos:\n`25/12/2026` `25-12-2026` `2026-12-25`\n`25122026` `25 dez 2026` `25 dezembro 2026`',
             parse_mode='Markdown',
             reply_markup=force_reply_markup('Ex.: 25/12/2026 ou "pular"'),
         )
+        context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
         return ASK_OUTBOUND
     return await _save_route_with_inbound(update, context, '')
 
@@ -3550,6 +3557,13 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
         (f" | {format_date_br(inbound_date)}" if inbound_date else ''),
         parse_mode='Markdown',
     )
+    # Delete bot messages from route registration steps
+    bot_msg_ids = context.user_data.get('bot_msg_ids', [])
+    for msg_id in bot_msg_ids:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception as e:
+            logger.warning(f"Falha ao deletar mensagem {msg_id}: {e}")
     context.user_data.clear()
     # Mostra a lista de rotas atualizada
     fake_update = Update(update.update_id, message=msg_target)
