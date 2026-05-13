@@ -5388,7 +5388,7 @@ async def run_bot():
             ],
         },
         fallbacks=[CommandHandler('cancelar', cancel)],
-        per_message=True,
+        per_message=False,
     )
 
     app.add_handler(CallbackQueryHandler(admin_broadcast_start, pattern=r'^painel:broadcast$'))
