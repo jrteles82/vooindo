@@ -937,6 +937,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                                             price=_md.get("price"),
                                             currency="BRL",
                                             url=_md.get("url", ""),
+                                            booking_url=_md.get("booking_url", ""),
                                             notes="minimal_scraper_fallback | " + " | ".join(_md.get("notes", [])),
                                             best_vendor=_md.get("best_vendor", ""),
                                             best_vendor_price=_md.get("best_vendor_price"),
