@@ -1006,20 +1006,6 @@ async def notify_support_message(context: ContextTypes.DEFAULT_TYPE, conn, threa
         preview = preview[:117] + '...'
 
     if sender_role == 'user':
-        try:
-            push_admin_notif(
-                conn,
-                'notif_novo_usuario',
-                (
-                    f"📥 Nova mensagem de atendimento\n"
-                    f"Pessoa: {thread['first_name'] or thread['chat_id']}\n"
-                    f"Assunto: {support_subject_label(thread['subject'])}\n"
-                    f"Mensagem: {preview}"
-                ),
-            )
-        except Exception as exc:
-            logger.warning('Falha ao registrar notif admin para atendimento | thread_id=%s | erro=%s', thread_id, exc)
-
         admin_chat_ids = list_active_admin_chat_ids(conn)
         for admin_chat_id in admin_chat_ids:
             try:
