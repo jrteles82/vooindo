@@ -45,7 +45,7 @@ SEND_COOLDOWN_SECONDS = int(
     os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
 )
 _METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
-_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '1800'))
+_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '2700'))
 _ROUND_REPORT_POLL_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_POLL_SECONDS', '5'))
 def get_db():
     return connect_db()
@@ -1077,6 +1077,27 @@ def main():
                 wait_result.get('elapsed_seconds', 0),
             )
             
+            # Se o relatório bateu timeout mas ainda há jobs originais rodando,
+            # não abre retry agora. Isso evita duplicar rota ainda viva e evita
+            # relatório admin tipo 52/56 enquanto a rodada fecha logo depois.
+            if not wait_result.get('complete', True) and (
+                wait_result.get('counts', {}).get('running', 0) > 0
+                or wait_result.get('counts', {}).get('pending', 0) > 0
+            ):
+                extra_wait = _wait_for_round_completion(created_job_ids, timeout_seconds=900)
+                logger.info(
+                    '[bot-scheduler] rodada %s | espera extra após timeout | complete=%s | done=%s | error=%s | running=%s | pending=%s | wait_s=%s',
+                    cycle_started_iso[:16],
+                    extra_wait.get('complete', True),
+                    extra_wait.get('counts', {}).get('done', 0),
+                    extra_wait.get('counts', {}).get('error', 0),
+                    extra_wait.get('counts', {}).get('running', 0),
+                    extra_wait.get('counts', {}).get('pending', 0),
+                    extra_wait.get('elapsed_seconds', 0),
+                )
+                if extra_wait.get('complete', False):
+                    wait_result = extra_wait
+
             # --- RETRY: jobs com erro na rodada principal ---
             MAX_RETRIES = 3
             current_ids = list(created_job_ids)
@@ -1094,6 +1115,12 @@ def main():
                         WHERE j.id IN ({placeholders})
                           AND j.status IN ('done', 'error')
                           AND (j.error_message IS NOT NULL AND j.error_message != '')
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM scan_job_route_results rr
+                              WHERE rr.job_id = j.id
+                                AND rr.price IS NOT NULL
+                          )
                     '''), tuple(current_ids)).fetchall()
                     
                     if not errored:
