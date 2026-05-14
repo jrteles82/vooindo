@@ -44,3 +44,13 @@
   - `minimal_scraper_fallback + search_url_fallback` em `/search?q=`
 - Corrige caso real em que `PVH → SAO` pegou preço falso de página genérica "Voos baratos para São Paulo" (ex.: `GIG → VCP` por R$316).
 - Validação sem envio: usuário 2 `PVH → SAO 01/10/2026` retornou preço confiável `R$ 1.092` via variante `PVH → VCP`, com booking URL.
+
+## [route-cache-dedupe-test] — 2026-05-14
+
+### test: cache/deduplicação por rota antes de abrir Chrome
+- `job_worker.py`: adiciona tabela `scan_route_cache` com TTL padrão de 1h (`VOOINDO_ROUTE_CACHE_TTL_SECONDS`).
+- Jobs per-route agora tentam reutilizar resultado recente por chave de rota/data/modo antes de abrir Google Flights.
+- Se outra worker já estiver pesquisando a mesma rota, usa `GET_LOCK` por rota; workers duplicadas aguardam cache por até 420s (`VOOINDO_ROUTE_CACHE_WAIT_SECONDS`) antes de fazer busca própria.
+- Cacheia apenas resultados com preço para não propagar falhas transitórias.
+- Objetivo do teste: reduzir Chromes duplicados e tempo total sem aumentar workers/CPU.
+- Checkpoint anterior seguro: `28fdfcb chore: checkpoint before route cache test`.

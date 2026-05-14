@@ -148,6 +148,28 @@ def ensure_job_tables(conn):
         conn.commit()
     except Exception:
         pass
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS scan_route_cache (
+            cache_key VARCHAR(64) PRIMARY KEY,
+            origin VARCHAR(10) NOT NULL,
+            destination VARCHAR(10) NOT NULL,
+            outbound_date VARCHAR(20) NOT NULL,
+            inbound_date VARCHAR(20) NOT NULL DEFAULT '',
+            mode VARCHAR(32) NOT NULL DEFAULT 'scheduled',
+            num_results INT NOT NULL DEFAULT 0,
+            result_data MEDIUMTEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    conn.commit()
+    try:
+        conn.execute('CREATE INDEX idx_scan_route_cache_route ON scan_route_cache (origin, destination, outbound_date, inbound_date, mode)')
+        conn.commit()
+    except Exception:
+        pass
 
 
 def recover_stale_jobs(conn, running_timeout_minutes: int = 18, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
@@ -728,6 +750,116 @@ def _save_route_result(conn, job_id: int, user_id: int, chat_id: str, route_info
         logger.warning('[job-worker] job_id=%s | erro ao salvar resultado de rota: %s', job_id, _se)
 
 
+_ROUTE_CACHE_TTL_SECONDS = int(os.getenv("VOOINDO_ROUTE_CACHE_TTL_SECONDS", "3600"))
+_ROUTE_CACHE_WAIT_SECONDS = int(os.getenv("VOOINDO_ROUTE_CACHE_WAIT_SECONDS", "420"))
+_ROUTE_CACHE_POLL_SECONDS = float(os.getenv("VOOINDO_ROUTE_CACHE_POLL_SECONDS", "3"))
+
+
+def _route_cache_mode(pool: str, is_manual_now: bool, allow_agencies: bool) -> str:
+    if str(pool or '') == 'scheduled':
+        return 'scheduled_no_agencies'
+    return f"manual_fast_{1 if is_manual_now else 0}_agencies_{1 if allow_agencies else 0}"
+
+
+def _route_cache_key(route_info: dict, mode: str) -> str:
+    import hashlib as _hashlib
+    import json as _json
+    payload = {
+        'v': 2,
+        'origin': str(route_info.get('origin') or '').upper(),
+        'destination': str(route_info.get('destination') or '').upper(),
+        'outbound_date': str(route_info.get('outbound_date') or ''),
+        'inbound_date': str(route_info.get('inbound_date') or ''),
+        'mode': str(mode or ''),
+    }
+    raw = _json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    return _hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _route_cache_get(conn, cache_key: str) -> list[dict] | None:
+    import json as _json
+    row = conn.execute(sql(f"""
+        SELECT result_data, num_results
+        FROM scan_route_cache
+        WHERE cache_key = %s
+          AND updated_at >= DATE_SUB(NOW(), INTERVAL {max(60, int(_ROUTE_CACHE_TTL_SECONDS))} SECOND)
+          AND num_results > 0
+        LIMIT 1
+    """), (cache_key,)).fetchone()
+    if not row:
+        return None
+    raw = row['result_data'] if isinstance(row, dict) else row[0]
+    try:
+        parsed = _json.loads(raw or '[]')
+        if isinstance(parsed, list) and parsed:
+            for item in parsed:
+                if isinstance(item, dict):
+                    notes = str(item.get('notes') or '')
+                    if 'route_cache_hit' not in notes:
+                        item['notes'] = (notes + ' | route_cache_hit').strip(' |')
+            return parsed
+    except Exception as exc:
+        logger.warning('[route-cache] erro ao ler cache %s: %s', cache_key[:12], exc)
+    return None
+
+
+def _route_cache_put(conn, cache_key: str, route_info: dict, mode: str, parsed: list[dict]) -> None:
+    if not parsed:
+        return
+    # Cacheia apenas resultados com preço para evitar propagar falha transitória.
+    has_price = any(isinstance((r.get('price') if isinstance(r, dict) else None), (int, float)) for r in parsed)
+    if not has_price:
+        return
+    import json as _json
+    data = _json.dumps(parsed, ensure_ascii=False, default=str)
+    if len(data) > 500_000:
+        return
+    conn.execute(sql("""
+        INSERT INTO scan_route_cache
+            (cache_key, origin, destination, outbound_date, inbound_date, mode, num_results, result_data)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            num_results = VALUES(num_results),
+            result_data = VALUES(result_data),
+            updated_at = NOW()
+    """), (
+        cache_key,
+        str(route_info.get('origin') or '').upper(),
+        str(route_info.get('destination') or '').upper(),
+        str(route_info.get('outbound_date') or ''),
+        str(route_info.get('inbound_date') or ''),
+        mode,
+        len(parsed),
+        data,
+    ))
+    conn.commit()
+
+
+def _route_cache_try_lock(conn, cache_key: str) -> bool:
+    lock_name = f"route_cache_{cache_key[:48]}"
+    row = conn.execute(sql('SELECT GET_LOCK(%s, 0) AS got_lock'), (lock_name,)).fetchone()
+    got = int((row['got_lock'] if isinstance(row, dict) else row[0]) or 0) if row else 0
+    return bool(got)
+
+
+def _route_cache_release_lock(conn, cache_key: str) -> None:
+    lock_name = f"route_cache_{cache_key[:48]}"
+    try:
+        conn.execute(sql('SELECT RELEASE_LOCK(%s)'), (lock_name,))
+    except Exception:
+        pass
+
+
+def _route_cache_wait(conn, cache_key: str) -> list[dict] | None:
+    deadline = time.time() + max(0, int(_ROUTE_CACHE_WAIT_SECONDS))
+    while time.time() < deadline:
+        cached = _route_cache_get(conn, cache_key)
+        if cached:
+            return cached
+        time.sleep(max(1.0, _ROUTE_CACHE_POLL_SECONDS))
+    return None
+
+
 def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, group_key: str, settings, pool: str, charge_now: bool, _t) -> None:
     """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia.
 
@@ -1097,24 +1229,60 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
                 user_id=user_id,
                 chat_id=int(chat_id) if chat_id.isdigit() else 0,
             )
-            _route_loop = asyncio.get_event_loop()
-            _route_future = _route_loop.run_in_executor(
-                None,
-                functools.partial(
-                    run_scan_for_routes,
-                    [_single_route],
-                    sources={'google_flights': bool(settings['enable_google_flights']), '': False},
-                    fast_mode=is_manual_now,
-                    skip_booking=False,
-                    allow_agencies=(pool != 'scheduled'),
-                )
-            )
-            _parsed_route = _route_loop.run_until_complete(_route_future)
+            _allow_agencies = (pool != 'scheduled')
+            _cache_mode = _route_cache_mode(pool, is_manual_now, _allow_agencies)
+            _cache_key = _route_cache_key(_route_info, _cache_mode)
+            _got_route_lock = False
+            _parsed_route = _route_cache_get(conn, _cache_key)
+            if _parsed_route:
+                logger.info('[route-cache] job_id=%s | HIT imediato | %s->%s %s | rows=%s',
+                            job_id, _route_info.get('origin','?'), _route_info.get('destination','?'),
+                            _route_info.get('outbound_date','?'), len(_parsed_route))
+            else:
+                _got_route_lock = _route_cache_try_lock(conn, _cache_key)
+                if not _got_route_lock:
+                    logger.info('[route-cache] job_id=%s | aguardando mesma rota em outro worker | %s->%s %s',
+                                job_id, _route_info.get('origin','?'), _route_info.get('destination','?'),
+                                _route_info.get('outbound_date','?'))
+                    _parsed_route = _route_cache_wait(conn, _cache_key)
+                    if _parsed_route:
+                        logger.info('[route-cache] job_id=%s | HIT após espera | rows=%s', job_id, len(_parsed_route))
+                if not _parsed_route:
+                    if _got_route_lock:
+                        # Duplo check após lock para evitar corrida entre get e lock.
+                        _parsed_route = _route_cache_get(conn, _cache_key)
+                    if not _parsed_route:
+                        _route_loop = asyncio.get_event_loop()
+                        _route_future = _route_loop.run_in_executor(
+                            None,
+                            functools.partial(
+                                run_scan_for_routes,
+                                [_single_route],
+                                sources={'google_flights': bool(settings['enable_google_flights']), '': False},
+                                fast_mode=is_manual_now,
+                                skip_booking=False,
+                                allow_agencies=_allow_agencies,
+                            )
+                        )
+                        _parsed_route = _route_loop.run_until_complete(_route_future)
+                        try:
+                            _route_cache_put(conn, _cache_key, _route_info, _cache_mode, _parsed_route or [])
+                            if _parsed_route:
+                                logger.info('[route-cache] job_id=%s | MISS salvo | rows=%s', job_id, len(_parsed_route))
+                        except Exception as _cache_put_err:
+                            logger.warning('[route-cache] job_id=%s | erro ao salvar cache: %s', job_id, _cache_put_err)
+            if _got_route_lock:
+                _route_cache_release_lock(conn, _cache_key)
             if _parsed_route:
                 _wd_scan_done[0] = True
             _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
         except BaseException as _perr:
             logger.error('[job-worker] job_id=%s | PER-ROUTE exception: %s', job_id, _perr)
+            try:
+                if locals().get('_got_route_lock') and locals().get('_cache_key'):
+                    _route_cache_release_lock(conn, locals().get('_cache_key'))
+            except Exception:
+                pass
         finally:
             conn.execute(sql("UPDATE scan_jobs SET status = 'done', finished_at = NOW() WHERE id = %s AND status = 'running'"), (job_id,))
             conn.commit()
