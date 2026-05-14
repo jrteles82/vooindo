@@ -484,6 +484,33 @@ def _append_cycle_metrics(entry: dict) -> None:
         logger.warning('[bot-scheduler] falha ao persistir métricas do ciclo | erro=%s', exc)
 
 
+_METRO_CODES = {'SAO', 'RIO', 'BHZ'}
+_BR_CODES_TIMEOUT = {
+    'AJU','BEL','BHZ','BSB','BVB','CGB','CGH','CGR','CNF','CWB',
+    'FLN','FOR','GIG','GRU','IGU','IOS','JOI','JPA','LDB','MAO',
+    'MCZ','MGF','NAT','NVT','PET','POA','PVH','RAO','REC','SDU',
+    'SJP','SLZ','SSA','STM','THE','UDI','VCP','VIX','SAO','RIO'
+}
+
+
+def _adaptive_route_timeout_seconds(route_info: dict, base_timeout: int | None = None) -> int:
+    origin = str((route_info or {}).get('origin') or '').upper().strip()
+    destination = str((route_info or {}).get('destination') or '').upper().strip()
+    outbound = str((route_info or {}).get('outbound_date') or '').strip()
+    is_metro = origin in _METRO_CODES or destination in _METRO_CODES
+    is_international = bool(origin and destination and (origin not in _BR_CODES_TIMEOUT or destination not in _BR_CODES_TIMEOUT))
+    timeout = int(base_timeout or 300)
+    if is_international and is_metro:
+        timeout = max(timeout, 780)
+    elif is_international:
+        timeout = max(timeout, 660)
+    elif is_metro:
+        timeout = max(timeout, 540)
+    if outbound.startswith('2027'):
+        timeout += 120
+    return min(max(timeout, 300), 900)
+
+
 def _dynamic_round_timeout_seconds(conn, job_ids: list[int]) -> int:
     """Calcula timeout do relatório pela rodada real.
 
@@ -1014,15 +1041,6 @@ def main():
                         outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
                         inbound_date = route['inbound_date'] if isinstance(route, dict) else route[4] or ''
                         
-                        # Timeout personalizado por user (do route_optimizer, ou fallback)
-                        _executor_timeout = 300  # fallback padrão
-                        try:
-                            _user_timeout = priorities['user_timeouts'].get(str(user_id))
-                            if _user_timeout:
-                                _executor_timeout = int(_user_timeout)
-                        except Exception:
-                            pass
-                        
                         route_payload = {
                             'id': route_id,
                             'origin': origin,
@@ -1030,6 +1048,18 @@ def main():
                             'outbound_date': outbound_date,
                             'inbound_date': inbound_date,
                         }
+
+                        # Timeout adaptativo por rota (mantém prioridade do optimizer como base,
+                        # mas aumenta para metropolitana/internacional/futura).
+                        _executor_timeout = 300  # fallback padrão
+                        try:
+                            _user_timeout = priorities['user_timeouts'].get(str(user_id))
+                            if _user_timeout:
+                                _executor_timeout = int(_user_timeout)
+                        except Exception:
+                            pass
+                        _executor_timeout = _adaptive_route_timeout_seconds(route_payload, _executor_timeout)
+                        
                         dedupe_key = _enqueue_dedupe_key(route_payload)
                         job_status = 'pending'
                         if dedupe_key in route_dedupe_seen:
@@ -1183,7 +1213,8 @@ def main():
                               SELECT 1
                               FROM scan_job_route_results rr
                               WHERE rr.job_id = j.id
-                                AND rr.price IS NOT NULL
+                                AND rr.num_results > 0
+                                AND rr.result_data REGEXP '"price"[[:space:]]*:[[:space:]]*[0-9]'
                           )
                     '''), tuple(current_ids)).fetchall()
                     

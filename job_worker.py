@@ -1137,6 +1137,54 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         conn.execute(sql("SELECT RELEASE_LOCK(%s)"), (_lock_name,))
 
 
+_METRO_CODES = {'SAO', 'RIO', 'BHZ'}
+_BR_CODES_TIMEOUT = {
+    'AJU','BEL','BHZ','BSB','BVB','CGB','CGH','CGR','CNF','CWB',
+    'FLN','FOR','GIG','GRU','IGU','IOS','JOI','JPA','LDB','MAO',
+    'MCZ','MGF','NAT','NVT','PET','POA','PVH','RAO','REC','SDU',
+    'SJP','SLZ','SSA','STM','THE','UDI','VCP','VIX','SAO','RIO'
+}
+
+
+def _adaptive_route_timeout_seconds(route_info: dict, base_timeout: int | None = None, retry: int | None = None) -> int:
+    origin = str((route_info or {}).get('origin') or '').upper().strip()
+    destination = str((route_info or {}).get('destination') or '').upper().strip()
+    outbound = str((route_info or {}).get('outbound_date') or '').strip()
+    is_metro = origin in _METRO_CODES or destination in _METRO_CODES
+    is_international = bool(origin and destination and (origin not in _BR_CODES_TIMEOUT or destination not in _BR_CODES_TIMEOUT))
+    is_future_2027 = outbound.startswith('2027')
+    timeout = int(base_timeout or 300)
+    if is_international and is_metro:
+        timeout = max(timeout, 780)
+    elif is_international:
+        timeout = max(timeout, 660)
+    elif is_metro:
+        timeout = max(timeout, 540)
+    if is_future_2027:
+        timeout += 120
+    if retry:
+        timeout = max(timeout, 480 + int(retry) * 120)
+    return min(max(timeout, 300), 900)
+
+
+def _parsed_has_price(parsed: list[dict] | None) -> bool:
+    for item in parsed or []:
+        if isinstance(item, dict) and isinstance(item.get('price'), (int, float)):
+            return True
+    return False
+
+
+def _clear_job_error_if_result_ok(conn, job_id: int, parsed: list[dict] | None, reason: str = 'result_saved') -> None:
+    if not _parsed_has_price(parsed):
+        return
+    try:
+        conn.execute(sql("UPDATE scan_jobs SET error_message = NULL WHERE id = %s AND error_message IS NOT NULL"), (job_id,))
+        conn.commit()
+        logger.info('[job-worker] job_id=%s | limpando error_message após resultado com preço (%s)', job_id, reason)
+    except Exception as exc:
+        logger.warning('[job-worker] job_id=%s | falha limpando error_message: %s', job_id, exc)
+
+
 def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     global _GOOGLE_SESSION_INVALID
 
@@ -1162,9 +1210,15 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     except Exception:
         _et = None
         _pr_count = 0
+    _payload_retry = None
+    try:
+        _payload_retry = int(_wp.get('retry')) if isinstance(_wp, dict) and _wp.get('retry') is not None else None
+    except Exception:
+        _payload_retry = None
+    _payload_route_info = _wp.get('route', {}) if isinstance(_wp, dict) else {}
     if _et:
-        _JOB_TIMEOUT = int(_et)
-        logger.info('[job-worker] job_id=%s | timeout personalizado do payload: %ss', job.get('id'), _JOB_TIMEOUT)
+        _JOB_TIMEOUT = _adaptive_route_timeout_seconds(_payload_route_info, int(_et), _payload_retry)
+        logger.info('[job-worker] job_id=%s | timeout adaptativo do payload: %ss (base=%s)', job.get('id'), _JOB_TIMEOUT, _et)
     elif _pr_count > 0:
         _route_count = _pr_count
         # Fórmula: 120s (fixo) + (num_rotas - 1) * 60s + 60s margem
@@ -1341,6 +1395,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             if _parsed_route:
                 _wd_scan_done[0] = True
             _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
+            _clear_job_error_if_result_ok(conn, job_id, _parsed_route or [], 'per_route_result')
             if _parsed_route:
                 _route_dedupe_copy_waiting_jobs(
                     conn, dedupe_key=_dedupe_key, source_job_id=job_id, parsed_route=_parsed_route or [],

@@ -71,3 +71,18 @@
 - Se o primário falhar sem resultado, os duplicados são liberados para `pending` e rodam normalmente, evitando perda de busca.
 - Validação unitária em banco com dry-run: job duplicado `PVH→SAO` foi finalizado sem Chrome via `[route-dedupe] ... resultado copiado`; consolidação DRY RUN sem envio.
 - Checkpoint anterior: `0157e46 chore: checkpoint before enqueue dedupe test`.
+
+## [adaptive-route-timeout-test] — 2026-05-14
+
+### fix: timeout adaptativo e limpeza de timeout falso
+- `bot_scheduler.py` e `job_worker.py`: timeout por rota agora aumenta automaticamente para metropolitanas (`SAO`, `RIO`, `BHZ`), internacionais e rotas 2027.
+  - nacional simples: mantém base (`300s`)
+  - metropolitana: mínimo `540s`
+  - internacional: mínimo `660s`
+  - metropolitana + internacional/futura: até `900s`
+- `job_worker.py`: se o job foi marcado com `job_timeout_300s`, mas o scan retornou resultado com preço, limpa `error_message` após salvar o resultado.
+- Retry do scheduler já não considera jobs com resultado salvo com preço como falha real.
+- Validações sem envio:
+  - unitário: job sintético com `job_timeout_300s` + resultado com preço teve `error_message` limpo e não entraria em retry.
+  - dry-run real usuário 2 `PVH→SAO 01/10/2026`: retornou `R$ 1.092`, booking URL válido, sem `/travel/search?ts=` e sem `link indisponível`.
+- Checkpoint anterior: `51a45ce chore: checkpoint before adaptive timeout test`.
