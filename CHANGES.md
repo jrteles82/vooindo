@@ -54,3 +54,10 @@
 - Cacheia apenas resultados com preço para não propagar falhas transitórias.
 - Objetivo do teste: reduzir Chromes duplicados e tempo total sem aumentar workers/CPU.
 - Checkpoint anterior seguro: `28fdfcb chore: checkpoint before route cache test`.
+
+## [booking-link-travel-search-fallback] — 2026-05-14
+
+### fix: não enviar `/travel/search?ts=...` como link de voo
+- `main.py`: `build_booking_links_message()` agora rejeita links genéricos do Google Travel (`/travel/search?ts=...`) quando não são Google Flights.
+- Se o scraper só trouxer esse link quebrado, o bot reconstrói um fallback seguro do Google Flights via `/travel/flights/search?q=ORIGEM to DESTINO DATA`.
+- Caso real: usuário 11 recebeu `NAT → PVH 16/06/26` com `/travel/search?ts=...`; agora vira busca segura `NAT to PVH 2026-06-16 one way`.

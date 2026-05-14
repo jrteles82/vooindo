@@ -1907,20 +1907,48 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
     def _prefix() -> str:
         return '🔗 Acesse os voos encontrados:\n'
 
+    def _is_bad_google_link(url: str) -> bool:
+        if not url:
+            return True
+        # /travel/search?ts= é página genérica do Google Travel e quebra o fluxo
+        # de voos. Nunca enviar isso como link final para o usuário.
+        if "/travel/search" in url and "/travel/flights/" not in url:
+            return True
+        return False
+
+    def _route_search_url(row: dict) -> str:
+        from urllib.parse import quote
+        origin = str(row.get("origin") or "").upper().strip()
+        destination = str(row.get("destination") or "").upper().strip()
+        outbound = str(row.get("outbound_date") or "").strip()
+        inbound = str(row.get("inbound_date") or "").strip()
+        if not origin or not destination or not outbound:
+            return ""
+        trip = f"{origin} to {destination} {outbound} one way" if not inbound else f"{origin} to {destination} {outbound} return {inbound}"
+        return f"https://www.google.com/travel/flights/search?q={quote(trip)}&hl=pt-BR&gl=BR&curr=BRL"
+
+    def _best_link(row: dict) -> str:
+        url = str(row.get("booking_url") or row.get("best_airline_url") or "").strip()
+        if _is_bad_google_link(url):
+            url = ""
+        # Fallback: se só tem URL de busca do Google Flights, usa o melhor link possível.
+        # /search?tfs= costuma abrir direto o voo; tentamos converter para /booking.
+        # /search?q= não é conversível com segurança, mas ainda é melhor que "link indisponível".
+        search_url = str(row.get("url") or "").strip()
+        if url:
+            return url
+        if "/travel/flights/search?tfs=" in search_url:
+            return search_url.replace("/search?tfs=", "/booking?tfs=", 1)
+        if "/travel/flights/search?q=" in search_url:
+            return search_url
+        # Último fallback seguro: reconstrói a busca da própria rota/data.
+        return _route_search_url(row)
+
     def _build_lines(block_rows: list[dict]) -> list[str]:
         from html import escape
         lines = []
         for row in block_rows:
-            url = str(row.get("booking_url") or row.get("best_airline_url") or "").strip()
-            # Fallback: se só tem URL de busca do Google Flights, usa o melhor link possível.
-            # /search?tfs= costuma abrir direto o voo; tentamos converter para /booking.
-            # /search?q= não é conversível com segurança, mas ainda é melhor que "link indisponível".
-            if not url:
-                search_url = str(row.get("url") or "").strip()
-                if "/travel/flights/search?tfs=" in search_url:
-                    url = search_url.replace("/search?tfs=", "/booking?tfs=", 1)
-                elif "/travel/flights/search?q=" in search_url:
-                    url = search_url
+            url = _best_link(row)
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date = str(row.get("outbound_date") or "")
