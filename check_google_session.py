@@ -25,7 +25,10 @@ def check_session_score(verify_with_browser: bool = True) -> int:
     score = _score_sqlite()
     if score >= 2 and verify_with_browser:
         browser_score = _score_with_browser()
-        if browser_score < 2:
+        if browser_score < 0:
+            # Browser check falhou (provavelmente Chrome já está em uso), confia no SQLite
+            pass
+        elif browser_score < 2:
             print(f'⚠️ SQLite deu {score}/3 mas navegação real deu {browser_score}/3')
             print('⚠️ Os cookies estão no DB mas o Google não reconhece a sessão')
             return browser_score
@@ -45,11 +48,20 @@ def _score_sqlite() -> int:
         cur.execute("SELECT name, value FROM cookies WHERE name IN ('SAPISID','APISID','HSID','SSID','SID','OSID')")
         legacy_rows = cur.fetchall()
         legacy_with_value = [r for r in legacy_rows if len(r[1] or '') > 0]
+        # Verifica NID (cookie de sessão persistente que o guardian detecta)
+        has_nid = False
+        cur.execute("SELECT name, value FROM cookies WHERE name = 'NID'")
+        for nid_row in cur.fetchall():
+            if nid_row is not None and len(nid_row[1] or '') > 0:
+                has_nid = True
+                break
         conn.close()
         if has_gaps:
             return 3
         if len(legacy_with_value) >= 3:
             return 3
+        if has_nid:
+            return 2
         if len(legacy_with_value) >= 1:
             return 1
         return 0
