@@ -484,6 +484,68 @@ def _append_cycle_metrics(entry: dict) -> None:
         logger.warning('[bot-scheduler] falha ao persistir métricas do ciclo | erro=%s', exc)
 
 
+def _dynamic_round_timeout_seconds(conn, job_ids: list[int]) -> int:
+    """Calcula timeout do relatório pela rodada real.
+
+    Evita relatório 52/56 quando a fila está grande, mas não deixa o admin
+    esperando indefinidamente em caso de rota travada.
+    """
+    if not job_ids:
+        return 0
+    try:
+        placeholders = ', '.join(['%s'] * len(job_ids))
+        row = conn.execute(sql(f"""
+            SELECT
+              COUNT(*) AS total_jobs,
+              COUNT(DISTINCT user_id) AS total_users,
+              COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(payload, '$.dedupe_key'))) AS unique_routes
+            FROM scan_jobs
+            WHERE id IN ({placeholders})
+        """), tuple(job_ids)).fetchone()
+        total_jobs = int((row['total_jobs'] if isinstance(row, dict) else row[0]) or len(job_ids))
+        unique_routes = int((row['unique_routes'] if isinstance(row, dict) else row[2]) or total_jobs)
+    except Exception:
+        total_jobs = len(job_ids)
+        unique_routes = len(job_ids)
+
+    # Workers scheduled ativos. Fallback conservador: 6.
+    scheduled_workers = 6
+    try:
+        import subprocess as _subprocess
+        ps = _subprocess.run(
+            ['pgrep', '-fc', r'/opt/vooindo/job_worker.py --pool scheduled'],
+            capture_output=True, text=True, timeout=5,
+        )
+        scheduled_workers = max(1, int((ps.stdout or '').strip() or '6'))
+    except Exception:
+        pass
+
+    # Histórico recente de jobs agendados concluídos. Usa p75-ish via média + margem
+    # para não ser refém de outlier único, com fallback 180s.
+    avg_job_s = 180.0
+    try:
+        row = conn.execute(sql("""
+            SELECT AVG(TIMESTAMPDIFF(SECOND, started_at, finished_at)) AS avg_s
+            FROM scan_jobs
+            WHERE job_type='scheduled'
+              AND status='done'
+              AND started_at IS NOT NULL
+              AND finished_at IS NOT NULL
+              AND finished_at >= DATE_SUB(NOW(), INTERVAL 6 HOUR)
+        """)).fetchone()
+        val = (row['avg_s'] if isinstance(row, dict) else row[0]) if row else None
+        if val:
+            avg_job_s = max(90.0, min(420.0, float(val)))
+    except Exception:
+        pass
+
+    waves = max(1, (max(1, unique_routes) + scheduled_workers - 1) // scheduled_workers)
+    # Estimativa = ondas * média recente + margem para rotas metropolitanas/retries internos.
+    estimate = int(waves * avg_job_s + 900)
+    # Piso 30min, teto 70min; normalmente 54 rotas/6 workers*~220s => ~48min.
+    return max(1800, min(4200, estimate))
+
+
 def _wait_for_round_completion(job_ids: list[int], timeout_seconds: int = _ROUND_REPORT_TIMEOUT_SECONDS, poll_seconds: int = _ROUND_REPORT_POLL_SECONDS) -> dict:
     if not job_ids:
         return {'complete': True, 'counts': {'done': 0, 'error': 0, 'running': 0, 'pending': 0}, 'elapsed_seconds': 0}
@@ -1065,7 +1127,9 @@ def main():
 
         # Relatório automático para admin após o término real da rodada
         try:
-            wait_result = _wait_for_round_completion(created_job_ids)
+            dynamic_timeout = _dynamic_round_timeout_seconds(conn, created_job_ids)
+            logger.info('[bot-scheduler] rodada %s | timeout dinâmico relatório=%ss', cycle_started_iso[:16], dynamic_timeout)
+            wait_result = _wait_for_round_completion(created_job_ids, timeout_seconds=dynamic_timeout)
             logger.info(
                 '[bot-scheduler] rodada %s finalizada | complete=%s | done=%s | error=%s | running=%s | pending=%s | wait_s=%s',
                 cycle_started_iso[:16],
