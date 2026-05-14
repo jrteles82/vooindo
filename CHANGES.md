@@ -86,3 +86,17 @@
   - unitário: job sintético com `job_timeout_300s` + resultado com preço teve `error_message` limpo e não entraria em retry.
   - dry-run real usuário 2 `PVH→SAO 01/10/2026`: retornou `R$ 1.092`, booking URL válido, sem `/travel/search?ts=` e sem `link indisponível`.
 - Checkpoint anterior: `51a45ce chore: checkpoint before adaptive timeout test`.
+
+## [smart-metro-expansion-test] — 2026-05-14
+
+### test: expansão metropolitana inteligente (`SAO`, `BHZ`, `RIO`)
+- `main.py`: ordem/escopo de variantes metropolitanas agora depende da rota:
+  - `PVH→SAO` testa `VCP` primeiro, depois `GRU`, `CGH`.
+  - `SAO↔internacional` usa `GRU` direto.
+  - `BHZ↔internacional` usa `CNF` direto.
+  - `RIO↔internacional` usa `GIG` direto.
+- Se uma variante metropolitana retorna preço confiável com booking/deep link, aceita cedo e não testa as demais.
+- Validação sem envio usuário 2 `PVH→SAO 01/10/2026`:
+  - antes da otimização: ~334s testando 3 variantes.
+  - depois: ~86s, variante `PVH→VCP`, preço `R$ 1.092`, booking URL válido.
+  - links OK: sem `/travel/search?ts=` e sem `link indisponível`.

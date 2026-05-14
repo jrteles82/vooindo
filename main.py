@@ -607,9 +607,35 @@ METRO_AIRPORT_EXPANSIONS: dict[str, list[str]] = {
 }
 
 
+def _is_br_airport_code(code: str) -> bool:
+    return str(code or '').upper() in _BR_CODES or str(code or '').upper() in METRO_AIRPORT_EXPANSIONS
+
+
+def _metro_options_for_route(code: str, other_code: str, *, is_origin: bool) -> list[str]:
+    code = str(code or '').upper()
+    other_code = str(other_code or '').upper()
+    if code not in METRO_AIRPORT_EXPANSIONS:
+        return [code]
+
+    other_is_international = bool(other_code and not _is_br_airport_code(other_code))
+    if code == 'SAO':
+        # Internacional quase sempre sai/chega por GRU; evita testar CGH/VCP
+        # desnecessariamente em rotas longas. Para chegada doméstica em SP,
+        # VCP tem sido o melhor fallback real em PVH→SAO.
+        if other_is_international:
+            return ['GRU']
+        return ['GRU', 'CGH', 'VCP'] if is_origin else ['VCP', 'GRU', 'CGH']
+    if code == 'BHZ':
+        # PLU raramente ajuda e torna Google Flights lento; usa só como fallback doméstico.
+        return ['CNF'] if other_is_international else ['CNF', 'PLU']
+    if code == 'RIO':
+        return ['GIG'] if other_is_international else ['SDU', 'GIG']
+    return METRO_AIRPORT_EXPANSIONS.get(code, [code])
+
+
 def _expanded_route_variants(route: RouteQuery) -> list[RouteQuery]:
-    origin_opts = METRO_AIRPORT_EXPANSIONS.get(route.origin, [route.origin])
-    destination_opts = METRO_AIRPORT_EXPANSIONS.get(route.destination, [route.destination])
+    origin_opts = _metro_options_for_route(route.origin, route.destination, is_origin=True)
+    destination_opts = _metro_options_for_route(route.destination, route.origin, is_origin=False)
     variants: list[RouteQuery] = []
     for origin in origin_opts:
         for destination in destination_opts:
@@ -1054,6 +1080,13 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         continue
                     if isinstance(res.price, (int, float)):
                         candidates.append((variant, res))
+                        has_deep_link = bool(getattr(res, 'booking_url', '') or getattr(res, 'best_airline_url', ''))
+                        if len(variants) > 1 and has_deep_link:
+                            logger.info(
+                                '[scraper] variante metropolitana aceita cedo %s->%s | preço=%s | url=%s',
+                                variant.origin, variant.destination, res.price, 'booking' if getattr(res, 'booking_url', '') else 'airline'
+                            )
+                            return _copy_result_to_original_route(res, r, variant)
                     else:
                         failures.append(f'{variant.origin}->{variant.destination}: sem_preco ({(res.notes or "")[-160:]})')
 
