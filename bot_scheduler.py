@@ -363,11 +363,14 @@ def _recover_missed_report(conn, bot, loop):
 
 def sleep_until_next_slot(interval_seconds: int, check_session: bool = False):
     now = now_local()
-    next_slot = now.replace(minute=0, second=0, microsecond=0) + timedelta(seconds=interval_seconds)
-    if interval_seconds < 3600:
-        elapsed_in_hour = now.minute * 60 + now.second
-        next_offset = ((elapsed_in_hour // interval_seconds) + 1) * interval_seconds
-        next_slot = now.replace(minute=0, second=0, microsecond=0) + timedelta(seconds=next_offset)
+    # Alinha na grade do dia, não em "hora cheia + intervalo".
+    # Ex.: 90min => 00:00, 01:30, 03:00 ... 16:30, 18:00, 19:30.
+    # Antes, se o serviço reiniciasse às 17:42, calculava 18:30 indevidamente.
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_today = int((now - day_start).total_seconds())
+    interval = max(60, int(interval_seconds or 60))
+    next_offset = ((elapsed_today // interval) + 1) * interval
+    next_slot = day_start + timedelta(seconds=next_offset)
     wait_seconds = (next_slot - now).total_seconds()
 
     # Se é o sleep inicial (antes do primeiro ciclo), verificar sessão
