@@ -860,6 +860,70 @@ def _route_cache_wait(conn, cache_key: str) -> list[dict] | None:
     return None
 
 
+def _route_dedupe_copy_waiting_jobs(conn, *, dedupe_key: str, source_job_id: int, parsed_route: list[dict],
+                                    bot: Bot, loop, settings, pool: str, charge_now: bool, _t) -> int:
+    if not dedupe_key or not parsed_route:
+        return 0
+    rows = conn.execute(sql("""
+        SELECT id, user_id, chat_id, group_key, payload
+        FROM scan_jobs
+        WHERE status = 'waiting_route_dedupe'
+          AND job_type = 'scheduled'
+          AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.dedupe_key')) = %s
+        ORDER BY id ASC
+        LIMIT 200
+    """), (dedupe_key,)).fetchall()
+    copied = 0
+    for row in rows or []:
+        dup_job_id = int(row['id'] if isinstance(row, dict) else row[0])
+        if dup_job_id == int(source_job_id):
+            continue
+        dup_user_id = int(row['user_id'] if isinstance(row, dict) else row[1])
+        dup_chat_id = str(row['chat_id'] if isinstance(row, dict) else row[2])
+        dup_group_key = str(row['group_key'] if isinstance(row, dict) else row[3] or '')
+        dup_payload = row['payload'] if isinstance(row, dict) else row[4]
+        dup_payload_data = parse_job_payload(dup_payload)
+        dup_route_info = dup_payload_data.get('route') if isinstance(dup_payload_data, dict) else None
+        if not dup_route_info or not dup_group_key:
+            conn.execute(sql("UPDATE scan_jobs SET status='pending' WHERE id=%s AND status='waiting_route_dedupe'"), (dup_job_id,))
+            conn.commit()
+            continue
+        try:
+            _save_route_result(conn, dup_job_id, dup_user_id, dup_chat_id, dup_route_info, parsed_route or [], dup_group_key)
+            conn.execute(sql("UPDATE scan_jobs SET status='done', started_at=COALESCE(started_at, NOW()), finished_at=NOW(), error_message=NULL WHERE id=%s AND status='waiting_route_dedupe'"), (dup_job_id,))
+            conn.commit()
+            copied += 1
+            logger.info('[route-dedupe] source_job_id=%s -> job_id=%s | resultado copiado | group=%s', source_job_id, dup_job_id, dup_group_key)
+            try:
+                _try_consolidate_group(conn, bot, loop, dup_user_id, dup_chat_id, dup_group_key, settings, pool, charge_now, _t)
+            except Exception as exc:
+                logger.warning('[route-dedupe] job_id=%s | falha ao consolidar após cópia: %s', dup_job_id, exc)
+        except Exception as exc:
+            logger.warning('[route-dedupe] source_job_id=%s -> job_id=%s | falha ao copiar resultado: %s', source_job_id, dup_job_id, exc)
+            conn.execute(sql("UPDATE scan_jobs SET status='pending' WHERE id=%s AND status='waiting_route_dedupe'"), (dup_job_id,))
+            conn.commit()
+    if copied:
+        logger.info('[route-dedupe] source_job_id=%s | %s jobs duplicados finalizados sem Chrome', source_job_id, copied)
+    return copied
+
+
+def _route_dedupe_release_waiting_jobs(conn, *, dedupe_key: str, source_job_id: int) -> int:
+    if not dedupe_key:
+        return 0
+    cur = conn.execute(sql("""
+        UPDATE scan_jobs
+        SET status='pending'
+        WHERE status='waiting_route_dedupe'
+          AND job_type='scheduled'
+          AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.dedupe_key')) = %s
+    """), (dedupe_key,))
+    conn.commit()
+    released = int(getattr(cur, 'rowcount', 0) or 0)
+    if released:
+        logger.info('[route-dedupe] source_job_id=%s | %s jobs liberados para fila normal', source_job_id, released)
+    return released
+
+
 def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, group_key: str, settings, pool: str, charge_now: bool, _t) -> None:
     """Verifica se todas as rotas do grupo terminaram e, se sim, consolida e envia.
 
@@ -1232,6 +1296,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             _allow_agencies = (pool != 'scheduled')
             _cache_mode = _route_cache_mode(pool, is_manual_now, _allow_agencies)
             _cache_key = _route_cache_key(_route_info, _cache_mode)
+            _dedupe_key = str(_payload_data.get('dedupe_key') or _cache_key)
             _got_route_lock = False
             _parsed_route = _route_cache_get(conn, _cache_key)
             if _parsed_route:
@@ -1276,11 +1341,20 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             if _parsed_route:
                 _wd_scan_done[0] = True
             _save_route_result(conn, job_id, user_id, chat_id, _route_info, _parsed_route or [], _group_key)
+            if _parsed_route:
+                _route_dedupe_copy_waiting_jobs(
+                    conn, dedupe_key=_dedupe_key, source_job_id=job_id, parsed_route=_parsed_route or [],
+                    bot=bot, loop=loop, settings=settings, pool=pool, charge_now=charge_now, _t=_t,
+                )
+            else:
+                _route_dedupe_release_waiting_jobs(conn, dedupe_key=_dedupe_key, source_job_id=job_id)
         except BaseException as _perr:
             logger.error('[job-worker] job_id=%s | PER-ROUTE exception: %s', job_id, _perr)
             try:
                 if locals().get('_got_route_lock') and locals().get('_cache_key'):
                     _route_cache_release_lock(conn, locals().get('_cache_key'))
+                if locals().get('_dedupe_key'):
+                    _route_dedupe_release_waiting_jobs(conn, dedupe_key=locals().get('_dedupe_key'), source_job_id=job_id)
             except Exception:
                 pass
         finally:

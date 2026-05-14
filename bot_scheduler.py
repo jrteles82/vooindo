@@ -4,6 +4,8 @@ import re
 import subprocess
 import sys
 import time
+import hashlib
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 import random
@@ -891,11 +893,35 @@ def main():
                 except Exception:
                     pass
 
+            def _enqueue_dedupe_key(route_dict: dict) -> str:
+                payload = {
+                    'v': 2,
+                    'origin': str(route_dict.get('origin') or '').upper(),
+                    'destination': str(route_dict.get('destination') or '').upper(),
+                    'outbound_date': str(route_dict.get('outbound_date') or ''),
+                    'inbound_date': str(route_dict.get('inbound_date') or ''),
+                    'mode': 'scheduled_no_agencies',
+                }
+                raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+                return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+            def _add_dedupe_key_to_payload(payload_raw: str, dedupe_key: str) -> str:
+                try:
+                    payload_data = json.loads(payload_raw or '{}')
+                    if isinstance(payload_data, dict):
+                        payload_data['dedupe_key'] = dedupe_key
+                        return json.dumps(payload_data, ensure_ascii=False)
+                except Exception:
+                    pass
+                return payload_raw
+
             # --- DELEGAR PARA JOB_WORKERS (1 job POR ROTA) ---
             # Cria jobs individuais para cada rota ativa de cada usuário.
             # Workers processam rotas individuais e um consolidador junta os
             # resultados do mesmo usuário quando todas as rotas terminarem.
             created_job_ids = []
+            route_dedupe_seen: set[str] = set()
+            route_dedupe_waiting = 0
             for user in eligible_users:
                 try:
                     label = user_label(user)
@@ -932,23 +958,35 @@ def main():
                         except Exception:
                             pass
                         
+                        route_payload = {
+                            'id': route_id,
+                            'origin': origin,
+                            'destination': destination,
+                            'outbound_date': outbound_date,
+                            'inbound_date': inbound_date,
+                        }
+                        dedupe_key = _enqueue_dedupe_key(route_payload)
+                        job_status = 'pending'
+                        if dedupe_key in route_dedupe_seen:
+                            # Não ocupa worker/Chrome: o job primário da mesma rota vai copiar
+                            # o resultado para este job e consolidar o usuário.
+                            job_status = 'waiting_route_dedupe'
+                            route_dedupe_waiting += 1
+                        else:
+                            route_dedupe_seen.add(dedupe_key)
+
                         payload = build_route_job_payload(
                             cycle_started_iso=cycle_started_iso,
-                            route={
-                                'id': route_id,
-                                'origin': origin,
-                                'destination': destination,
-                                'outbound_date': outbound_date,
-                                'inbound_date': inbound_date,
-                            },
+                            route=route_payload,
                             total_routes=num_routes,
                             label=label,
                             executor_timeout=_executor_timeout,
                         )
+                        payload = _add_dedupe_key_to_payload(payload, dedupe_key)
                         
                         insert_result = conn.execute(
-                            sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
-                            (user_id, chat_id, payload, 1, group_key),
+                            sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', %s, %s, %s, %s)"),
+                            (user_id, chat_id, job_status, payload, 1, group_key),
                         )
                         conn.commit()
                         job_id = int(getattr(insert_result, 'lastrowid', 0) or 0)
@@ -964,7 +1002,7 @@ def main():
                     logger.error("[bot-scheduler] erro ao criar job para user %s: %s", user.get('user_id'), exc)
                     cycle_stats['errors'] += 1
 
-            logger.info('[bot-scheduler] %s jobs de rota delegados para job_workers', len(created_job_ids))
+            logger.info('[bot-scheduler] %s jobs de rota delegados para job_workers | dedupe_waiting=%s | unique_route_keys=%s', len(created_job_ids), route_dedupe_waiting, len(route_dedupe_seen))
         except DatabaseRateLimitError as exc:
             audit.error("scheduler_db_limit", error_msg=str(exc), status="blocked")
             logger.warning('[SCHED_DB_LIMIT] [bot-scheduler] limite de conexão MySQL por hora atingido durante ciclo: %s', exc)

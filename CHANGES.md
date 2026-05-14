@@ -61,3 +61,13 @@
 - `main.py`: `build_booking_links_message()` agora rejeita links genéricos do Google Travel (`/travel/search?ts=...`) quando não são Google Flights.
 - Se o scraper só trouxer esse link quebrado, o bot reconstrói um fallback seguro do Google Flights via `/travel/flights/search?q=ORIGEM to DESTINO DATA`.
 - Caso real: usuário 11 recebeu `NAT → PVH 16/06/26` com `/travel/search?ts=...`; agora vira busca segura `NAT to PVH 2026-06-16 one way`.
+
+## [enqueue-route-dedupe-test] — 2026-05-14
+
+### test: deduplicar rotas antes de ocupar worker/Chrome
+- `bot_scheduler.py`: na criação da rodada, rotas agendadas idênticas (`origin`, `destination`, `outbound_date`, `inbound_date`, modo scheduled sem agências) recebem a mesma `dedupe_key`.
+- A primeira rota idêntica entra como `pending`; duplicadas entram como `waiting_route_dedupe`, não são capturadas por workers e não abrem Chrome.
+- `job_worker.py`: quando o job primário finaliza com resultado, copia o resultado para os jobs `waiting_route_dedupe`, marca como `done` e dispara a consolidação do usuário duplicado.
+- Se o primário falhar sem resultado, os duplicados são liberados para `pending` e rodam normalmente, evitando perda de busca.
+- Validação unitária em banco com dry-run: job duplicado `PVH→SAO` foi finalizado sem Chrome via `[route-dedupe] ... resultado copiado`; consolidação DRY RUN sem envio.
+- Checkpoint anterior: `0157e46 chore: checkpoint before enqueue dedupe test`.
