@@ -1147,7 +1147,7 @@ def main():
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 
         try:
-            sleep_until_next_slot(interval_seconds)
+            sleep_until_next_slot(interval_seconds, check_session=True)
         except Exception as exc:
             logger.error('[bot-scheduler] erro no sleep_until_next_slot: %s', exc, exc_info=True)
             time.sleep(60)
