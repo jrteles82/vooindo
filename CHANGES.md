@@ -30,3 +30,17 @@
 
 ### fix: removido clear_pending_input_ui (`70d0759`)
 - `ReplyKeyboardMarkup` nunca usado no bot → função inútil causava flash de "." na tela
+
+## [metro-airport-expansion] — 2026-05-14
+
+### fix: expandir códigos metropolitanos e bloquear preço falso (`SAO`, `RIO`, `BHZ`)
+- `main.py`: rotas com códigos metropolitanos agora testam aeroportos reais antes de escolher preço:
+  - `SAO` → `GRU`, `CGH`, `VCP`
+  - `RIO` → `GIG`, `SDU`
+  - `BHZ` → `CNF`, `PLU`
+- Mantém a rota original cadastrada na exibição (ex.: `PVH → SAO`), mas registra a variante escolhida em `notes` como `google_variant=...`.
+- Bloqueia resultados não confiáveis vindos de página genérica/fallback bruto, especialmente:
+  - `price_fallback_body_parse_min` com `click_candidates=0` / `clicked_result_tab=none`
+  - `minimal_scraper_fallback + search_url_fallback` em `/search?q=`
+- Corrige caso real em que `PVH → SAO` pegou preço falso de página genérica "Voos baratos para São Paulo" (ex.: `GIG → VCP` por R$316).
+- Validação sem envio: usuário 2 `PVH → SAO 01/10/2026` retornou preço confiável `R$ 1.092` via variante `PVH → VCP`, com booking URL.

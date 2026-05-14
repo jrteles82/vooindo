@@ -596,6 +596,88 @@ _BR_CODES: set[str] = {
     'SJP','SLZ','SSA','STM','THE','UDI','VIX'
 }
 
+# Códigos metropolitanos/cidade que o Google Flights às vezes trata como
+# página genérica (ex.: "Voos baratos para São Paulo") em vez de rota real.
+# Nesses casos a busca ativa deve testar os aeroportos reais e escolher o
+# menor resultado confiável, mantendo a rota cadastrada original na exibição.
+METRO_AIRPORT_EXPANSIONS: dict[str, list[str]] = {
+    "SAO": ["GRU", "CGH", "VCP"],
+    "RIO": ["GIG", "SDU"],
+    "BHZ": ["CNF", "PLU"],
+}
+
+
+def _expanded_route_variants(route: RouteQuery) -> list[RouteQuery]:
+    origin_opts = METRO_AIRPORT_EXPANSIONS.get(route.origin, [route.origin])
+    destination_opts = METRO_AIRPORT_EXPANSIONS.get(route.destination, [route.destination])
+    variants: list[RouteQuery] = []
+    for origin in origin_opts:
+        for destination in destination_opts:
+            variants.append(RouteQuery(
+                origin=origin,
+                destination=destination,
+                outbound_date=route.outbound_date,
+                inbound_date=route.inbound_date,
+                trip_type=route.trip_type,
+            ))
+    return variants
+
+
+def _result_looks_unreliable_for_route(result: FlightResult) -> bool:
+    """Bloqueia preços extraídos de páginas genéricas/fallback bruto.
+
+    Exemplo real: PVH→SAO abriu página "Voos baratos para São Paulo" e o
+    fallback pegou GIG→VCP por R$316 como se fosse PVH→SAO.
+    """
+    notes = (result.notes or "").lower()
+    url = " ".join(str(x or "").lower() for x in (
+        getattr(result, "url", ""),
+        getattr(result, "booking_url", ""),
+        getattr(result, "best_airline_url", ""),
+    ))
+    if "price_fallback_body_parse_min" in notes:
+        if "click_candidates=0" in notes or "clicked_result_tab=none" in notes:
+            return True
+        if "/travel/flights/search?q=" in url and "/travel/flights/booking" not in url:
+            return True
+    if "minimal_scraper_fallback" in notes and "search_url_fallback" in notes:
+        if "/travel/flights/search?q=" in url and "/travel/flights/booking" not in url:
+            return True
+    return False
+
+
+def _copy_result_to_original_route(result: FlightResult, original: RouteQuery, variant: RouteQuery) -> FlightResult:
+    notes_parts = [result.notes or "", f"google_variant={variant.origin}->{variant.destination}"]
+    return FlightResult(
+        site=result.site,
+        origin=original.origin,
+        destination=original.destination,
+        outbound_date=original.outbound_date,
+        inbound_date=original.inbound_date,
+        trip_type=original.trip_type,
+        price=result.price,
+        currency=result.currency,
+        url=result.url,
+        booking_url=getattr(result, "booking_url", ""),
+        notes=" | ".join([part for part in notes_parts if part]),
+        best_vendor=getattr(result, "best_vendor", ""),
+        best_vendor_price=getattr(result, "best_vendor_price", None),
+        booking_options_json=getattr(result, "booking_options_json", ""),
+        price_insight=getattr(result, "price_insight", ""),
+        best_airline_vendor=getattr(result, "best_airline_vendor", None),
+        best_airline_price=getattr(result, "best_airline_price", None),
+        best_airline_url=getattr(result, "best_airline_url", None),
+        best_airline_visible_price=getattr(result, "best_airline_visible_price", None),
+    )
+
+
+def _score_search_result(result: FlightResult) -> tuple[int, int, int, float]:
+    unreliable = 1 if _result_looks_unreliable_for_route(result) else 0
+    no_price = 1 if not isinstance(result.price, (int, float)) else 0
+    no_booking = 1 if not (getattr(result, "booking_url", "") or getattr(result, "best_airline_url", "")) else 0
+    price = float(result.price) if isinstance(result.price, (int, float)) else 10**12
+    return (unreliable, no_price, no_booking, price)
+
 
 class ChromeSemaphore:
     """Semáforo baseado em lockfile para limitar Chromes simultâneos."""
@@ -699,7 +781,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if p_dir.is_dir():
                     available_profiles.append(str(p_dir))
 
-            def _run_external_search(idx: int, r: RouteQuery) -> FlightResult:
+            def _run_external_search_single(idx: int, r: RouteQuery) -> FlightResult:
                 profile = available_profiles[idx % len(available_profiles)]
                 env = os.environ.copy()
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
@@ -953,6 +1035,46 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         logger.warning('[scraper] minimal_scraper exception: %s', _me)
 
                 return result
+
+            def _run_external_search(idx: int, r: RouteQuery) -> FlightResult:
+                variants = _expanded_route_variants(r)
+                if len(variants) > 1:
+                    logger.info(
+                        '[scraper] expandindo rota metropolitana %s->%s em %s variante(s): %s',
+                        r.origin, r.destination, len(variants),
+                        ', '.join(f'{v.origin}->{v.destination}' for v in variants),
+                    )
+
+                candidates: list[tuple[RouteQuery, FlightResult]] = []
+                failures: list[str] = []
+                for vi, variant in enumerate(variants):
+                    res = _run_external_search_single(idx * 10 + vi, variant)
+                    if _result_looks_unreliable_for_route(res):
+                        failures.append(f'{variant.origin}->{variant.destination}: unreliable ({(res.notes or "")[-160:]})')
+                        continue
+                    if isinstance(res.price, (int, float)):
+                        candidates.append((variant, res))
+                    else:
+                        failures.append(f'{variant.origin}->{variant.destination}: sem_preco ({(res.notes or "")[-160:]})')
+
+                if candidates:
+                    candidates.sort(key=lambda item: _score_search_result(item[1]))
+                    chosen_variant, chosen = candidates[0]
+                    return _copy_result_to_original_route(chosen, r, chosen_variant)
+
+                return FlightResult(
+                    site='google_flights',
+                    origin=r.origin,
+                    destination=r.destination,
+                    outbound_date=r.outbound_date,
+                    inbound_date=r.inbound_date,
+                    trip_type=r.trip_type,
+                    price=None,
+                    currency='BRL',
+                    url='',
+                    booking_url='',
+                    notes='no_reliable_metro_variant | ' + ' || '.join(failures[:6]),
+                )
 
             if source_flags.get("google_flights", True):
                 for i, route in enumerate(routes):
@@ -1790,11 +1912,15 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         lines = []
         for row in block_rows:
             url = str(row.get("booking_url") or row.get("best_airline_url") or "").strip()
-            # Fallback: se só tem a URL de busca do Google Flights, tenta converter pra /booking
+            # Fallback: se só tem URL de busca do Google Flights, usa o melhor link possível.
+            # /search?tfs= costuma abrir direto o voo; tentamos converter para /booking.
+            # /search?q= não é conversível com segurança, mas ainda é melhor que "link indisponível".
             if not url:
                 search_url = str(row.get("url") or "").strip()
                 if "/travel/flights/search?tfs=" in search_url:
                     url = search_url.replace("/search?tfs=", "/booking?tfs=", 1)
+                elif "/travel/flights/search?q=" in search_url:
+                    url = search_url
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date = str(row.get("outbound_date") or "")
