@@ -1789,7 +1789,12 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         from html import escape
         lines = []
         for row in block_rows:
-            url = str(row.get("booking_url") or row.get("best_airline_url") or row.get("url") or "").strip()
+            url = str(row.get("booking_url") or row.get("best_airline_url") or "").strip()
+            # Fallback: se só tem a URL de busca do Google Flights, tenta converter pra /booking
+            if not url:
+                search_url = str(row.get("url") or "").strip()
+                if "/travel/flights/search?tfs=" in search_url:
+                    url = search_url.replace("/search?tfs=", "/booking?tfs=", 1)
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date = str(row.get("outbound_date") or "")
