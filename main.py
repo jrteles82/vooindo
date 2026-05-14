@@ -1805,24 +1805,7 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                 price_fmt = row.get('price_fmt') or f"R$ {row.get('price', 0):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date} — {price_fmt} (link indisponível)"
                 lines.append(f"• {escape(label)}")
-            # Inclui price_insight formatado quando disponível
-            insight = row.get('price_insight', '').strip()
-            # Fallback: herda insight de outra rota com mesma origem/destino
-            if not insight:
-                for other in block_rows:
-                    if (other.get('origin') == row.get('origin') and 
-                        other.get('destination') == row.get('destination') and
-                        other.get('outbound_date') != row.get('outbound_date')):
-                        other_insight = other.get('price_insight', '').strip()
-                        if other_insight:
-                            insight = other_insight
-                            break
-            if insight:
-                insight = re.sub(r'aEconômica', 'a Econômica', insight, flags=re.I)
-                if "Os voos mais baratos" in insight and "O preço normal para" in insight:
-                    insight = re.sub(r"O preço normal para.*?é R\$\s*[\d\.]+(?:,\d{2})?\s*", "", insight, flags=re.I).strip()
-                if insight:
-                    lines.append(f'<i>{escape(insight)}</i>')
+
         return lines
 
     lines = _build_lines(rows)
