@@ -385,13 +385,15 @@ def _routes_for_request_user() -> list[RouteQuery]:
     return []
 
 
-def _result_to_row(result: FlightResult, price_band: str) -> dict:
+def _result_to_row(result: FlightResult, price_band: str, date_type: str = "fixed", flexible_month: str = "") -> dict:
     return {
         "origin": result.origin,
         "destination": result.destination,
         "outbound_date": result.outbound_date,
         "inbound_date": result.inbound_date,
         "trip_type": result.trip_type,
+        "date_type": date_type or result.date_type,
+        "flexible_month": flexible_month or result.flexible_month,
         "price": result.price,
         "price_fmt": format_brl(result.price),
         "site": result.site,
@@ -577,7 +579,7 @@ def _store_result(db: Database, route: RouteQuery, result: FlightResult) -> list
     min_price, avg_price, _last_price = db.stats_for(route)
     band = classify_price(result.price, min_price, avg_price)
     db.save(result, band)
-    return _expand_result_rows(_result_to_row(result, band))
+    return _expand_result_rows(_result_to_row(result, band, route.date_type, route.flexible_month))
 
 
 def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery]]:
@@ -1792,7 +1794,14 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         draw.text((route_x + origin_w, route_y), destination_txt, font=body_font, fill=destination_color)
 
     def _draw_date_cell(base_y: int, draw_h: int, row: dict):
-        date_txt = format_date_display(str(row.get("outbound_date") or ""))
+        date_type = str(row.get("date_type") or "fixed")
+        if date_type == 'flexible' and row.get('flexible_month'):
+            fm = row['flexible_month']
+            dt = datetime.strptime(fm, '%Y-%m')
+            mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
+            date_txt = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
+        else:
+            date_txt = format_date_display(str(row.get("outbound_date") or ""))
         date_col_x = x0 + col_widths[0]
         badge_bbox = draw.textbbox((0, 0), date_txt, font=small_font)
         badge_text_w = badge_bbox[2] - badge_bbox[0]
@@ -1997,12 +2006,19 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
             url = _best_link(row)
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
-            date = str(row.get("outbound_date") or "")
-            # Mostra sempre a rota: com link se tiver URL, sem link se não tiver
-            try:
-                date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
-            except Exception:
-                pass
+            date_type = str(row.get("date_type") or "fixed")
+            # Flexível: mostra mês/ano; Fixa: mostra data
+            if date_type == 'flexible' and row.get('flexible_month'):
+                fm = row['flexible_month']
+                dt = datetime.strptime(fm, '%Y-%m')
+                mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
+                date = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
+            else:
+                date = str(row.get("outbound_date") or "")
+                try:
+                    date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
+                except Exception:
+                    pass
             if url:
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
                 lines.append(f"• <a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")

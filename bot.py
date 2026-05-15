@@ -3336,6 +3336,7 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data_text = f'📅 {format_date_br(row["outbound_date"])}'
             if row['inbound_date']:
                 data_text += f' → {format_date_br(row["inbound_date"])}'
+            data_text += ' · 📌 Fixa'
             linhas.append(data_text)
 
     await update.message.reply_text('\n'.join(linhas), parse_mode='Markdown', reply_markup=rotas_management_markup(rows))

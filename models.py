@@ -36,6 +36,8 @@ class FlightResult:
     notes: Optional[str] = None
     trip_type: str = "one-way"
     currency: str = "BRL"
+    date_type: str = "fixed"
+    flexible_month: str = ""
     best_vendor: str = ""
     best_vendor_price: Optional[float] = None
     booking_options_json: str = ""
