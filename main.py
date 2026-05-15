@@ -588,7 +588,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 2  # reduzido de 6 p/ 2 — OOM com 3 workers + Chrome
+_CHROME_MAX_CONCURRENT = 1  # reduzido de 6 p/ 2 — OOM com 3 workers + Chrome
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -783,7 +783,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     # Até 3 rotas por worker em paralelo. O semáforo Chrome (5 slots) impede
     # over-subscription — threads sem slot esperam. Reduz tempo de usuários
     # com múltiplas rotas de N×90s para ~90s + eventual espera de semáforo.
-    worker_count = 2
+    worker_count = 1
     
     source_flags = sources or {"google_flights": True}
     
@@ -820,6 +820,12 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if skip_booking:
                     env["GOOGLE_FLIGHTS_SKIP_BOOKING"] = "1"
                 # Chrome é o único navegador suportado
+                
+                # Modo flexível: define env vars para o executor usar date picker
+                if r.date_type == 'flexible' and r.flexible_month:
+                    env["GOOGLE_FLIGHTS_FLEXIBLE"] = "1"
+                    env["GOOGLE_FLIGHTS_TRIP_TYPE"] = r.trip_type or "one-way"
+                    env["GOOGLE_FLIGHTS_MONTH"] = r.flexible_month
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:

@@ -84,222 +84,6 @@ def build_url(origin: str, destination: str, outbound_date: str, inbound_date: s
     return f"{base}?q={quote(trip)}&hl={quote(HL)}&gl={quote(GL)}&curr={CURR}"
 
 
-def build_flexible_url(origin: str, destination: str, trip_type: str = "one-way") -> str:
-    """URL sem data para busca flexível."""
-    if trip_type == "round-trip":
-        trip = f"{origin} to {destination} return"
-    else:
-        trip = f"{origin} to {destination} one way"
-    base = BASE_URL.rstrip("/")
-    if base.endswith("/travel/flights"):
-        base = f"{base}/search"
-    elif "/travel/flights/search" not in base:
-        base = "https://www.google.com/travel/flights/search"
-    return f"{base}?q={quote(trip)}&hl={quote(HL)}&gl={quote(GL)}&curr={CURR}"
-
-
-def _extract_calendar_prices(page, notes: list[str]) -> dict[str, float]:
-    """Extrai preços do calendário (date picker) do Google Flights.
-    Retorna {data_iso: preço}."""
-    prices = {}
-    # Tenta vários seletores para células do calendário com preço
-    selectors = [
-        '[aria-label*="R$"]',
-        '[aria-label*="R$"]',
-        'div[role="gridcell"]',
-        '.VfPpkd-fmcmS-J2e3jb',
-    ]
-    for sel in selectors:
-        try:
-            cells = page.locator(sel).all()
-            for cell in cells:
-                try:
-                    aria = cell.get_attribute('aria-label') or ''
-                    text = cell.inner_text()
-                    # Padrão: "15 de junho de 2026 R$ 450"
-                    price_match = re.search(r'R\$\s*([\d.]+,\d{2})', aria + ' ' + text)
-                    date_match = re.search(r'(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})', aria + ' ' + text)
-                    if price_match and date_match:
-                        day, month_name, year = date_match.groups()
-                        price_str = price_match.group(1).replace('.', '').replace(',', '.')
-                        month_map = {
-                            'janeiro': 1, 'fevereiro': 2, 'março': 3, 'marco': 3, 'abril': 4,
-                            'maio': 5, 'junho': 6, 'julho': 7, 'agosto': 8, 'setembro': 9,
-                            'outubro': 10, 'novembro': 11, 'dezembro': 12
-                        }
-                        mn = month_name.lower().rstrip('.,')
-                        if mn in month_map:
-                            date_key = f'{year}-{month_map[mn]:02d}-{int(day):02d}'
-                            prices[date_key] = float(price_str)
-                except Exception:
-                    continue
-            if prices:
-                break
-        except Exception:
-            continue
-    return prices
-
-
-def _open_date_picker(page, notes: list[str]) -> bool:
-    """Abre o date picker clicando no campo de data."""
-    date_selectors = [
-        'input[aria-label*="data"]',
-        'input[aria-label*="Data"]',
-        'input[placeholder*="Data"]',
-        '[aria-label*="Data de ida"]',
-        '[aria-label*="data de ida"]',
-        'div[role="button"][aria-label*="data"]',
-        'div[aria-label*="Data"]',
-        '.VfPpkd-fmcmS-Ysl6R-haAclf',  # common date button class
-    ]
-    for sel in date_selectors:
-        try:
-            el = page.locator(sel).first
-            if el.is_visible(timeout=2000):
-                el.click()
-                time.sleep(1.5)
-                notes.append(f'date_picker_opened_via={sel[:40]}')
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo B: abre date picker, extrai preços do mês, escolhe o dia mais barato."""
-    from datetime import datetime
-    # Usa o 1° dia do mês como data inicial
-    dt = datetime.strptime(flexible_month, '%Y-%m')
-    outbound_date = dt.strftime('%Y-%m-%d')
-    notes.append(f'flexible_oneway_month={flexible_month} first_day={outbound_date}')
-
-    url = build_url(origin, destination, outbound_date)
-    page.goto(url, wait_until='domcontentloaded')
-    notes.append(f'flexible_search_nav_done')
-    wait_for_results(page)
-    try_click_result_tab(page, notes)
-    time.sleep(1)
-
-    # Abre o date picker
-    if not _open_date_picker(page, notes):
-        notes.append('flexible_date_picker_failed')
-        return None
-
-    time.sleep(2)
-    # Extrai preços do calendário
-    calendar_prices = _extract_calendar_prices(page, notes)
-    notes.append(f'flexible_calendar_days_found={len(calendar_prices)}')
-
-    if not calendar_prices:
-        notes.append('flexible_no_calendar_prices')
-        return None
-
-    # Filtra só os dias do mês-alvo
-    target_month = flexible_month  # 'YYYY-MM'
-    month_prices = {d: p for d, p in calendar_prices.items() if d.startswith(target_month)}
-    if not month_prices:
-        # Tenta usar todos os preços encontrados
-        month_prices = calendar_prices
-        notes.append('flexible_fallback_all_months')
-
-    # Encontra o dia mais barato
-    best_date = min(month_prices, key=month_prices.get)
-    best_price = month_prices[best_date]
-    notes.append(f'flexible_best_date={best_date} price={best_price}')
-    notes.append(f'flexible_top5=' + ', '.join(f'{d}={p}' for d, p in sorted(month_prices.items(), key=lambda x: x[1])[:5]))
-
-    # Clica no dia mais barato (se não for o atual)
-    if best_date != outbound_date:
-        # Procura a célula do calendário com essa data e clica
-        clicked = False
-        for sel in ['div[role="gridcell"]', '[aria-label*="de "]']:
-            try:
-                cells = page.locator(sel).all()
-                for cell in cells:
-                    try:
-                        aria = cell.get_attribute('aria-label') or ''
-                        if best_date in aria or best_date.replace('-', ' ') in aria:
-                            cell.click()
-                            time.sleep(2)
-                            notes.append(f'flexible_clicked_best_date={best_date}')
-                            clicked = True
-                            break
-                    except Exception:
-                        continue
-                if clicked:
-                    break
-            except Exception:
-                continue
-        if not clicked:
-            notes.append('flexible_click_best_date_failed')
-
-    return {"price": best_price, "outbound_date": best_date}
-
-
-def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo C: carrega URL flexível (sem data), extrai matriz de preços ida+volta."""
-    notes.append(f'flexible_roundtrip_month={flexible_month}')
-
-    url = build_flexible_url(origin, destination, "round-trip")
-    page.goto(url, wait_until='domcontentloaded')
-    notes.append('flexible_roundtrip_nav_done')
-    time.sleep(3)
-    wait_for_results(page)
-    time.sleep(2)
-
-    # Tenta abrir o date picker para ver a matriz
-    if not _open_date_picker(page, notes):
-        notes.append('flexible_roundtrip_date_picker_failed')
-        # Tenta extrair da página principal (pode ter gráfico de preços)
-        pass
-
-    time.sleep(2)
-    calendar_prices = _extract_calendar_prices(page, notes)
-    notes.append(f'flexible_roundtrip_calendar_days={len(calendar_prices)}')
-
-    if calendar_prices:
-        # Filtra mês-alvo
-        month_prices = {d: p for d, p in calendar_prices.items() if d.startswith(flexible_month)}
-        if not month_prices:
-            month_prices = calendar_prices
-            notes.append('flexible_roundtrip_fallback_all_months')
-
-        if month_prices:
-            best_date = min(month_prices, key=month_prices.get)
-            best_price = month_prices[best_date]
-            notes.append(f'flexible_roundtrip_best={best_date} price={best_price}')
-
-            # Clica no melhor dia
-            for sel in ['div[role="gridcell"]', '[aria-label*="de "]']:
-                try:
-                    cells = page.locator(sel).all()
-                    for cell in cells:
-                        try:
-                            aria = cell.get_attribute('aria-label') or ''
-                            if best_date in aria:
-                                cell.click()
-                                time.sleep(2)
-                                notes.append(f'flexible_roundtrip_clicked={best_date}')
-                                break
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-
-            return {"price": best_price, "outbound_date": best_date, "inbound_date": ""}
-
-    notes.append('flexible_roundtrip_no_prices_found')
-    return None
-
-
-def _is_flexible_mode() -> bool:
-    return os.getenv('GOOGLE_FLIGHTS_FLEXIBLE', '0') in {'1', 'true', 'yes', 'on'}
-
-
-def _get_flexible_month() -> str:
-    return os.getenv('GOOGLE_FLIGHTS_MONTH', '')
-
-
 def parse_prices(text: str) -> list[float]:
     vals = []
     currency_pattern = r"(?:R\$|\$|€|ARS|USD|BRL|[\w]{3})\s*"
@@ -579,27 +363,55 @@ def is_details_panel_open(page) -> bool:
 
 
 def extract_continuar_link(page, vendor: str) -> str:
-    """Tenta capturar o href do botão 'Continuar' do vendor na página de booking."""
+    """Tenta capturar o href do botão 'Continuar' do vendor na página de booking.
+    Versão robusta: busca em <a>, <button>, e qualquer elemento que contenha
+    texto de ação + nome do vendor. Fallback: primeiro link externo na página.
+    """
     try:
         result = page.evaluate("""(vendor) => {
             const vendorLow = vendor.toLowerCase();
+            const actionTexts = ['continuar', 'selecionar', 'select', 'ver oferta', 'book', 'reserve', 'comprar', 'continue', 'choose'];
+            const allSelectors = ['a[href]', 'button', '[role="button"]', '[role="link"]'];
+            
+            // 1. Procura por elementos com texto de ação + nome do vendor no container
+            for (const sel of allSelectors) {
+                const elements = Array.from(document.querySelectorAll(sel));
+                for (const el of elements) {
+                    const txt = (el.textContent || '').trim().toLowerCase();
+                    const href = el.href || el.getAttribute('href') || el.getAttribute('data-href') || '';
+                    if (!href) continue;
+                    const isAction = actionTexts.some(at => txt.includes(at));
+                    if (!isAction) continue;
+                    const container = el.closest('[data-vendor], [jsname], li, [role="listitem"], div, section');
+                    if (container && container.textContent.toLowerCase().includes(vendorLow)) {
+                        return href;
+                    }
+                }
+            }
+            
+            // 2. Fallback: qualquer elemento com texto de ação (sem verificar vendor)
+            for (const sel of allSelectors) {
+                const elements = Array.from(document.querySelectorAll(sel));
+                for (const el of elements) {
+                    const txt = (el.textContent || '').trim().toLowerCase();
+                    const href = el.href || el.getAttribute('href') || el.getAttribute('data-href') || '';
+                    if (!href) continue;
+                    if (actionTexts.some(at => txt === at || txt.startsWith(at))) {
+                        return href;
+                    }
+                }
+            }
+            
+            // 3. Fallback: link com 'booking' no href (mais específico que externo genérico)
             const allLinks = Array.from(document.querySelectorAll('a[href]'));
-            // Procura <a> com "Continuar" ou "Selecionar" que esteja dentro de um container com o nome do vendor
             for (const a of allLinks) {
-                const txt = (a.textContent || '').trim().toLowerCase();
-                if (txt !== 'continuar' && txt !== 'selecionar' && txt !== 'select') continue;
-                const container = a.closest('[data-vendor], [jsname], li, [role="listitem"], div');
-                if (container && container.textContent.toLowerCase().includes(vendorLow)) {
-                    return a.href || '';
+                const href = a.href || '';
+                if (href && href.startsWith('http') && !href.includes('accounts.google') && 
+                    (href.includes('/booking') || href.includes('/checkout') || href.includes('/reserva') || href.includes('flight') || href.includes('book'))) {
+                    return href;
                 }
             }
-            // Fallback: qualquer <a> com "Continuar" na página
-            for (const a of allLinks) {
-                const txt = (a.textContent || '').trim().toLowerCase();
-                if (txt === 'continuar' || txt === 'selecionar') {
-                    return a.href || '';
-                }
-            }
+            
             return '';
         }""", vendor)
         return str(result or "").strip()
@@ -1097,8 +909,14 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         if airline_options:
             best_airline_in_booking = min(airline_options, key=lambda o: float(o['price']))
             vendor_link = extract_continuar_link(page, best_airline_in_booking['vendor'])
-            if not vendor_link and '/travel/flights/booking' in current_booking_url:
-                vendor_link = current_booking_url
+            if not vendor_link:
+                if '/travel/flights/booking' in current_booking_url:
+                    vendor_link = current_booking_url
+                elif page_booking_url:
+                    vendor_link = page_booking_url
+                elif 'travel/flights' in (page.url or ''):
+                    vendor_link = page.url
+                    notes.append(f'booking_url_fallback_page_url_no_booking={vendor_link[:80]}')
             key = (str(best_airline_in_booking['vendor']), float(best_airline_in_booking['price']))
             found_airline_prices[key] = (
                 best_airline_in_booking['vendor'],
@@ -1122,8 +940,14 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
         # Atualiza melhor agência
         for ao in [o for o in options if not o.get('is_airline')]:
             vendor_link = extract_continuar_link(page, ao['vendor'])
-            if not vendor_link and '/travel/flights/booking' in current_booking_url:
-                vendor_link = current_booking_url
+            if not vendor_link:
+                if '/travel/flights/booking' in current_booking_url:
+                    vendor_link = current_booking_url
+                elif page_booking_url:
+                    vendor_link = page_booking_url
+                elif 'travel/flights' in (page.url or ''):
+                    vendor_link = page.url
+                    notes.append(f'booking_url_agency_fallback_page_url={vendor_link[:80]}')
             if first_agency_fallback is None:
                 first_agency_fallback = (str(ao['vendor']), float(ao['price']), vendor_link)
             if best_agency is None or ao['price'] < best_agency[1]:
@@ -1407,25 +1231,6 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 notes.append(f"auth_score_retry={health['score']}")
             notes.append(f"auth_score={health['score']}")
             search_nav_started = time.perf_counter()
-
-            # ── Modo flexível: sobrescreve outbound_date e usa date picker ──
-            flexible_mode = _is_flexible_mode()
-            flexible_result = None
-            if flexible_mode:
-                flexible_month = _get_flexible_month()
-                trip_type = os.getenv('GOOGLE_FLIGHTS_TRIP_TYPE', 'one-way')
-                notes.append(f'flexible_mode=trip_type={trip_type} month={flexible_month}')
-                if trip_type == 'round-trip':
-                    flexible_result = _run_flexible_roundtrip(origin, destination, flexible_month, page, context, browser, notes)
-                else:
-                    flexible_result = _run_flexible_oneway(origin, destination, flexible_month, page, context, browser, notes)
-                if flexible_result and flexible_result.get('outbound_date'):
-                    outbound_date = flexible_result['outbound_date']
-                    inbound_date = flexible_result.get('inbound_date', inbound_date)
-                    notes.append(f'flexible_resolved_date={outbound_date}')
-                # Recarrega a página com a data resolvida
-                url = build_url(origin, destination, outbound_date, inbound_date)
-
             page.goto(url, wait_until="domcontentloaded")
             notes.append(f"search_nav_s={round(time.perf_counter() - search_nav_started, 3)}")
             notes.append(f"wait_results_s={wait_for_results(page)}")
@@ -1574,8 +1379,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if booking_followed and not booking_url:
                 notes.append('booking_no_url_after_retries_keeping_price')
             if not booking_url:
-                booking_url = page.url
-                notes.append(f'booking_url_fallback_to_page_url={booking_url[:80]}')
+                current_page_url = page.url
+                if '/travel/flights/booking' in (current_page_url or ''):
+                    booking_url = current_page_url
+                    notes.append(f'booking_url_fallback_to_page_url={booking_url[:80]}')
+                else:
+                    notes.append('booking_url_fallback_skipped_page_not_booking')
             # Garante price_insight mesmo se maybe_open_booking não retornou
             if not price_insight and cards_body:
                 pi_fallback = _extract_price_insight_from_body(cards_body)
