@@ -4566,18 +4566,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if action == 'addrota':
-            await query.answer('Digite a origem da rota.', show_alert=True)
+            # Redireciona para addrota_start (que tem o fluxo completo com admin/flexível)
+            await query.answer()
             clear_pending_input_state(context)
-            context.user_data['airport_stage'] = 'origem'
-            await query.message.reply_text(
-                '\n\U0001f449 Nova rota\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\U0001f50e Buscar aeroporto de origem\nResponda esta mensagem com a origem por c\u00f3digo, cidade ou aeroporto.\n\nExemplos: PVH, Miami, Guarulhos, Lisboa.\n\nPara sair, cancele o cadastro.',
-                reply_markup=force_reply_markup('Ex.: PVH, Miami, Guarulhos, Lisboa'),
-            )
-            await query.message.reply_text(
-                'Se o campo fechar, toque em cancelar e comece novamente.',
-                reply_markup=cancel_markup('addrota:cancel', '\u274c Cancelar cadastro de rota'),
-            )
-            return ASK_ORIGIN
+            fake_update = Update(update.update_id, message=query.message)
+            return await addrota_start(fake_update, context)
         if action == 'minhasrotas':
             await query.answer()
             fake_update = Update(update.update_id, message=query.message)
