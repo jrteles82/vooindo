@@ -3511,7 +3511,7 @@ def _flexible_month_keyboard():
     month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
                    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
     buttons = []
-    for i in range(12):
+    for i in range(11):
         m = now.month + i
         y = now.year + (m - 1) // 12
         m = ((m - 1) % 12) + 1
