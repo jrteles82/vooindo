@@ -3473,38 +3473,10 @@ async def addrota_trip_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, choice = query.data.split(':', 1)
     context.user_data['trip_type'] = choice
 
-    # Mostra seleção de mês
-    await query.edit_message_text(
-        f'✅ {"Só ida" if choice == "one-way" else "Ida e volta"} selecionado.\n\n📅 *Escolha o mês:*',
-        parse_mode='Markdown',
-        reply_markup=_flexible_month_keyboard(),
-    )
-    return ASK_MONTH
-
-
-async def addrota_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback: usuário escolheu o mês flexível."""
-    query = update.callback_query
-    await query.answer()
-    _, month_str = query.data.split(':', 1)
-    context.user_data['flexible_month'] = month_str  # 'YYYY-MM'
-
-    # Formata o mês pra exibição
-    from datetime import datetime
-    dt = datetime.strptime(month_str, '%Y-%m')
-    month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
-                   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
-    display = f'{month_names[dt.month - 1]} {dt.year}'
-
-    await query.edit_message_text(f'✅ Mês: *{display}*')
-
-    # Se já tem origem e destino (fluxo: date_type→trip_type→origem→destino→mês), salva direto
-    if context.user_data.get('origin') and context.user_data.get('destination'):
-        context.user_data['outbound_date'] = ''  # flexível não tem data fixa
-        return await _save_flexible_route(update, context)
-
-    # Fluxo inicial (date_type→trip_type→month→origin→destination): vai pra origem
+    # Vai direto pra origem — o mês será perguntado depois do destino
+    trip_label = 'Só ida' if choice == 'one-way' else 'Ida e volta'
     context.user_data['airport_stage'] = 'origem'
+    await query.edit_message_text(f'✅ *{trip_label}* selecionado.')
     await query.message.reply_text(
         '\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.',
         parse_mode='Markdown',
@@ -3513,25 +3485,41 @@ async def addrota_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_ORIGIN
 
 
+async def addrota_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback: usuário escolheu o mês flexível (após origem e destino)."""
+    query = update.callback_query
+    await query.answer()
+    _, month_str = query.data.split(':', 1)
+    context.user_data['flexible_month'] = month_str  # 'YYYY-MM'
+
+    from datetime import datetime
+    dt = datetime.strptime(month_str, '%Y-%m')
+    month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+                   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    display = f'{month_names[dt.month - 1]} {dt.year}'
+    await query.edit_message_text(f'✅ Mês: *{display}*')
+
+    context.user_data['outbound_date'] = ''  # flexível não tem data fixa
+    return await _save_flexible_route(update, context)
+
+
 def _flexible_month_keyboard():
-    """Gera teclado inline com os próximos 6 meses."""
+    """Gera teclado inline com os próximos 12 meses."""
     from datetime import datetime
     from dateutil import tz
     now = datetime.now(tz.gettz('America/Porto_Velho'))
     month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
                    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
     buttons = []
-    for i in range(6):
+    for i in range(12):
         m = now.month + i
         y = now.year + (m - 1) // 12
         m = ((m - 1) % 12) + 1
         label = f'{month_names[m-1]} {y}'
         value = f'{y}-{m:02d}'
         buttons.append(InlineKeyboardButton(label, callback_data=f'month:{value}'))
-    # 2 linhas de 3
-    row1 = buttons[:3]
-    row2 = buttons[3:6]
-    rows = [row1, row2] if row2 else [row1]
+    # 4 linhas de 3
+    rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
     rows.append([InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')])
     return InlineKeyboardMarkup(rows)
 
