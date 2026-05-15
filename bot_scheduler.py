@@ -992,6 +992,8 @@ def main():
                     'destination': str(route_dict.get('destination') or '').upper(),
                     'outbound_date': str(route_dict.get('outbound_date') or ''),
                     'inbound_date': str(route_dict.get('inbound_date') or ''),
+                    'date_type': str(route_dict.get('date_type') or 'fixed'),
+                    'flexible_month': str(route_dict.get('flexible_month') or ''),
                     'mode': 'scheduled_no_agencies',
                 }
                 raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
@@ -1022,7 +1024,7 @@ def main():
                     
                     # Buscar rotas ativas do usuário
                     route_rows = conn.execute(
-                        sql("SELECT id, origin, destination, outbound_date, inbound_date FROM user_routes WHERE user_id = %s AND active = 1"),
+                        sql("SELECT id, origin, destination, outbound_date, inbound_date, date_type, trip_type, flexible_month FROM user_routes WHERE user_id = %s AND active = 1"),
                         (user_id,)
                     ).fetchall()
                     
@@ -1040,6 +1042,9 @@ def main():
                         destination = route['destination'] if isinstance(route, dict) else route[2]
                         outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
                         inbound_date = route['inbound_date'] if isinstance(route, dict) else route[4] or ''
+                        date_type = route.get('date_type', 'fixed') if isinstance(route, dict) else (route[5] if len(route) > 5 else 'fixed')
+                        trip_type = route.get('trip_type', 'one-way') if isinstance(route, dict) else (route[6] if len(route) > 6 else 'one-way')
+                        flexible_month = route.get('flexible_month', '') if isinstance(route, dict) else (route[7] if len(route) > 7 else '')
                         
                         route_payload = {
                             'id': route_id,
@@ -1047,6 +1052,9 @@ def main():
                             'destination': destination,
                             'outbound_date': outbound_date,
                             'inbound_date': inbound_date,
+                            'date_type': date_type or 'fixed',
+                            'trip_type': trip_type or 'one-way',
+                            'flexible_month': flexible_month or '',
                         }
 
                         # Timeout adaptativo por rota (mantém prioridade do optimizer como base,

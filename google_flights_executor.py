@@ -1423,6 +1423,12 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     outbound_date = flexible_result['outbound_date']
                     inbound_date = flexible_result.get('inbound_date', inbound_date)
                     notes.append(f'flexible_resolved_date={outbound_date}')
+                else:
+                    # Fallback: usa 1° dia do mês flexível
+                    from datetime import datetime as _dt
+                    _fdt = _dt.strptime(flexible_month, '%Y-%m')
+                    outbound_date = _fdt.strftime('%Y-%m-%d')
+                    notes.append(f'flexible_fallback_first_day={outbound_date}')
                 # Recarrega a página com a data resolvida
                 url = build_url(origin, destination, outbound_date, inbound_date)
 
