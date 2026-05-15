@@ -1964,6 +1964,10 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         url = str(row.get("booking_url") or row.get("best_airline_url") or "").strip()
         if _is_bad_google_link(url):
             url = ""
+        # Se o scraper devolveu URL de busca (/search?tfs=) em vez de booking,
+        # converte para /booking?tfs= — abre direto o voo e resolve booking.
+        if url and "/travel/flights/search?tfs=" in url:
+            url = url.replace("/search?tfs=", "/booking?tfs=", 1)
         # Fallback: se só tem URL de busca do Google Flights, usa o melhor link possível.
         # /search?tfs= costuma abrir direto o voo; tentamos converter para /booking.
         # /search?q= não é conversível com segurança, mas ainda é melhor que "link indisponível".

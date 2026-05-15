@@ -100,3 +100,9 @@
   - antes da otimização: ~334s testando 3 variantes.
   - depois: ~86s, variante `PVH→VCP`, preço `R$ 1.092`, booking URL válido.
   - links OK: sem `/travel/search?ts=` e sem `link indisponível`.
+
+## [search-tfs-to-booking-conversion] — 2026-05-14
+
+### fix: converter `/search?tfs=` mesmo quando está em `booking_url`
+- `main.py`: `_best_link()` agora converte `/travel/flights/search?tfs=` para `/booking?tfs=` também quando a URL vem de `booking_url` ou `best_airline_url`, não só do fallback `url`.
+- Caso real: usuário 11 recebeu uma rota `PVH→NAT 05/06/26` com link `/search?tfs=` porque o scraper retornou a URL de busca como `booking_url`.
