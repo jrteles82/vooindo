@@ -64,6 +64,7 @@ from cmd_status import cmd_status
 
 ASK_ORIGIN, ASK_DESTINATION, ASK_OUTBOUND, ASK_LIMIT, ASK_SUPPORT_MESSAGE, ASK_ADMIN_SUPPORT_MESSAGE = range(6)
 ASK_GOOGLE_PASSWORD, ASK_GOOGLE_2FA = range(6, 8)
+ASK_DATE_TYPE, ASK_TRIP_TYPE, ASK_MONTH = range(8, 11)
 setup_logging()
 logger = logging.getLogger(__name__)
 LEGACY_BROADCAST_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN_LEGACY', '').strip()
@@ -3272,7 +3273,8 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id_by_chat(conn, chat_id)
     rows = conn.execute(
         sql('''
-        SELECT id, origin, destination, outbound_date, inbound_date, active
+        SELECT id, origin, destination, outbound_date, inbound_date, active,
+               date_type, trip_type, flexible_month
         FROM user_routes
         WHERE user_id = %s AND active = 1
         ORDER BY outbound_date, origin, destination
@@ -3319,10 +3321,22 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         origem = airport_label(row['origin'])
         destino = airport_label(row['destination'])
         linhas.append(f'🛫 {origem} → {destino}')
-        data_text = f'📅 {format_date_br(row["outbound_date"])}'
-        if row['inbound_date']:
-            data_text += f' → {format_date_br(row["inbound_date"])}'
-        linhas.append(data_text)
+        if row.get('date_type') == 'flexible':
+            # Rota flexível: mostra mês
+            from datetime import datetime
+            fm = row.get('flexible_month', '')
+            if fm:
+                dt = datetime.strptime(fm, '%Y-%m')
+                mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
+                trip = 'Só ida' if row.get('trip_type') == 'one-way' else 'Ida e volta'
+                linhas.append(f'📅 {mn[dt.month-1]} {dt.year} · ✈️ {trip} · 🔄 Flexível')
+            else:
+                linhas.append('📅 Flexível')
+        else:
+            data_text = f'📅 {format_date_br(row["outbound_date"])}'
+            if row['inbound_date']:
+                data_text += f' → {format_date_br(row["inbound_date"])}'
+            linhas.append(data_text)
 
     await update.message.reply_text('\n'.join(linhas), parse_mode='Markdown', reply_markup=rotas_management_markup(rows))
 
@@ -3393,6 +3407,24 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
     context.user_data['bot_msg_ids'] = []
+
+    # Admin: pergunta data fixa ou flexível primeiro
+    if admin:
+        context.user_data['date_type'] = 'fixed'  # default
+        context.user_data['trip_type'] = 'one-way'
+        await update.message.reply_text(
+            '\n➕ *Nova rota*\n────────────────────────\n\n📅 *Data fixa ou flexível?*\n\n• *Fixa* — uma data específica (ex: 25/12/2026)\n• *Flexível* — melhor preço do mês (ex: Dezembro 2026)',
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('📌 Data fixa', callback_data='datetype:fixed')],
+                [InlineKeyboardButton('📅 Mês flexível', callback_data='datetype:flexible')],
+                [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
+            ]),
+        )
+        return ASK_DATE_TYPE
+
+    # Não-admin: fluxo normal (data fixa, pergunta origem)
+    context.user_data['date_type'] = 'fixed'
     context.user_data['airport_stage'] = 'origem'
     await update.message.reply_text(
         '\n➕ *Nova rota*\n────────────────────────\n\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.\n\nSe quiser sair, use o botão abaixo.',
@@ -3400,6 +3432,108 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=force_reply_markup('Ex.: PVH ou Miami'),
     )
     return ASK_ORIGIN
+
+
+async def addrota_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback: usuário escolheu data fixa ou flexível."""
+    query = update.callback_query
+    await query.answer()
+    _, choice = query.data.split(':', 1)
+
+    if choice == 'flexible':
+        context.user_data['date_type'] = 'flexible'
+        await query.edit_message_text(
+            '\n➕ *Nova rota* — 📅 *Mês flexível*\n────────────────────────\n\n✈️ *Só ida ou ida e volta?*',
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('🛫 Só ida', callback_data='triptype:one-way')],
+                [InlineKeyboardButton('🛫🛬 Ida e volta', callback_data='triptype:round-trip')],
+                [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
+            ]),
+        )
+        return ASK_TRIP_TYPE
+
+    # Data fixa: fluxo normal
+    context.user_data['date_type'] = 'fixed'
+    context.user_data['trip_type'] = 'one-way'
+    context.user_data['airport_stage'] = 'origem'
+    await query.edit_message_text('✅ Data fixa selecionada.')
+    await query.message.reply_text(
+        '\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.',
+        parse_mode='Markdown',
+        reply_markup=force_reply_markup('Ex.: PVH ou Miami'),
+    )
+    return ASK_ORIGIN
+
+
+async def addrota_trip_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback: usuário escolheu só ida ou ida e volta (flexível)."""
+    query = update.callback_query
+    await query.answer()
+    _, choice = query.data.split(':', 1)
+    context.user_data['trip_type'] = choice
+
+    # Mostra seleção de mês
+    await query.edit_message_text(
+        f'✅ {"Só ida" if choice == "one-way" else "Ida e volta"} selecionado.\n\n📅 *Escolha o mês:*',
+        parse_mode='Markdown',
+        reply_markup=_flexible_month_keyboard(),
+    )
+    return ASK_MONTH
+
+
+async def addrota_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback: usuário escolheu o mês flexível."""
+    query = update.callback_query
+    await query.answer()
+    _, month_str = query.data.split(':', 1)
+    context.user_data['flexible_month'] = month_str  # 'YYYY-MM'
+
+    # Formata o mês pra exibição
+    from datetime import datetime
+    dt = datetime.strptime(month_str, '%Y-%m')
+    month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+                   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    display = f'{month_names[dt.month - 1]} {dt.year}'
+
+    await query.edit_message_text(f'✅ Mês: *{display}*')
+
+    # Se já tem origem e destino (fluxo: date_type→trip_type→origem→destino→mês), salva direto
+    if context.user_data.get('origin') and context.user_data.get('destination'):
+        context.user_data['outbound_date'] = ''  # flexível não tem data fixa
+        return await _save_flexible_route(update, context)
+
+    # Fluxo inicial (date_type→trip_type→month→origin→destination): vai pra origem
+    context.user_data['airport_stage'] = 'origem'
+    await query.message.reply_text(
+        '\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.',
+        parse_mode='Markdown',
+        reply_markup=force_reply_markup('Ex.: PVH ou Miami'),
+    )
+    return ASK_ORIGIN
+
+
+def _flexible_month_keyboard():
+    """Gera teclado inline com os próximos 6 meses."""
+    from datetime import datetime
+    from dateutil import tz
+    now = datetime.now(tz.gettz('America/Porto_Velho'))
+    month_names = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+                   'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    buttons = []
+    for i in range(6):
+        m = now.month + i
+        y = now.year + (m - 1) // 12
+        m = ((m - 1) % 12) + 1
+        label = f'{month_names[m-1]} {y}'
+        value = f'{y}-{m:02d}'
+        buttons.append(InlineKeyboardButton(label, callback_data=f'month:{value}'))
+    # 2 linhas de 3
+    row1 = buttons[:3]
+    row2 = buttons[3:6]
+    rows = [row1, row2] if row2 else [row1]
+    rows.append([InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')])
+    return InlineKeyboardMarkup(rows)
 
 
 async def addrota_origin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3518,8 +3652,9 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
     user_id = get_user_id_by_chat(conn, chat_id)
     conn.execute(
         sql('''
-        INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date, active, created_at)
-        VALUES (%s, %s, %s, %s, %s, 1, NOW())
+        INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date,
+                                 date_type, trip_type, flexible_month, active, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, NOW())
         '''),
         (
             user_id,
@@ -3527,6 +3662,9 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
             context.user_data['destination'],
             context.user_data['outbound_date'],
             inbound_date,
+            context.user_data.get('date_type', 'fixed'),
+            context.user_data.get('trip_type', 'one-way'),
+            context.user_data.get('flexible_month', ''),
         ),
     )
     conn.commit()
@@ -3535,7 +3673,10 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
                       payload={"origin": context.user_data['origin'],
                                "destination": context.user_data['destination'],
                                "outbound_date": context.user_data['outbound_date'],
-                               "inbound_date": inbound_date})
+                               "inbound_date": inbound_date,
+                               "date_type": context.user_data.get('date_type', 'fixed'),
+                               "trip_type": context.user_data.get('trip_type'),
+                               "flexible_month": context.user_data.get('flexible_month', '')})
     conn.close()
 
     await msg_target.reply_text(
@@ -3552,6 +3693,79 @@ async def _save_route_with_inbound(update: Update, context: ContextTypes.DEFAULT
             logger.warning(f"Falha ao deletar mensagem {msg_id}: {e}")
     context.user_data.clear()
     # Mostra a lista de rotas atualizada
+    fake_update = Update(update.update_id, message=msg_target)
+    await minhas_rotas(fake_update, context)
+    return ConversationHandler.END
+
+
+async def _save_flexible_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Salva rota com data flexível (mês)."""
+    query = update.callback_query
+    chat_id = str(query.message.chat.id)
+    msg_target = query.message
+    conn = get_db()
+
+    msg = require_confirmation(conn, chat_id)
+    if msg:
+        conn.close()
+        await msg_target.reply_text(msg, reply_markup=confirmation_markup_for_message(msg))
+        return ConversationHandler.END
+    if should_block_paid_action(conn, chat_id):
+        texto = choose_plan_text(conn, chat_id)
+        conn.close()
+        await msg_target.reply_text(texto, parse_mode='Markdown', reply_markup=user_plan_markup())
+        return ConversationHandler.END
+
+    user_id = get_user_id_by_chat(conn, chat_id)
+    conn.execute(
+        sql('''
+        INSERT INTO user_routes (user_id, origin, destination, outbound_date, inbound_date,
+                                 date_type, trip_type, flexible_month, active, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, NOW())
+        '''),
+        (
+            user_id,
+            context.user_data['origin'],
+            context.user_data['destination'],
+            '',  # outbound_date vazio (flexível)
+            '',  # inbound_date vazio
+            context.user_data.get('date_type', 'flexible'),
+            context.user_data.get('trip_type', 'one-way'),
+            context.user_data.get('flexible_month', ''),
+        ),
+    )
+    conn.commit()
+
+    audit.user_action("rota_salva", chat_id=chat_id, user_id=user_id,
+                      payload={"origin": context.user_data['origin'],
+                               "destination": context.user_data['destination'],
+                               "date_type": "flexible",
+                               "trip_type": context.user_data.get('trip_type'),
+                               "flexible_month": context.user_data.get('flexible_month')})
+    conn.close()
+
+    from datetime import datetime
+    dt = datetime.strptime(context.user_data['flexible_month'], '%Y-%m')
+    month_names = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+                   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+    display_month = f'{month_names[dt.month - 1]} {dt.year}'
+    trip_label = 'Só ida' if context.user_data.get('trip_type') == 'one-way' else 'Ida e volta'
+
+    await msg_target.reply_text(
+        f"✅ *Rota flexível cadastrada*\n"
+        f"{airport_label(context.user_data['origin'])} → {airport_label(context.user_data['destination'])}\n"
+        f"📅 {display_month} · ✈️ {trip_label}",
+        parse_mode='Markdown',
+    )
+
+    # Cleanup
+    bot_msg_ids = context.user_data.get('bot_msg_ids', [])
+    for msg_id in bot_msg_ids:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception as e:
+            logger.warning(f"Falha ao deletar mensagem {msg_id}: {e}")
+    context.user_data.clear()
     fake_update = Update(update.update_id, message=msg_target)
     await minhas_rotas(fake_update, context)
     return ConversationHandler.END
@@ -3604,13 +3818,25 @@ async def aeroporto_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ASK_DESTINATION
 
     if action == 'destino':
-        await query.answer('Destino selecionado. Agora informe a data.', show_alert=True)
         context.user_data['destination'] = code
         await query.edit_message_text(
             f"✅ Destino: {airport_label(code)}",
             parse_mode='Markdown',
             reply_markup=cancel_markup('addrota:cancel', '❌ Cancelar cadastro de rota'),
         )
+
+        # Rota flexível: pergunta mês
+        if context.user_data.get('date_type') == 'flexible':
+            await query.answer('Destino selecionado. Agora escolha o mês.', show_alert=True)
+            await query.message.reply_text(
+                '📅 *Escolha o mês:*',
+                parse_mode='Markdown',
+                reply_markup=_flexible_month_keyboard(),
+            )
+            return ASK_MONTH
+
+        # Rota fixa: fluxo normal (pergunta data)
+        await query.answer('Destino selecionado. Agora informe a data.', show_alert=True)
         await query.message.reply_text(
             '📅 *Data de ida*\nFormatos aceitos: 25/12/2026, 25-12-2026, 2026-12-25, 25122026, 25 dez 2026 ou 25 dezembro 2026.\n\n✍️ Responda esta mensagem com a data de ida.',
             parse_mode='Markdown',
@@ -5328,6 +5554,18 @@ async def run_bot():
     conv = ConversationHandler(
         entry_points=[CommandHandler('addrota', addrota_start), CallbackQueryHandler(menu_callback, pattern=r'^menu:addrota$')],
         states={
+            ASK_DATE_TYPE: [
+                CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
+                CallbackQueryHandler(addrota_date_type, pattern=r'^datetype:'),
+            ],
+            ASK_TRIP_TYPE: [
+                CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
+                CallbackQueryHandler(addrota_trip_type, pattern=r'^triptype:'),
+            ],
+            ASK_MONTH: [
+                CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
+                CallbackQueryHandler(addrota_month, pattern=r'^month:'),
+            ],
             ASK_ORIGIN: [
                 CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
                 CallbackQueryHandler(aeroporto_callback, pattern=r'^(origem|destino):'),

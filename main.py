@@ -348,7 +348,7 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
     rows = conn.execute(
         sql(
             """
-            SELECT origin, destination, outbound_date, inbound_date
+            SELECT origin, destination, outbound_date, inbound_date, date_type, trip_type, flexible_month
             FROM user_routes
             WHERE user_id = %s AND active = 1
             ORDER BY id ASC
@@ -365,7 +365,9 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
                 destination=(r["destination"] or "").upper(),
                 outbound_date=r["outbound_date"],
                 inbound_date=inbound,
-                trip_type="roundtrip" if inbound else "oneway",
+                trip_type=r.get("trip_type") or ("roundtrip" if inbound else "oneway"),
+                date_type=r.get("date_type") or "fixed",
+                flexible_month=r.get("flexible_month") or "",
             )
         )
     return routes

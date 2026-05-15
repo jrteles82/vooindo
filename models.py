@@ -16,6 +16,8 @@ class RouteQuery:
     job_id: Optional[int] = None
     trip_type: str = "one-way"
     triptype: str = "one-way"  # Compatibilidade com chamadas legado
+    date_type: str = "fixed"   # 'fixed' ou 'flexible'
+    flexible_month: str = ""   # 'YYYY-MM' quando date_type='flexible'
 
 @dataclass
 class FlightResult:
