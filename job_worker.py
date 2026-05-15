@@ -6,6 +6,8 @@ import sys
 import time
 import traceback
 
+import pymysql
+
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.request import HTTPXRequest
@@ -1692,6 +1694,11 @@ def main():
                 finish_job(conn, int(job['id']))
             except BaseException as exc:
                 error_text = str(exc)
+                # pymysql errors aparecem como "(0, '')" quando a conexão quebra no SIGTERM
+                if error_text in ("(0, '')", "(0, '')"):
+                    error_text = 'db_connection_lost_during_sigterm'
+                elif isinstance(exc, pymysql.err.OperationalError) or isinstance(exc, pymysql.err.InterfaceError):
+                    error_text = f'db_error: {error_text[:200]}'
                 retry_count = int(job.get('retry_count') or 0)
                 should_retry = False
                 # Retry pra erros técnicos (se ainda não retentou)
