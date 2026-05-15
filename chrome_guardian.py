@@ -269,6 +269,16 @@ class ChromeGuardian:
                 "--disable-crashpad",
                 "--lang=pt-BR",
                 "--start-maximized",
+                "--renderer-process-limit=1",
+                "--process-per-site",
+                "--js-flags=--max-old-space-size=256",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-translate",
+                "--disable-extensions",
+                "--disable-default-apps",
+                "--mute-audio",
+                "--no-first-run",
                 f"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
             ]
             env = os.environ.copy()

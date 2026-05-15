@@ -895,7 +895,10 @@ def _route_dedupe_copy_waiting_jobs(conn, *, dedupe_key: str, source_job_id: int
             copied += 1
             logger.info('[route-dedupe] source_job_id=%s -> job_id=%s | resultado copiado | group=%s', source_job_id, dup_job_id, dup_group_key)
             try:
-                _try_consolidate_group(conn, bot, loop, dup_user_id, dup_chat_id, dup_group_key, settings, pool, charge_now, _t)
+                # Carrega settings do usuário DESTINO, não da fonte
+                # (bug: settings da fonte podem ter max_price diferente e filtrar resultados indevidamente)
+                dup_settings = get_user_settings(conn, dup_user_id)
+                _try_consolidate_group(conn, bot, loop, dup_user_id, dup_chat_id, dup_group_key, dup_settings, pool, charge_now, _t)
             except Exception as exc:
                 logger.warning('[route-dedupe] job_id=%s | falha ao consolidar após cópia: %s', dup_job_id, exc)
         except Exception as exc:

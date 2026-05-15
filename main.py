@@ -586,7 +586,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 6  # teste controlado: 6 Chromes simultâneos
+_CHROME_MAX_CONCURRENT = 2  # reduzido de 6 p/ 2 — OOM com 3 workers + Chrome
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -714,7 +714,7 @@ class ChromeSemaphore:
         """Tenta adquirir slot. Retorna True se conseguiu dentro do timeout."""
         import fcntl, os, time
         end = time.monotonic() + timeout
-        lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o666)
         try:
             while time.monotonic() < end:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
@@ -739,7 +739,7 @@ class ChromeSemaphore:
         """Libera slot."""
         import fcntl, os
         try:
-            lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o666)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
                 content = os.read(lock_fd, 32).decode().strip()
@@ -781,7 +781,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     # Até 3 rotas por worker em paralelo. O semáforo Chrome (5 slots) impede
     # over-subscription — threads sem slot esperam. Reduz tempo de usuários
     # com múltiplas rotas de N×90s para ~90s + eventual espera de semáforo.
-    worker_count = 3
+    worker_count = 2
     
     source_flags = sources or {"google_flights": True}
     
