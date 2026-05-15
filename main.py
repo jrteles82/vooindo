@@ -1073,9 +1073,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
 
                 candidates: list[tuple[RouteQuery, FlightResult]] = []
                 failures: list[str] = []
+                is_metro_route = len(variants) > 1
                 for vi, variant in enumerate(variants):
                     res = _run_external_search_single(idx * 10 + vi, variant)
-                    if _result_looks_unreliable_for_route(res):
+                    if is_metro_route and _result_looks_unreliable_for_route(res):
                         failures.append(f'{variant.origin}->{variant.destination}: unreliable ({(res.notes or "")[-160:]})')
                         continue
                     if isinstance(res.price, (int, float)):
