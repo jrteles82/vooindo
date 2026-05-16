@@ -3424,7 +3424,7 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('📌 Data fixa', callback_data='datetype:fixed')],
-                [InlineKeyboardButton('📅 Data flexível', callback_data='datetype:flexible')],
+                [InlineKeyboardButton('🔄 Data flexível', callback_data='datetype:flexible')],
                 [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
             ]),
         )
