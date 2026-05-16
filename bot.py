@@ -3328,8 +3328,7 @@ async def minhas_rotas(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if fm:
                 dt = datetime.strptime(fm, '%Y-%m')
                 mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
-                trip = 'Só ida' if row.get('trip_type') == 'one-way' else 'Ida e volta'
-                linhas.append(f'📅 {mn[dt.month-1]} {dt.year} · ✈️ {trip} · 🔄 Flexível')
+                linhas.append(f'📅 {mn[dt.month-1]} {dt.year} · 🔄 Flexível')
             else:
                 linhas.append('📅 Flexível')
         else:
@@ -3443,16 +3442,15 @@ async def addrota_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if choice == 'flexible':
         context.user_data['date_type'] = 'flexible'
-        await query.edit_message_text(
-            '\n➕ *Nova rota* — 📅 *Mês flexível*\n────────────────────────\n\n✈️ *Só ida ou ida e volta?*',
+        context.user_data['trip_type'] = 'one-way'
+        context.user_data['airport_stage'] = 'origem'
+        await query.edit_message_text('✅ *Mês flexível* selecionado.')
+        await query.message.reply_text(
+            '\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.',
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton('🛫 Só ida', callback_data='triptype:one-way')],
-                [InlineKeyboardButton('🛫🛬 Ida e volta', callback_data='triptype:round-trip')],
-                [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
-            ]),
+            reply_markup=force_reply_markup('Ex.: PVH ou Miami'),
         )
-        return ASK_TRIP_TYPE
+        return ASK_ORIGIN
 
     # Data fixa: fluxo normal
     context.user_data['date_type'] = 'fixed'
@@ -3743,7 +3741,7 @@ async def _save_flexible_route(update: Update, context: ContextTypes.DEFAULT_TYP
     await msg_target.reply_text(
         f"✅ *Rota flexível cadastrada*\n"
         f"{airport_label(context.user_data['origin'])} → {airport_label(context.user_data['destination'])}\n"
-        f"📅 {display_month} · ✈️ {trip_label}",
+        f"📅 {display_month}",
         parse_mode='Markdown',
     )
 
@@ -5539,10 +5537,6 @@ async def run_bot():
             ASK_DATE_TYPE: [
                 CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
                 CallbackQueryHandler(addrota_date_type, pattern=r'^datetype:'),
-            ],
-            ASK_TRIP_TYPE: [
-                CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
-                CallbackQueryHandler(addrota_trip_type, pattern=r'^triptype:'),
             ],
             ASK_MONTH: [
                 CallbackQueryHandler(addrota_cancel_callback, pattern=r'^addrota:cancel$'),
