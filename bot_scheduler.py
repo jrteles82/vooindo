@@ -1318,12 +1318,98 @@ def main():
         except Exception as exc:
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 
+        # Retry rotas internacionais que falharam (sem booking_url ou no_results)
+        # Roda UMA de cada vez, sem concorrência, entre as rodadas
+        try:
+            _retry_international_routes(conn, int(cycle_started_iso[11:13]), int(interval_seconds / 60))
+        except Exception as exc:
+            logger.warning('[bot-scheduler] erro no retry internacional: %s', exc)
+
         try:
             sleep_until_next_slot(interval_seconds, check_session=True)
         except Exception as exc:
             logger.error('[bot-scheduler] erro no sleep_until_next_slot: %s', exc, exc_info=True)
             time.sleep(60)
             continue
+
+
+def _retry_international_routes(conn, cycle_hour: int, interval_minutes: int):
+    """Re-executa rotas internacionais que falharam na última rodada.
+    Roda UMA de cada vez, sem concorrência de Chrome, entre as rodadas."""
+    import json as _json, subprocess as _sp, sys as _sys, os as _os
+    from datetime import datetime as _dt, timedelta as _td
+
+    # Busca rotas internacionais da última rodada com 0 resultados ou sem booking_url
+    cur = conn.cursor()
+    cur.execute(sql("""
+        SELECT sjr.job_id, sjr.origin, sjr.destination, sjr.group_key,
+               sj.user_id, bu.chat_id, sj.payload
+        FROM scan_job_route_results sjr
+        JOIN scan_jobs sj ON sj.id = sjr.job_id
+        JOIN bot_users bu ON bu.user_id = sj.user_id
+        WHERE sjr.finished_at >= NOW() - INTERVAL %s MINUTE
+          AND sjr.num_results = 0
+          AND sjr.origin NOT IN ('PVH','FOR','GRU','CGH','SDU','REC','NAT','PMW','THE','CGR','CWB','CGB','MAO','SLZ')
+        LIMIT 5
+    """), (max(interval_minutes, 10),))
+    failed_routes = cur.fetchall()
+
+    if not failed_routes:
+        return
+
+    logger.info('[bot-scheduler] retry_international: %d rotas internacionais falharam, reprocessando...', len(failed_routes))
+
+    executor = '/opt/vooindo/google_flights_executor.py'
+    python = _sys.executable or '/opt/vooindo/.venv/bin/python3'
+
+    for r in failed_routes:
+        origin = r['origin']
+        destination = r['destination']
+        chat_id = r.get('chat_id', '')
+
+        # Extrai data do payload
+        outbound_date = ''
+        try:
+            p = _json.loads(str(r.get('payload') or '{}'))
+            route_data = p.get('route', {})
+            outbound_date = route_data.get('outbound_date', '')
+        except Exception:
+            pass
+
+        if not origin or not destination or not outbound_date:
+            continue
+
+        # Ignora rotas rapidamente (domesticas conhecidas)
+        _br_codes = {'PVH','FOR','GRU','CGH','SDU','REC','NAT','PMW','THE','CGR','CWB','CGB','MAO','SLZ','BEL','GIG','CGF'}
+        if origin in _br_codes and destination in _br_codes:
+            continue
+
+        logger.info('[bot-scheduler] retry_international: %s->%s %s', origin, destination, outbound_date)
+
+        env = _os.environ.copy()
+        env['GOOGLE_FLIGHTS_USE_GUARDIAN'] = '1'
+        env['GOOGLE_FLIGHTS_ALLOW_AGENCIES'] = '1'
+        env['PYTHONWARNINGS'] = 'ignore::SyntaxWarning'
+
+        cmd = [python, executor, origin, destination, outbound_date]
+
+        try:
+            proc = _sp.run(cmd, capture_output=True, text=True, timeout=360, env=env)
+            if proc.stdout:
+                result = _json.loads(proc.stdout)
+                if result.get('ok') and result.get('price') is not None:
+                    logger.info('[bot-scheduler] retry_international OK: %s->%s R$%s',
+                                origin, destination, result['price'])
+                else:
+                    logger.info('[bot-scheduler] retry_international ainda sem resultado: %s->%s',
+                                origin, destination)
+        except Exception as e:
+            logger.warning('[bot-scheduler] retry_international erro: %s->%s: %s',
+                          origin, destination, e)
+
+        # Delay entre retries para nao sobrecarregar o Chrome
+        import time as _t
+        _t.sleep(3.0)
 
 
 if __name__ == '__main__':

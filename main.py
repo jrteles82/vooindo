@@ -833,6 +833,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
             def _run_external_search_single(idx: int, r: RouteQuery) -> FlightResult:
                 profile = available_profiles[idx % len(available_profiles)]
                 env = os.environ.copy()
+                env["PYTHONWARNINGS"] = "ignore::SyntaxWarning"
                 env["GOOGLE_PERSISTENT_PROFILE_DIR"] = profile
                 env["GOOGLE_FLIGHTS_EXECUTOR_HEADLESS"] = "1"
                 env["GOOGLE_FLIGHTS_USE_GUARDIAN"] = "1"
@@ -963,7 +964,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"json_decode_error: {str(e)} | raw={proc.stdout[:100]}")
 
                 err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
-                result = FlightResult(site="google_flights", origin=json_data.get("origin", r.origin), destination=json_data.get("destination", r.destination), outbound_date=json_data.get("outbound_date", r.outbound_date), inbound_date=json_data.get("inbound_date", r.inbound_date), price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
+                result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
                 # Mesmo com rc != 0, tenta extrair dados do stdout (executor sempre imprime JSON)
                 if proc.stdout and proc.stdout.strip():
                     try:
@@ -2000,7 +2001,14 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         inbound = str(row.get("inbound_date") or "").strip()
         if not origin or not destination or not outbound:
             return ""
-        trip = f"{origin} to {destination} {outbound} one way" if not inbound else f"{origin} to {destination} {outbound} return {inbound}"
+        # Remove prefixo flex:YYYY-MM:trip_type para gerar URL de busca válida
+        _search_date = outbound
+        if _search_date.startswith('flex:'):
+            _parts = _search_date.split(':')
+            if len(_parts) >= 2:
+                # Usa o primeiro dia do mês flexível como data de busca
+                _search_date = f'{_parts[1]}-01'
+        trip = f"{origin} to {destination} {_search_date} one way" if not inbound else f"{origin} to {destination} {_search_date} return {inbound}"
         return f"https://www.google.com/travel/flights/search?q={quote(trip)}&hl=pt-BR&gl=BR&curr=BRL"
 
     def _best_link(row: dict) -> str:
@@ -2036,8 +2044,16 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
             try:
                 date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
             except Exception:
-                # Se falhar, mantém o valor original (ex: Nov/26 p/ flexível sem data resolvida)
-                pass
+                # Data flexível no formato flex:YYYY-MM:trip_type
+                if date.startswith('flex:'):
+                    _parts = date.split(':')
+                    if len(_parts) >= 2:
+                        try:
+                            _d = datetime.strptime(_parts[1], '%Y-%m')
+                            date = _d.strftime('%b/%y').capitalize()
+                        except Exception:
+                            date = _parts[1]
+                # Se falhar, mantém o valor original
             if url:
                 flag = '🔄 ' if date_type == 'flexible' else '📌 '
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"

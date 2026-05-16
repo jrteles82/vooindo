@@ -1346,15 +1346,23 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         # Isso impede que o código vaze para o LEGACY path.
         try:
             from models import RouteQuery as _RQ
+            _dt_type = _route_info.get('date_type', 'fixed')
+            _flex_month = _route_info.get('flexible_month', '')
+            _trip_type = _route_info.get('trip_type', 'one-way')
+            _outbound = _route_info.get('outbound_date', '')
+            # Rotas flexíveis precisam do prefixo flex:YYYY-MM:trip_type
+            # pro executor ativar o modo flexível
+            if _dt_type == 'flexible' and _flex_month and not _outbound.startswith('flex:'):
+                _outbound = f'flex:{_flex_month}:{_trip_type}'
             _single_route = _RQ(
                 origin=_route_info.get('origin', ''),
                 destination=_route_info.get('destination', ''),
-                outbound_date=_route_info.get('outbound_date', ''),
+                outbound_date=_outbound,
                 inbound_date=_route_info.get('inbound_date') or None,
                 user_id=user_id,
                 chat_id=int(chat_id) if chat_id.isdigit() else 0,
-                date_type=_route_info.get('date_type', 'fixed'),
-                flexible_month=_route_info.get('flexible_month', ''),
+                date_type=_dt_type,
+                flexible_month=_flex_month,
             )
             _allow_agencies = (pool != 'scheduled')
             _cache_mode = _route_cache_mode(pool, is_manual_now, _allow_agencies)

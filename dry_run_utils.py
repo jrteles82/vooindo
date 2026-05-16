@@ -31,6 +31,9 @@ def build_route_job_payload(*, cycle_started_iso: str, route: dict, total_routes
             'destination': route.get('destination', ''),
             'outbound_date': route.get('outbound_date', ''),
             'inbound_date': route.get('inbound_date') or '',
+            'date_type': route.get('date_type') or 'fixed',
+            'flexible_month': route.get('flexible_month') or '',
+            'trip_type': route.get('trip_type') or 'one-way',
         },
         'group_info': {
             'total_routes': int(total_routes),

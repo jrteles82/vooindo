@@ -7,6 +7,8 @@ import random
 import re
 import sys
 import time
+import warnings
+warnings.filterwarnings('ignore', category=SyntaxWarning)
 from pathlib import Path
 from urllib.parse import quote
 
@@ -457,6 +459,8 @@ def wait_for_results(page) -> float:
         page.get_by_text("Menores preços", exact=False),
         page.get_by_text("Principais voos", exact=False),
         page.get_by_text("Outros voos", exact=False),
+        page.get_by_text("a partir de", exact=False),
+        page.get_by_text("resultado encontrado", exact=False),
         page.locator("[role='main'] [role='listitem']"),
     ]:
         try:
@@ -464,7 +468,18 @@ def wait_for_results(page) -> float:
             break
         except Exception:
             pass
-    human_pause(1.2, 2.1)
+    # Fallback genérico: espera até 15s pelo corpo ter indicadores de resultado
+    try:
+        page.wait_for_function(
+            """() => {
+                const t = document.body ? document.body.innerText : '';
+                return t.includes('Resultados da busca') || t.includes('resultado encontrado') || t.includes('a partir de R$');
+            }",""",
+            timeout=15000
+        )
+    except Exception:
+        pass
+    human_pause(1.5, 2.5)
     return round(time.perf_counter() - started, 3)
 
 
@@ -517,21 +532,21 @@ def extract_summary_price(body: str) -> float | None:
 
 def try_click_result_tab(page, notes: list[str]) -> float:
     started = time.perf_counter()
-    label = "Melhor opção"
-    for target in [
-        lambda: page.get_by_text(label, exact=False),
-        lambda: page.get_by_role("button", name=re.compile(label, re.I)),
-        lambda: page.get_by_role("tab", name=re.compile(label, re.I)),
-    ]:
-        try:
-            loc = target()
-            if loc.count() > 0:
-                loc.first.click(timeout=3500)
-                notes.append("clicked_result_tab=best_option")
-                human_pause(0.9, 1.8)
-                return round(time.perf_counter() - started, 3)
-        except Exception:
-            pass
+    for label in ["Melhor opção", "Best", "Principais voos", "Top flights"]:
+        for target in [
+            lambda l=label: page.get_by_text(l, exact=False),
+            lambda l=label: page.get_by_role("button", name=re.compile(l, re.I)),
+            lambda l=label: page.get_by_role("tab", name=re.compile(l, re.I)),
+        ]:
+            try:
+                loc = target()
+                if loc.count() > 0:
+                    loc.first.click(timeout=3500)
+                    notes.append(f"clicked_result_tab={label}")
+                    human_pause(0.9, 1.8)
+                    return round(time.perf_counter() - started, 3)
+            except Exception:
+                pass
     notes.append("clicked_result_tab=none")
     return round(time.perf_counter() - started, 3)
 
@@ -1443,7 +1458,21 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                 # Recarrega a página com a data resolvida
                 url = build_url(origin, destination, outbound_date, inbound_date)
 
-            page.goto(url, wait_until="domcontentloaded")
+            # Navega via window.location.href em vez de page.goto para evitar
+            # detecção anti-bot do Google (page.goto envia headers diferentes)
+            import json as _json
+            page.evaluate(f"window.location.href = {_json.dumps(url)}")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+            import time as _tr
+            # Aguarda até 12s pelos resultados aparecerem
+            for _wait_i in range(12):
+                _body_check = page.locator('body').inner_text(timeout=3000)
+                if 'Nenhum resultado encontrado' not in _body_check and ('a partir de R$' in _body_check or 'resultado encontrado' in _body_check):
+                    break
+                _tr.sleep(1)
             notes.append(f"search_nav_s={round(time.perf_counter() - search_nav_started, 3)}")
             notes.append(f"wait_results_s={wait_for_results(page)}")
             notes.append(f"click_result_tab_s={try_click_result_tab(page, notes)}")
@@ -1460,10 +1489,94 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             notes.append(f'cards_body_len={len(cards_body)}')
             _debug = cards_body[:500].replace('\n', '\\n')
             notes.append(f'cards_body_preview={_debug}')
-            # Aborta rapido se nao tem resultados
+            # Se nao tem resultados, tenta reload e re-extração até 2x
             if 'Nenhum resultado encontrado' in cards_body or 'Algo deu errado' in cards_body:
-                notes.append('no_results_fast_abort')
-                return False, "", None, None, [], "", None, None, ""
+                _no_results_retry = 0
+                while _no_results_retry < 3 and ('Nenhum resultado encontrado' in cards_body or 'Algo deu errado' in cards_body):
+                    _no_results_retry += 1
+                    notes.append(f'no_results_reload_{_no_results_retry}')
+                    import time as _tr
+                    _tr.sleep(2.0)
+                    try:
+                        if _no_results_retry == 1:
+                            # Tenta clicar no botão de pesquisa
+                            _search_btn = page.locator("button.VfPpkd-LgbsSe, button[jsname*='p'], button[aria-label*='Pesquisar'], button:has-text('Pesquisar')")
+                            if _search_btn.count() > 0:
+                                _search_btn.first.click(timeout=5000)
+                                notes.append('no_results_click_search')
+                                try:
+                                    page.wait_for_load_state('networkidle', timeout=25000)
+                                except Exception:
+                                    pass
+                                _tr.sleep(5.0)
+                            else:
+                                page.reload(timeout=30000)
+                                _tr.sleep(4.0)
+                        elif _no_results_retry == 2:
+                            # Cria NOVA página no mesmo contexto e navega direto pra URL
+                            # (sem passar pelo google.com - contorna detecção anti-bot)
+                            notes.append('no_results_new_page_direct')
+                            try:
+                                _new_page = context.new_page()
+                                _new_page.goto(url, wait_until='domcontentloaded', timeout=25000)
+                                _tr.sleep(6.0)
+                                _new_body = _new_page.locator('body').inner_text(timeout=10000)
+                                if 'Nenhum resultado encontrado' not in _new_body and 'Algo deu errado' not in _new_body:
+                                    page = _new_page
+                                    notes.append('no_results_new_page_ok')
+                                else:
+                                    _new_page.close()
+                                    page.reload(timeout=30000)
+                                    _tr.sleep(4.0)
+                            except Exception:
+                                try:
+                                    _new_page.close()
+                                except Exception:
+                                    pass
+                                page.reload(timeout=30000)
+                                _tr.sleep(4.0)
+                        else:
+                            # Hard redirect: vai pro google.com e volta
+                            _tr.sleep(1.0)
+                            page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=15000)
+                            _tr.sleep(2.0)
+                            page.evaluate(f"window.location.href = {_json.dumps(url)}")
+                            try:
+                                page.wait_for_load_state('networkidle', timeout=25000)
+                            except Exception:
+                                pass
+                            _tr.sleep(4.0)
+                        
+                        _new_body = page.locator('body').inner_text(timeout=10000)
+                        if 'Nenhum resultado encontrado' not in _new_body and 'Algo deu errado' not in _new_body:
+                            cards_body = _new_body
+                            notes.append(f'no_results_reload_ok_attempt={_no_results_retry}')
+                            break
+                        cards_body = _new_body
+                    except Exception:
+                        pass
+                if 'Nenhum resultado encontrado' in cards_body or 'Algo deu errado' in cards_body:
+                    notes.append('no_results_fast_abort')
+                    return {
+                        "ok": False,
+                        "error": "no_results",
+                        "message": "Nenhum resultado encontrado",
+                        "notes": notes,
+                        "origin": origin,
+                        "destination": destination,
+                        "outbound_date": outbound_date,
+                        "inbound_date": inbound_date,
+                        "price": None,
+                        "url": page.url,
+                        "booking_url": "",
+                        "best_vendor": "",
+                        "best_vendor_price": None,
+                        "best_airline_vendor": None,
+                        "best_airline_price": None,
+                        "best_airline_url": None,
+                        "booking_options": [],
+                        "price_insight": "",
+                    }
             # Tenta extrair preços — se não encontrar, faz refresh e tenta de novo
             REFRESH_MAX_RETRIES = 3
             retry_count = 0
