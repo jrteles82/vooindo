@@ -166,16 +166,18 @@ def _open_date_picker(page, notes: list[str]) -> bool:
 
 
 def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo B: testa múltiplos dias do mês, escolhe o mais barato."""
+    """Modo B: testa pontos do mês + refina em volta do mais barato."""
     from datetime import datetime
     import calendar as _cal
     
     dt = datetime.strptime(flexible_month, '%Y-%m')
     last_day = _cal.monthrange(dt.year, dt.month)[1]
     
-    # Dias a testar: TODOS os dias do mês (~3s cada)
-    days_to_test = list(range(1, last_day + 1))
-    notes.append(f'flexible_oneway_testing_{len(days_to_test)}_days')
+    # Fase 1: amostragem larga (a cada 5 dias)
+    days_to_test = list(range(1, last_day + 1, 5))
+    if last_day not in days_to_test:
+        days_to_test.append(last_day)
+    notes.append(f'flexible_oneway_phase1={days_to_test}')
     
     best_result = None
     best_price = float('inf')
@@ -206,7 +208,37 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
             notes.append(f'flexible_oneway_day={day} error={e}')
     
     if best_result:
-        notes.append(f'flexible_oneway_best={best_result["outbound_date"]} price={best_result["price"]}')
+        notes.append(f'flexible_oneway_phase1_best={best_result["outbound_date"]} price={best_result["price"]}')
+        
+        # Fase 2: refina ±2 dias em volta do melhor
+        best_day = int(best_result['outbound_date'].split('-')[2])
+        refine_days = [d for d in range(best_day - 2, best_day + 3) 
+                       if 1 <= d <= last_day and d not in days_to_test]
+        if refine_days:
+            notes.append(f'flexible_oneway_phase2_refine={refine_days}')
+            for day in refine_days:
+                test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+                url = build_url(origin, destination, test_date)
+                try:
+                    t0 = time.perf_counter()
+                    page.goto(url, wait_until='domcontentloaded')
+                    wait_for_results(page)
+                    body = page.locator('body').inner_text(timeout=8000)
+                    sp = extract_summary_price(body)
+                    if sp is None:
+                        all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
+                        if all_p: sp = min(all_p)
+                    elapsed = round(time.perf_counter() - t0, 1)
+                    if sp and sp < best_price:
+                        best_price = sp
+                        best_result = {'price': sp, 'outbound_date': test_date}
+                        notes.append(f'flexible_oneway_day={day} price={sp} elapsed={elapsed}s BEST')
+                    else:
+                        notes.append(f'flexible_oneway_day={day} price={sp} elapsed={elapsed}s')
+                except Exception as e:
+                    notes.append(f'flexible_oneway_day={day} error={e}')
+        
+        notes.append(f'flexible_oneway_final={best_result["outbound_date"]} price={best_result["price"]}')
         return best_result
     
     notes.append('flexible_oneway_all_days_failed')
