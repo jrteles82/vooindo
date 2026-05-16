@@ -173,9 +173,10 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     dt = datetime.strptime(flexible_month, '%Y-%m')
     last_day = _cal.monthrange(dt.year, dt.month)[1]
     
-    # Dias a testar: 1, 10, 20, último dia do mês
-    days_to_test = [1, 10, 20, last_day]
-    days_to_test = sorted(set(d for d in days_to_test if 1 <= d <= last_day))
+    # Dias a testar: a cada 5 dias + último
+    days_to_test = list(range(1, last_day + 1, 5))
+    if last_day not in days_to_test:
+        days_to_test.append(last_day)
     notes.append(f'flexible_oneway_testing_days={days_to_test}')
     
     best_result = None
@@ -222,9 +223,10 @@ def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, 
     dt = datetime.strptime(flexible_month, '%Y-%m')
     last_day = _cal.monthrange(dt.year, dt.month)[1]
     
-    # Dias a testar: 1, 10, 20, último dia do mês
-    days_to_test = [1, 10, 20, last_day]
-    days_to_test = sorted(set(d for d in days_to_test if 1 <= d <= last_day))
+    # Dias a testar: a cada 5 dias + último
+    days_to_test = list(range(1, last_day + 1, 5))
+    if last_day not in days_to_test:
+        days_to_test.append(last_day)
     notes.append(f'flexible_roundtrip_testing_days={days_to_test}')
     
     best_result = None
