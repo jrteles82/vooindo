@@ -1750,6 +1750,8 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         "price_expensive": "#dc2626",
         "date_badge": "#dbeafe",
         "date_badge_return": "#fef3c7",
+        "date_badge_flex": "#e0e7ff",
+        "text_flex": "#4338ca",
         "separator": "#e5e7eb",
         "card_shadow": "#e9edf3",
     }
@@ -1803,7 +1805,8 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
 
     def _draw_date_cell(base_y: int, draw_h: int, row: dict):
         date_type = str(row.get("date_type") or "fixed")
-        if date_type == 'flexible' and row.get('flexible_month'):
+        is_flexible = date_type == 'flexible' and row.get('flexible_month')
+        if is_flexible:
             fm = row['flexible_month']
             dt = datetime.strptime(fm, '%Y-%m')
             mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
@@ -1818,10 +1821,12 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
         badge_w = min(col_widths[1] - scaled5(8), badge_text_w + scaled5(12))
         date_x = date_col_x + max(0, (col_widths[1] - badge_w) / 2)
         badge_y = base_y + (draw_h - badge_h) / 2
-        draw.rounded_rectangle([date_x, badge_y, date_x + badge_w, badge_y + badge_h], radius=scaled5(6), fill=colors["date_badge"])
+        badge_fill = colors["date_badge_flex"] if is_flexible else colors["date_badge"]
+        draw.rounded_rectangle([date_x, badge_y, date_x + badge_w, badge_y + badge_h], radius=scaled5(6), fill=badge_fill)
         text_x = date_x + (badge_w - badge_text_w) / 2 - badge_bbox[0]
         text_y = badge_y + (badge_h - badge_text_h) / 2 - badge_bbox[1]
-        draw.text((text_x, text_y), date_txt, font=small_font, fill=colors["text"])
+        text_fill = colors["text_flex"] if is_flexible else colors["text"]
+        draw.text((text_x, text_y), date_txt, font=small_font, fill=text_fill)
 
     def _draw_price_cell(base_y: int, draw_h: int, row: dict):
         vendor_txt = _price_vendor_display(row)
@@ -2028,8 +2033,9 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                 except Exception:
                     pass
             if url:
+                flag = '🔄 ' if date_type == 'flexible' else ''
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
-                lines.append(f"• <a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
+                lines.append(f"• {flag}<a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
             else:
                 price_fmt = row.get('price_fmt') or f"R$ {row.get('price', 0):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date} — {price_fmt} (link indisponível)"
