@@ -363,10 +363,11 @@ def _recover_missed_report(conn, bot, loop):
 
 def sleep_until_next_slot(interval_seconds: int, check_session: bool = False):
     now = now_local()
-    # Alinha na grade do dia, não em "hora cheia + intervalo".
-    # Ex.: 90min => 00:00, 01:30, 03:00 ... 16:30, 18:00, 19:30.
-    # Antes, se o serviço reiniciasse às 17:42, calculava 18:30 indevidamente.
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Alinha na grade do dia começando em 01:00, não em 00:00.
+    # Ex.: 90min => 01:00, 02:30, 04:00 ... 22:00, 23:30.
+    day_start = now.replace(hour=1, minute=0, second=0, microsecond=0)
+    if now < day_start:
+        day_start -= timedelta(days=1)
     elapsed_today = int((now - day_start).total_seconds())
     interval = max(60, int(interval_seconds or 60))
     next_offset = ((elapsed_today // interval) + 1) * interval
