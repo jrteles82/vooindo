@@ -3414,31 +3414,18 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data.clear()
     context.user_data['bot_msg_ids'] = []
-
-    # Admin: pergunta data fixa ou flexível primeiro
-    if admin:
-        context.user_data['date_type'] = 'fixed'  # default
-        context.user_data['trip_type'] = 'one-way'
-        await update.message.reply_text(
-            '\n➕ *Nova rota*\n────────────────────────\n\n📅 *Data fixa ou flexível?*\n\n• *Fixa* — uma data específica (ex: 25/12/2026)\n• *Flexível* — melhor preço do mês (ex: Dezembro 2026)',
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton('📌 Data fixa', callback_data='datetype:fixed')],
-                [InlineKeyboardButton('🔄 Data flexível', callback_data='datetype:flexible')],
-                [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
-            ]),
-        )
-        return ASK_DATE_TYPE
-
-    # Não-admin: fluxo normal (data fixa, pergunta origem)
     context.user_data['date_type'] = 'fixed'
-    context.user_data['airport_stage'] = 'origem'
+    context.user_data['trip_type'] = 'one-way'
     await update.message.reply_text(
-        '\n➕ *Nova rota*\n────────────────────────\n\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.\n\nSe quiser sair, use o botão abaixo.',
+        '\n➕ *Nova rota*\n────────────────────────\n\n📅 *Data fixa ou flexível?*\n\n• *Fixa* — uma data específica (ex: 25/12/2026)\n• *Flexível* — melhor preço do mês (ex: Dezembro 2026)',
         parse_mode='Markdown',
-        reply_markup=force_reply_markup('Ex.: PVH ou Miami'),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('📌 Data fixa', callback_data='datetype:fixed')],
+            [InlineKeyboardButton('🔄 Data flexível', callback_data='datetype:flexible')],
+            [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
+        ]),
     )
-    return ASK_ORIGIN
+    return ASK_DATE_TYPE
 
 
 async def addrota_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
