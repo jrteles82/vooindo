@@ -273,10 +273,12 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
                     all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
                     if all_p: sp = min(all_p)
                 et = round(time.perf_counter() - t0, 1)
-                if sp and sp < best['price']:
+                if sp is not None and (sp < best['price'] or (sp == best['price'] and day < best['day'])):
                     best = {'day': day, 'price': sp}
                     best_date = test_date
                     notes.append(f'flexible_refine_day={day} price={sp} BEST')
+                elif sp == best['price']:
+                    notes.append(f'flexible_refine_day={day} price={sp} SAME')
                 else:
                     notes.append(f'flexible_refine_day={day} price={sp} elapsed={et}s')
             except Exception as e:
