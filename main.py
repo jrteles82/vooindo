@@ -908,10 +908,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         if data.get("ok"):
                             return FlightResult(
                                 site="google_flights",
-                                origin=r.origin,
-                                destination=r.destination,
-                                outbound_date=r.outbound_date,
-                                inbound_date=r.inbound_date,
+                                origin=data.get("origin", r.origin),
+                                destination=data.get("destination", r.destination),
+                                outbound_date=data.get("outbound_date", r.outbound_date),
+                                inbound_date=data.get("inbound_date", r.inbound_date),
                                 trip_type=r.trip_type,
                                 price=data.get("price"),
                                 currency="BRL",
