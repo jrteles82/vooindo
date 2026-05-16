@@ -3417,7 +3417,7 @@ async def addrota_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('📌 Data fixa', callback_data='datetype:fixed')],
-                [InlineKeyboardButton('📅 Mês flexível', callback_data='datetype:flexible')],
+                [InlineKeyboardButton('📅 Data flexível', callback_data='datetype:flexible')],
                 [InlineKeyboardButton('❌ Cancelar', callback_data='addrota:cancel')],
             ]),
         )
@@ -3444,7 +3444,7 @@ async def addrota_date_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['date_type'] = 'flexible'
         context.user_data['trip_type'] = 'one-way'
         context.user_data['airport_stage'] = 'origem'
-        await query.edit_message_text('✅ *Mês flexível* selecionado.')
+        await query.edit_message_text('✅ *Data flexível* selecionada.')
         await query.message.reply_text(
             '\n🔎 *Buscar aeroporto de origem*\nResponda esta mensagem com a *origem* por código, cidade ou aeroporto.\n\nExemplos: `PVH`, `Miami`, `Guarulhos`, `Lisboa`.',
             parse_mode='Markdown',
@@ -3485,7 +3485,7 @@ async def addrota_trip_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def addrota_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback: usuário escolheu o mês flexível (após origem e destino)."""
+    """Callback: usuário escolheu o mês da data flexível (após origem e destino)."""
     query = update.callback_query
     await query.answer()
     _, month_str = query.data.split(':', 1)
