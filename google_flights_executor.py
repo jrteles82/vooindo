@@ -254,8 +254,10 @@ def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, 
     last_day = _cal.monthrange(dt.year, dt.month)[1]
     
     # Dias a testar: TODOS os dias do mês (~3s cada)
-    days_to_test = list(range(1, last_day + 1))
-    notes.append(f'flexible_roundtrip_testing_{len(days_to_test)}_days')
+    if last_day not in days_to_test:
+        days_to_test.append(last_day)
+    notes.append(f'flexible_roundtrip_phase1={days_to_test}')
+    days_to_test = list(range(1, last_day + 1, 5))
     
     best_result = None
     best_price = float('inf')
