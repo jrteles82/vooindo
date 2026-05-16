@@ -5711,8 +5711,8 @@ async def _show_comments_list(query, chat_id: str, page: int = 0):
     await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
-async def _show_admin_comments(query, chat_id: str, page: int = 0):
-    """Admin: modera comentários pendentes."""
+async def _show_admin_comments(query, chat_id: str, page: int = 0, show_approved: bool = False):
+    """Admin: modera comentários pendentes e gerencia aprovados."""
     from comments import get_pending_comments, get_approved_comments
     text = '💬 *Moderação de Comentários*\n────────────────────────\n\n'
     rows, total_pages = get_pending_comments(page)
@@ -5726,9 +5726,18 @@ async def _show_admin_comments(query, chat_id: str, page: int = 0):
             text += f'_{txt_preview}_'
     else:
         text += 'Nenhum comentário pendente.\n'
-    approved, _ = get_approved_comments(0)
-    total_approved = len(approved) if isinstance(approved, list) else 0
-    text += f'\n\n✅ Aprovados: {total_approved}'
+
+    # Aprovados (com opcao de excluir)
+    approved_rows, _ = get_approved_comments(0)
+    total_approved = len(approved_rows) if isinstance(approved_rows, list) else 0
+    text += f'\n\n✅ *Aprovados: {total_approved}*\n'
+
+    if show_approved and approved_rows:
+        for r in approved_rows[:10]:
+            dt = r['created_at'].strftime('%d/%m %H:%M') if r['created_at'] else ''
+            preview = r['text'][:80] + '...' if len(r['text']) > 80 else r['text']
+            text += f'\n#{r["id"]} ({dt})\n_{preview}_'
+
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton('◀ Anterior', callback_data=f'comment:adminlist:{page - 1}'))
@@ -5744,6 +5753,15 @@ async def _show_admin_comments(query, chat_id: str, page: int = 0):
                 InlineKeyboardButton(f'❌ #{r["id"]}', callback_data=f'comment:reject:{r["id"]}'),
                 InlineKeyboardButton(f'🗑 #{r["id"]}', callback_data=f'comment:admindelete:{r["id"]}'),
             ])
+    # Botoes para ver/excluir aprovados
+    if show_approved and approved_rows:
+        for r in approved_rows[:5]:
+            keyboard.append([
+                InlineKeyboardButton(f'🗑 Excluir aprovado #{r["id"]}', callback_data=f'comment:admindelete:{r["id"]}'),
+            ])
+        keyboard.append([InlineKeyboardButton('🔙 Ocultar aprovados', callback_data='comment:adminlist:0')])
+    else:
+        keyboard.append([InlineKeyboardButton('📋 Ver aprovados', callback_data='comment:adminlist_approved')])
     keyboard.append([InlineKeyboardButton('⬅️ Voltar ao painel', callback_data='painel:back')])
     await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -5765,6 +5783,8 @@ async def comment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'adminlist':
         page = int(parts[2]) if len(parts) > 2 else 0
         await _show_admin_comments(query, chat_id, page)
+    elif action == 'adminlist_approved':
+        await _show_admin_comments(query, chat_id, 0, show_approved=True)
     elif action == 'write':
         context.user_data['comment_writing'] = True
         await query.message.reply_text(
