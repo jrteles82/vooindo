@@ -975,7 +975,7 @@ def _vendor_from_card_text(txt: str) -> str:
     return ''
 
 
-def maybe_open_booking(page, summary_price: float | None, notes: list[str], allow_agencies: bool = False, is_international: bool = False) -> tuple[bool, str, float | None, float | None, list[dict], str, tuple[str, float, float | None, list[dict], str] | None, tuple[str, float, float | None, list[dict], str] | None, str]:
+def maybe_open_booking(page, summary_price: float | None, notes: list[str], allow_agencies: bool = False, is_international: bool = False, booking_url_fallback: list | None = None) -> tuple[bool, str, float | None, float | None, list[dict], str, tuple[str, float, float | None, list[dict], str] | None, tuple[str, float, float | None, list[dict], str] | None, str]:
     booking_started = time.perf_counter()
     # Seletores semânticos estáveis — sem classes obfuscadas que mudam a cada deploy do Google
     # Seletores semânticos estáveis — classes rotacionadas pelo Google
@@ -1057,6 +1057,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
     first_agency_fallback: tuple[str, float, str] | None = None
     found_airline_prices: dict[tuple[str, float], tuple[str, float, float | None, list[dict], str]] = {}
     final_price_insight = ""
+    if booking_url_fallback is None:
+        booking_url_fallback = []
 
     def _try_go_back() -> float:
         started = time.perf_counter()
@@ -1144,6 +1146,9 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                     options,
                     vendor_link,
                 )
+            # Salva URL no fallback imediatamente — sobrevive a crash futuro
+            if vendor_link and '/travel/flights/booking' in vendor_link:
+                booking_url_fallback.append(vendor_link)
 
         # Atualiza melhor agência
         for ao in [o for o in options if not o.get('is_airline')]:
@@ -1155,6 +1160,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
             if best_agency is None or ao['price'] < best_agency[1]:
                 notes.append(f"booking_agency_found_card_{idx}={ao['vendor']} booking={ao['price']} card={card_price}")
                 best_agency = (ao['vendor'], ao['price'], card_price, options, vendor_link)
+            if vendor_link and '/travel/flights/booking' in vendor_link:
+                booking_url_fallback.append(vendor_link)
 
         go_back_s = _try_go_back()
         return False  # sempre continua — varre todos os cards
@@ -1640,6 +1647,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     price_insight = pi_main
                     notes.append('price_insight_from_main_page')
             _booking_price = overall_min if overall_min is not None else summary_price
+            _booking_fallback_urls: list[str] = []
             if SKIP_BOOKING:
                 # Modo rápido: pula navegação do booking, usa dados da página principal
                 notes.append('skip_booking=True')
@@ -1660,7 +1668,7 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                     booking_followed = False
                     for _booking_attempt in range(3):
                         try:
-                            followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl)
+                            followed, best_vendor, best_vendor_price, visible_card_price, booking_options, booking_url, best_airline, best_agency, price_insight = maybe_open_booking(page, _booking_price, notes, allow_agencies=ALLOW_AGENCIES, is_international=is_intl, booking_url_fallback=_booking_fallback_urls)
                             booking_followed = followed
                             if booking_url:
                                 break
@@ -1704,8 +1712,13 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if booking_followed and not booking_url:
                 notes.append('booking_no_url_after_retries_keeping_price')
             if not booking_url:
-                booking_url = page.url
-                notes.append(f'booking_url_fallback_to_page_url={booking_url[:80]}')
+                # Prioriza URL de booking extraída antes do crash (opção #4)
+                if _booking_fallback_urls:
+                    booking_url = _booking_fallback_urls[0]  # melhor URL encontrada
+                    notes.append(f'booking_url_from_card_fallback={booking_url[:80]}')
+                else:
+                    booking_url = page.url
+                    notes.append(f'booking_url_fallback_to_page_url={booking_url[:80]}')
             # Garante price_insight mesmo se maybe_open_booking não retornou
             if not price_insight and cards_body:
                 pi_fallback = _extract_price_insight_from_body(cards_body)
