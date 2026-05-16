@@ -173,11 +173,10 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     dt = datetime.strptime(flexible_month, '%Y-%m')
     last_day = _cal.monthrange(dt.year, dt.month)[1]
     
-    # Fase 1: amostragem larga (a cada 5 dias)
-    days_to_test = list(range(1, last_day + 1, 5))
+    days_to_test = list(range(1, last_day + 1))
     if last_day not in days_to_test:
         days_to_test.append(last_day)
-    notes.append(f'flexible_oneway_phase1={days_to_test}')
+    notes.append(f'flexible_oneway_scraping_all={days_to_test}')
     
     best_result = None
     best_price = float('inf')
@@ -210,7 +209,6 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     if best_result:
         notes.append(f'flexible_oneway_phase1_best={best_result["outbound_date"]} price={best_result["price"]}')
         
-        # Fase 2: refina ±2 dias em volta do melhor
         best_day = int(best_result['outbound_date'].split('-')[2])
         refine_days = [d for d in range(best_day - 2, best_day + 3) 
                        if 1 <= d <= last_day and d not in days_to_test]
@@ -256,8 +254,8 @@ def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, 
     # Dias a testar: TODOS os dias do mês (~3s cada)
     if last_day not in days_to_test:
         days_to_test.append(last_day)
-    notes.append(f'flexible_roundtrip_phase1={days_to_test}')
-    days_to_test = list(range(1, last_day + 1, 5))
+    notes.append(f'flexible_roundtrip_scraping_all={days_to_test}')
+    days_to_test = list(range(1, last_day + 1))
     
     best_result = None
     best_price = float('inf')
