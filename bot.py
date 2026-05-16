@@ -5680,8 +5680,10 @@ async def _show_comments_list(query, chat_id: str, page: int = 0):
     else:
         for r in rows:
             dt = r['created_at'].strftime('%d/%m/%y %H:%M') if r['created_at'] else ''
-            name = r['username'] or f'Usuário #{r["user_id"]}'
-            text += f'*{name}* — {dt}\n'
+            # Mostra apenas parte do user_id por privacidade (ex: ..2345..)
+            uid_str = str(r['user_id'])
+            masked = f'..{uid_str[-4:]}..' if len(uid_str) > 4 else f'..{uid_str}..'
+            text += f'*Usuário {masked}* — {dt}\n'
             text += f'{r["text"][:200]}\n'
             text += '─' * 30 + '\n'
     nav = []
