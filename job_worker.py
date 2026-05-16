@@ -781,6 +781,9 @@ def _route_cache_key(route_info: dict, mode: str) -> str:
 
 
 def _route_cache_get(conn, cache_key: str) -> list[dict] | None:
+    import os as _os
+    if _os.environ.get('VOOINDO_DISABLE_ROUTE_CACHE') == '1':
+        return None
     import json as _json
     row = conn.execute(sql(f"""
         SELECT result_data, num_results
@@ -808,6 +811,9 @@ def _route_cache_get(conn, cache_key: str) -> list[dict] | None:
 
 
 def _route_cache_put(conn, cache_key: str, route_info: dict, mode: str, parsed: list[dict]) -> None:
+    import os as _os
+    if _os.environ.get('VOOINDO_DISABLE_ROUTE_CACHE') == '1':
+        return
     if not parsed:
         return
     # Cacheia apenas resultados com preço para evitar propagar falha transitória.
