@@ -2033,7 +2033,7 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
                 except Exception:
                     pass
             if url:
-                flag = '🔄 ' if date_type == 'flexible' else ''
+                flag = '🔄 ' if date_type == 'flexible' else '📌 '
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
                 lines.append(f"• {flag}<a href=\"{escape(url, quote=True)}\">{escape(label)}</a>")
             else:
