@@ -1076,6 +1076,7 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton('ℹ️ Ajuda e instruções', callback_data='menu:manual')])
     if not admin:
         keyboard.append([InlineKeyboardButton(suporte_label, callback_data='menu:support')])
+        keyboard.append([InlineKeyboardButton('💬 Comentários', callback_data='menu:comments')])
     if admin:
         keyboard.append([InlineKeyboardButton('🛠 Painel', callback_data='menu:adminpainel')])
     return InlineKeyboardMarkup(keyboard)
@@ -1234,6 +1235,11 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
     atendimento_label = '📥 Atendimento'
     if admin_unread_support:
         atendimento_label += f' ({admin_unread_support})'
+    from comments import count_pending_comments as _cpc
+    _pend_comments = count_pending_comments()
+    comments_label = '💬 Comentários'
+    if _pend_comments:
+        comments_label += f' ({_pend_comments})'
     return InlineKeyboardMarkup([
         # Gestão
         [InlineKeyboardButton('👤 Usuários', callback_data='painel:usuarios'),
@@ -1261,6 +1267,7 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
         [InlineKeyboardButton('🔍 Verificar Google', callback_data='painel:check_session'),
          InlineKeyboardButton('📊 Desempenho', callback_data='painel:desempenho')],
         [InlineKeyboardButton(atendimento_label, callback_data='menu:adminsupport')],
+        [InlineKeyboardButton(comments_label, callback_data='menu:admincomments')],
         # Voltar
         [InlineKeyboardButton('🏠 Menu principal', callback_data='menu:back')],
     ])
@@ -4619,6 +4626,18 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.close()
             await query.answer()
             await query.message.reply_text('\U0001f4e5 *Caixa de entrada do atendimento*', parse_mode='Markdown', reply_markup=list_support_conversations_markup(rows, admin=True))
+        elif action == 'comments':
+            await query.answer()
+            await _show_comments_list(query, chat_id, page=0)
+        elif action == 'admincomments':
+            conn = get_db()
+            admin = is_admin_chat(conn, chat_id)
+            conn.close()
+            if not admin:
+                await query.answer('N\u00e3o autorizado', show_alert=True)
+                return ConversationHandler.END
+            await query.answer()
+            await _show_admin_comments(query, chat_id, page=0)
         elif action == 'adminpainel':
             conn = get_db()
             admin = is_admin_chat(conn, chat_id)
@@ -5590,6 +5609,8 @@ async def run_bot():
     app.add_handler(conv)
     app.add_handler(limite_conv)
     app.add_handler(support_conv)
+    app.add_handler(CallbackQueryHandler(comment_callback, pattern=r'^comment:'))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, comment_message_handler))
     renovar_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(renovar_sessao_callback, pattern=r'^painel:renovar_sessao$')],
         states={
@@ -5641,6 +5662,223 @@ async def run_bot():
 
 def main():
     asyncio.run(run_bot())
+
+
+
+# ═══════════════════════════════════════════════════════════════
+# Sistema de Comentários / Mural
+# ═══════════════════════════════════════════════════════════════
+
+async def _show_comments_list(query, chat_id: str, page: int = 0):
+    """Mostra comentários aprovados com paginação."""
+    from comments import get_approved_comments
+    rows, total_pages = get_approved_comments(page)
+    text = '💬 *Comentários dos usuários*\n'
+    text += 'Visíveis para todos após aprovação do admin.\n────────────────────────\n\n'
+    if not rows:
+        text += 'Nenhum comentário ainda.\n\nSeja o primeiro a comentar!'
+    else:
+        for r in rows:
+            dt = r['created_at'].strftime('%d/%m/%y %H:%M') if r['created_at'] else ''
+            name = r['username'] or f'Usuário #{r["user_id"]}'
+            text += f'*{name}* — {dt}\n'
+            text += f'{r["text"][:200]}\n'
+            text += '─' * 30 + '\n'
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton('◀ Anterior', callback_data=f'comment:list:{page - 1}'))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton('Próximo ▶', callback_data=f'comment:list:{page + 1}'))
+    keyboard = []
+    if nav:
+        keyboard.append(nav)
+    keyboard.append([InlineKeyboardButton('✏️ Deixar comentário', callback_data='comment:write')])
+    keyboard.append([InlineKeyboardButton('📝 Meus comentários', callback_data='comment:my')])
+    keyboard.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
+    await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def _show_admin_comments(query, chat_id: str, page: int = 0):
+    """Admin: modera comentários pendentes."""
+    from comments import get_pending_comments, get_approved_comments
+    text = '💬 *Moderação de Comentários*\n────────────────────────\n\n'
+    rows, total_pages = get_pending_comments(page)
+    if rows:
+        text += '*📥 Pendentes:*\n'
+        for r in rows:
+            name = r.get('first_name') or r.get('username') or f'#{r["user_id"]}'
+            dt = r['created_at'].strftime('%d/%m %H:%M') if r['created_at'] else ''
+            text += f'\n#{r["id"]} *{name}* ({dt})\n'
+            txt_preview = r['text'][:100] + '...' if len(r['text']) > 100 else r['text']
+            text += f'_{txt_preview}_'
+    else:
+        text += 'Nenhum comentário pendente.\n'
+    approved, _ = get_approved_comments(0)
+    total_approved = len(approved) if isinstance(approved, list) else 0
+    text += f'\n\n✅ Aprovados: {total_approved}'
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton('◀ Anterior', callback_data=f'comment:adminlist:{page - 1}'))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton('Próximo ▶', callback_data=f'comment:adminlist:{page + 1}'))
+    keyboard = []
+    if nav:
+        keyboard.append(nav)
+    if rows:
+        for r in rows[:5]:
+            keyboard.append([
+                InlineKeyboardButton(f'✅ #{r["id"]}', callback_data=f'comment:approve:{r["id"]}'),
+                InlineKeyboardButton(f'❌ #{r["id"]}', callback_data=f'comment:reject:{r["id"]}'),
+                InlineKeyboardButton(f'🗑 #{r["id"]}', callback_data=f'comment:admindelete:{r["id"]}'),
+            ])
+    keyboard.append([InlineKeyboardButton('⬅️ Voltar ao painel', callback_data='painel:back')])
+    await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def comment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manipula callbacks de comentários."""
+    query = update.callback_query
+    data = query.data
+    chat_id = str(query.message.chat.id)
+    user_id = int(query.from_user.id)
+    await query.answer()
+
+    parts = data.split(':')
+    action = parts[1] if len(parts) > 1 else ''
+
+    if action == 'list':
+        page = int(parts[2]) if len(parts) > 2 else 0
+        await _show_comments_list(query, chat_id, page)
+    elif action == 'adminlist':
+        page = int(parts[2]) if len(parts) > 2 else 0
+        await _show_admin_comments(query, chat_id, page)
+    elif action == 'write':
+        context.user_data['comment_writing'] = True
+        await query.message.reply_text(
+            '✏️ Digite seu comentário (máx. 500 caracteres).\n'
+            'Ele será analisado pelo admin antes de ficar visível para todos.',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('❌ Cancelar', callback_data='comment:cancel')]
+            ])
+        )
+    elif action == 'cancel':
+        context.user_data.pop('comment_writing', None)
+        context.user_data.pop('comment_text', None)
+        await query.message.reply_text('❌ Comentário cancelado.', reply_markup=full_menu_markup(chat_id))
+    elif action == 'save':
+        text = context.user_data.get('comment_text', '')
+        if not text:
+            await query.message.reply_text('Nenhum texto para salvar.')
+            return
+        from comments import create_comment
+        from db import get_bot_user_by_chat
+        conn = get_db()
+        row = get_bot_user_by_chat(conn, chat_id)
+        uid = row['user_id'] if row else int(chat_id)
+        name = row.get('first_name', '') if row else ''
+        conn.close()
+        cid = create_comment(uid, chat_id, name, text)
+        context.user_data.pop('comment_writing', None)
+        context.user_data.pop('comment_text', None)
+        await query.message.reply_text(
+            f'✅ Comentário #{cid} enviado!\n'
+            'Ele será analisado pelo admin antes de ficar visível.',
+            reply_markup=full_menu_markup(chat_id)
+        )
+    elif action == 'approve':
+        cid = int(parts[2])
+        from comments import moderate_comment
+        conn = get_db()
+        admin = is_admin_chat(conn, chat_id)
+        conn.close()
+        if not admin:
+            await query.message.reply_text('🚫 Não autorizado.')
+            return
+        moderate_comment(cid, 'approve', user_id)
+        await query.message.reply_text(f'✅ Comentário #{cid} aprovado!')
+        await _show_admin_comments(query, chat_id, 0)
+    elif action == 'reject':
+        cid = int(parts[2])
+        from comments import moderate_comment
+        conn = get_db()
+        admin = is_admin_chat(conn, chat_id)
+        conn.close()
+        if not admin:
+            await query.message.reply_text('🚫 Não autorizado.')
+            return
+        moderate_comment(cid, 'reject', user_id)
+        await query.message.reply_text(f'❌ Comentário #{cid} rejeitado.')
+        await _show_admin_comments(query, chat_id, 0)
+    elif action == 'admindelete':
+        cid = int(parts[2])
+        from comments import moderate_comment
+        conn = get_db()
+        admin = is_admin_chat(conn, chat_id)
+        conn.close()
+        if not admin:
+            await query.message.reply_text('🚫 Não autorizado.')
+            return
+        moderate_comment(cid, 'delete', user_id)
+        await query.message.reply_text(f'🗑 Comentário #{cid} excluído.')
+        await _show_admin_comments(query, chat_id, 0)
+    elif action == 'my':
+        from comments import get_user_pending_comments, delete_own_comment
+        from db import get_bot_user_by_chat
+        conn = get_db()
+        row = get_bot_user_by_chat(conn, chat_id)
+        uid = row['user_id'] if row else int(chat_id)
+        conn.close()
+        my_comments = get_user_pending_comments(uid)
+        if not my_comments:
+            await query.message.reply_text('Você ainda não fez nenhum comentário.', reply_markup=full_menu_markup(chat_id))
+            return
+        text = '📝 *Meus comentários*\n────────────────────────\n'
+        keyboard = []
+        for c in my_comments:
+            status_emoji = '⏳' if c['status'] == 'pending' else '✅'
+            dt = c['created_at'].strftime('%d/%m %H:%M') if c['created_at'] else ''
+            preview = c['text'][:60] + ('...' if len(c['text']) > 60 else '')
+            text += f'\n#{c["id"]} {status_emoji} {dt}\n_{preview}_\n'
+            if c['status'] == 'pending':
+                keyboard.append([InlineKeyboardButton(f'🗑 Apagar #{c["id"]}', callback_data=f'comment:del:{c["id"]}')])
+        keyboard.append([InlineKeyboardButton('⬅️ Voltar', callback_data='menu:comments')])
+        await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    elif action == 'del':
+        cid = int(parts[2])
+        from comments import delete_own_comment
+        from db import get_bot_user_by_chat
+        conn = get_db()
+        row = get_bot_user_by_chat(conn, chat_id)
+        uid = row['user_id'] if row else int(chat_id)
+        conn.close()
+        ok = delete_own_comment(cid, uid)
+        if ok:
+            await query.message.reply_text(f'🗑 Comentário #{cid} apagado!')
+        else:
+            await query.message.reply_text('Não foi possível apagar. Só é permitido apagar comentários pendentes.')
+        await _show_comments_list(query, chat_id, 0)
+
+
+async def comment_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Recebe texto do comentário do usuário."""
+    if not context.user_data.get('comment_writing'):
+        return
+    text = update.message.text
+    if len(text) > 500:
+        await update.message.reply_text(f'❌ Máximo de 500 caracteres. Seu texto tem {len(text)} caracteres.')
+        return
+    context.user_data['comment_text'] = text
+    await update.message.reply_text(
+        '📝 Confirme seu comentário:\n\n'
+        f'_{text}_\n\n'
+        'Ele passará por aprovação do admin antes de ficar visível.',
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ Confirmar', callback_data='comment:save')],
+            [InlineKeyboardButton('✏️ Editar', callback_data='comment:write')],
+            [InlineKeyboardButton('❌ Cancelar', callback_data='comment:cancel')],
+        ])
+    )
 
 
 if __name__ == '__main__':
