@@ -5696,7 +5696,7 @@ async def _show_comments_list(query, chat_id: str, page: int = 0):
             masked = f'..{cid_str[-4:]}..' if len(cid_str) > 4 else f'..{cid_str}..'
             text += f'*Usuário {masked}* — {dt}\n'
             text += f'{r["text"][:200]}\n'
-            text += '─' * 30 + '\n'
+            text += '─' * 25 + '\n'
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton('◀ Anterior', callback_data=f'comment:list:{page - 1}'))
