@@ -1076,7 +1076,7 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton('ℹ️ Ajuda e instruções', callback_data='menu:manual')])
     if not admin:
         keyboard.append([InlineKeyboardButton(suporte_label, callback_data='menu:support')])
-        keyboard.append([InlineKeyboardButton('💬 Comentários', callback_data='menu:comments')])
+        keyboard.append([InlineKeyboardButton('📝 Comentários', callback_data='menu:comments')])
     if admin:
         keyboard.append([InlineKeyboardButton('🛠 Painel', callback_data='menu:adminpainel')])
     return InlineKeyboardMarkup(keyboard)
@@ -5691,9 +5691,9 @@ async def _show_comments_list(query, chat_id: str, page: int = 0):
     else:
         for r in rows:
             dt = r['created_at'].strftime('%d/%m/%y %H:%M') if r['created_at'] else ''
-            # Mostra apenas parte do user_id por privacidade (ex: ..2345..)
-            uid_str = str(r['user_id'])
-            masked = f'..{uid_str[-4:]}..' if len(uid_str) > 4 else f'..{uid_str}..'
+            # Mostra apenas parte do chat_id por privacidade (ex: ..6789..)
+            cid_str = str(r['chat_id'])
+            masked = f'..{cid_str[-4:]}..' if len(cid_str) > 4 else f'..{cid_str}..'
             text += f'*Usuário {masked}* — {dt}\n'
             text += f'{r["text"][:200]}\n'
             text += '─' * 30 + '\n'
