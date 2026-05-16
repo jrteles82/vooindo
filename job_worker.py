@@ -1009,14 +1009,34 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         _, expected_routes = _expected_family_route_count(conn, group_key)
 
         if not route_results:
-            logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
-            return
+            # Verifica se todos os jobs do grupo terminaram (status=done)
+            # Se sim, consolida mesmo sem resultados (evita bloqueio infinito)
+            _all_done = conn.execute(sql('''
+                SELECT COUNT(*) = 0 AS any_pending FROM scan_jobs 
+                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '\\')
+                AND status IN ('pending','running')
+            '''), (group_key, _family_group_like_pattern(group_key))).fetchone()
+            _all_done = _all_done['any_pending'] if isinstance(_all_done, dict) else _all_done[0] if _all_done else False
+            if _all_done:
+                logger.info('[job-worker] group_key=%s | todos os jobs finalizados, consolidando sem resultados', group_key)
+            else:
+                logger.info('[job-worker] group_key=%s | sem resultados para consolidar', group_key)
+                return
         if expected_routes and len(route_results) < expected_routes:
-            logger.info(
-                '[job-worker] group_key=%s | family=%s | aguardando todas as rotas (%s/%s)',
-                group_key, family_group_key, len(route_results), expected_routes,
-            )
-            return
+            # Verifica se os jobs restantes ja terminaram (rotas sem resultado)
+            _still_pending = conn.execute(sql('''
+                SELECT COUNT(*) AS c FROM scan_jobs 
+                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '\\')
+                AND status IN ('pending','running')
+            '''), (group_key, _family_group_like_pattern(group_key))).fetchone()
+            _still_pending = _still_pending['c'] if isinstance(_still_pending, dict) else _still_pending[0] if _still_pending else 0
+            if _still_pending == 0:
+                logger.info('[job-worker] group_key=%s | family=%s | rodadas sem resultado, consolidando (%s/%s)',
+                    group_key, family_group_key, len(route_results), expected_routes)
+            else:
+                logger.info('[job-worker] group_key=%s | family=%s | aguardando todas as rotas (%s/%s)',
+                    group_key, family_group_key, len(route_results), expected_routes)
+                return
 
         total_results = sum(
             len((dict(r) if isinstance(r, dict) else {}).get('_parsed_rows') or [])
