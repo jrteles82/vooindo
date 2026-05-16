@@ -649,6 +649,8 @@ def _expanded_route_variants(route: RouteQuery) -> list[RouteQuery]:
                 outbound_date=route.outbound_date,
                 inbound_date=route.inbound_date,
                 trip_type=route.trip_type,
+                date_type=route.date_type,
+                flexible_month=route.flexible_month,
             ))
     return variants
 
@@ -685,6 +687,8 @@ def _copy_result_to_original_route(result: FlightResult, original: RouteQuery, v
         outbound_date=original.outbound_date,
         inbound_date=original.inbound_date,
         trip_type=original.trip_type,
+        date_type=original.date_type,
+        flexible_month=original.flexible_month,
         price=result.price,
         currency=result.currency,
         url=result.url,
@@ -792,6 +796,9 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
     results_all: list[dict] = []
     db = Database()
     
+    for _rd in routes:
+        logger.info('[run_scan] route %s->%s date_type=%s flexible_month=%s', _rd.origin, _rd.destination, getattr(_rd, 'date_type', 'N/A'), getattr(_rd, 'flexible_month', 'N/A'))
+    
     try:
         # Para evitar QUALQUER conflito de Playwright com Asyncio, 
         # vamos rodar cada busca como um processo SEPARADO via subprocess.
@@ -823,11 +830,12 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     env["GOOGLE_FLIGHTS_SKIP_BOOKING"] = "1"
                 # Chrome é o único navegador suportado
                 
-                # Modo flexível: define env vars para o executor usar date picker
+                # Modo flexível: passa por argumentos (não env vars — perdem-se em threads)
                 if r.date_type == 'flexible' and r.flexible_month:
-                    env["GOOGLE_FLIGHTS_FLEXIBLE"] = "1"
-                    env["GOOGLE_FLIGHTS_TRIP_TYPE"] = r.trip_type or "one-way"
-                    env["GOOGLE_FLIGHTS_MONTH"] = r.flexible_month
+                    cmd.append('--flexible')
+                    cmd.append(r.trip_type or 'one-way')
+                    cmd.append(r.flexible_month)
+                    logger.info('[scraper] FLEXIBLE CMD %s->%s: %s', r.origin, r.destination, cmd)
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:

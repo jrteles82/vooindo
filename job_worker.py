@@ -772,6 +772,8 @@ def _route_cache_key(route_info: dict, mode: str) -> str:
         'destination': str(route_info.get('destination') or '').upper(),
         'outbound_date': str(route_info.get('outbound_date') or ''),
         'inbound_date': str(route_info.get('inbound_date') or ''),
+        'date_type': str(route_info.get('date_type') or 'fixed'),
+        'flexible_month': str(route_info.get('flexible_month') or ''),
         'mode': str(mode or ''),
     }
     raw = _json.dumps(payload, sort_keys=True, ensure_ascii=True)
@@ -1440,6 +1442,8 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         logger.info('[job-worker] job_id=%s | NO-PER-ROUTE: route NULA e group_key VAZIA | payload_len=%s', job_id, len(_payload_str))
     
     logger.info('[job-worker] job_id=%s | LEGACY path (route_info=%s group_key=%s)', job_id, _route_info is not None, bool(_group_key))
+    for _rd in routes:
+        logger.info('[job-worker] job_id=%s | LEGACY route %s->%s date_type=%s flex_month=%s', job_id, _rd.origin, _rd.destination, _rd.date_type, _rd.flexible_month)
     
     # --- LEGACY / MANUAL: processar todas as rotas do usuário (comportamento original) ---
     _loop = asyncio.get_event_loop()

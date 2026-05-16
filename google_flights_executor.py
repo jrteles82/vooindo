@@ -1704,6 +1704,29 @@ def _try_renew_session(profile_dir: str | None = None) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    # Detecta modo flexível: --flexible <trip_type> <month>
+    flexible_mode = False
+    flexible_trip_type = 'one-way'
+    flexible_month = ''
+    clean_argv = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--flexible' and i + 2 < len(argv):
+            flexible_mode = True
+            flexible_trip_type = argv[i + 1]
+            flexible_month = argv[i + 2]
+            i += 3
+        else:
+            clean_argv.append(argv[i])
+            i += 1
+    argv = clean_argv
+    
+    # Set env vars for run() to detect
+    if flexible_mode:
+        os.environ['GOOGLE_FLIGHTS_FLEXIBLE'] = '1'
+        os.environ['GOOGLE_FLIGHTS_TRIP_TYPE'] = flexible_trip_type
+        os.environ['GOOGLE_FLIGHTS_MONTH'] = flexible_month
+    
     if len(argv) < 4:
         print(json.dumps({"ok": False, "error": "usage", "message": "expected origin destination outbound_date [inbound_date]"}, ensure_ascii=False))
         return 2
