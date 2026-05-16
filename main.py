@@ -390,10 +390,18 @@ def _routes_for_request_user() -> list[RouteQuery]:
 
 
 def _result_to_row(result: FlightResult, price_band: str, date_type: str = "fixed", flexible_month: str = "") -> dict:
+    # Se flexível, tenta extrair a data resolvida das notas
+    outbound = result.outbound_date
+    if date_type == 'flexible' and outbound.startswith('flex:'):
+        notes = result.notes or ''
+        import re
+        m = re.search(r'flexible_resolved_date=([\d-]+)', notes)
+        if m:
+            outbound = m.group(1)
     return {
         "origin": result.origin,
         "destination": result.destination,
-        "outbound_date": result.outbound_date,
+        "outbound_date": outbound,
         "inbound_date": result.inbound_date,
         "trip_type": result.trip_type,
         "date_type": date_type or result.date_type,
@@ -1806,13 +1814,17 @@ def build_scan_results_image(rows: list[dict], trigger: str | None = None, resul
     def _draw_date_cell(base_y: int, draw_h: int, row: dict):
         date_type = str(row.get("date_type") or "fixed")
         is_flexible = date_type == 'flexible' and row.get('flexible_month')
-        if is_flexible:
-            fm = row['flexible_month']
-            dt = datetime.strptime(fm, '%Y-%m')
-            mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
-            date_txt = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
-        else:
-            date_txt = format_date_display(str(row.get("outbound_date") or ""))
+        date_str = str(row.get("outbound_date") or "")
+        try:
+            date_txt = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d/%m/%y")
+        except Exception:
+            if is_flexible:
+                fm = row['flexible_month']
+                dt = datetime.strptime(fm, '%Y-%m')
+                mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
+                date_txt = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
+            else:
+                date_txt = date_str
         date_col_x = x0 + col_widths[0]
         badge_bbox = draw.textbbox((0, 0), date_txt, font=small_font)
         badge_text_w = badge_bbox[2] - badge_bbox[0]
@@ -2020,18 +2032,12 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
             origin = str(row.get("origin") or "").upper()
             destination = str(row.get("destination") or "").upper()
             date_type = str(row.get("date_type") or "fixed")
-            # Flexível: mostra mês/ano; Fixa: mostra data
-            if date_type == 'flexible' and row.get('flexible_month'):
-                fm = row['flexible_month']
-                dt = datetime.strptime(fm, '%Y-%m')
-                mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
-                date = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
-            else:
-                date = str(row.get("outbound_date") or "")
-                try:
-                    date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
-                except Exception:
-                    pass
+            date = str(row.get("outbound_date") or "")
+            try:
+                date = datetime.strptime(date, "%Y-%m-%d").strftime("%d/%m/%y")
+            except Exception:
+                # Se falhar, mantém o valor original (ex: Nov/26 p/ flexível sem data resolvida)
+                pass
             if url:
                 flag = '🔄 ' if date_type == 'flexible' else '📌 '
                 label = f"{_airport_label(origin)} → {_airport_label(destination)} em {date}"
