@@ -955,7 +955,7 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                         return FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"json_decode_error: {str(e)} | raw={proc.stdout[:100]}")
 
                 err_msg = proc.stderr.strip() if proc.stderr else "no_stderr"
-                result = FlightResult(site="google_flights", origin=r.origin, destination=r.destination, outbound_date=r.outbound_date, inbound_date=r.inbound_date, price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
+                result = FlightResult(site="google_flights", origin=json_data.get("origin", r.origin), destination=json_data.get("destination", r.destination), outbound_date=json_data.get("outbound_date", r.outbound_date), inbound_date=json_data.get("inbound_date", r.inbound_date), price=None, notes=f"proc_error_rc{proc.returncode}: {err_msg[:200]}")
                 # Mesmo com rc != 0, tenta extrair dados do stdout (executor sempre imprime JSON)
                 if proc.stdout and proc.stdout.strip():
                     try:
