@@ -1704,10 +1704,19 @@ def _try_renew_session(profile_dir: str | None = None) -> bool:
 
 
 def main(argv: list[str]) -> int:
-    # Detecta modo flexível: --flexible <trip_type> <month>
+    # Detecta modo flexível via outbound_date especial: flex:YYYY-MM:trip_type
     flexible_mode = False
     flexible_trip_type = 'one-way'
     flexible_month = ''
+    if len(argv) >= 4 and argv[3].startswith('flex:'):
+        parts = argv[3].split(':')
+        if len(parts) >= 3:
+            flexible_mode = True
+            flexible_month = parts[1]      # YYYY-MM
+            flexible_trip_type = parts[2]  # one-way ou round-trip
+            argv[3] = ''  # limpa outbound_date pra não atrapalhar
+    
+    # Também suporta --flexible <trip_type> <month> (modo alternativo)
     clean_argv = []
     i = 0
     while i < len(argv):

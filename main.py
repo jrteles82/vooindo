@@ -363,7 +363,11 @@ def _build_user_routes(conn, user_id: int, prune_expired: bool = False) -> list[
             RouteQuery(
                 origin=(r["origin"] or "").upper(),
                 destination=(r["destination"] or "").upper(),
-                outbound_date=r["outbound_date"],
+                outbound_date=(
+                    f'flex:{r.get("flexible_month")}:{r.get("trip_type", "one-way")}'
+                    if r.get("date_type") == 'flexible' and r.get("flexible_month")
+                    else r["outbound_date"]
+                ),
                 inbound_date=inbound,
                 trip_type=r.get("trip_type") or ("roundtrip" if inbound else "oneway"),
                 date_type=r.get("date_type") or "fixed",
@@ -830,12 +834,8 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                     env["GOOGLE_FLIGHTS_SKIP_BOOKING"] = "1"
                 # Chrome é o único navegador suportado
                 
-                # Modo flexível: passa por argumentos (não env vars — perdem-se em threads)
-                if r.date_type == 'flexible' and r.flexible_month:
-                    cmd.append('--flexible')
-                    cmd.append(r.trip_type or 'one-way')
-                    cmd.append(r.flexible_month)
-                    logger.info('[scraper] FLEXIBLE CMD %s->%s: %s', r.origin, r.destination, cmd)
+                # Modo flexível já embutido no outbound_date (flex:YYYY-MM:trip_type)
+                # O executor detecta e ativa automaticamente
                 
                 cmd = [python_path, executor_path, r.origin, r.destination, r.outbound_date]
                 if r.inbound_date:
