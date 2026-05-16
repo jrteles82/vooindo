@@ -1235,8 +1235,11 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
     atendimento_label = '📥 Atendimento'
     if admin_unread_support:
         atendimento_label += f' ({admin_unread_support})'
-    from comments import count_pending_comments as _cpc
-    _pend_comments = count_pending_comments()
+    try:
+        from comments import count_pending_comments as _cpc
+        _pend_comments = _cpc()
+    except Exception:
+        _pend_comments = 0
     comments_label = '💬 Comentários'
     if _pend_comments:
         comments_label += f' ({_pend_comments})'
@@ -4628,7 +4631,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text('\U0001f4e5 *Caixa de entrada do atendimento*', parse_mode='Markdown', reply_markup=list_support_conversations_markup(rows, admin=True))
         elif action == 'comments':
             await query.answer()
-            await _show_comments_list(query, chat_id, page=0)
+            try:
+                await _show_comments_list(query, chat_id, page=0)
+            except Exception as _cex:
+                logger.error('[comments] erro ao listar: %s', _cex)
+                await query.message.reply_text('\u274c Erro ao carregar comentários. Tente novamente.')
         elif action == 'admincomments':
             conn = get_db()
             admin = is_admin_chat(conn, chat_id)
@@ -4637,7 +4644,11 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer('N\u00e3o autorizado', show_alert=True)
                 return ConversationHandler.END
             await query.answer()
-            await _show_admin_comments(query, chat_id, page=0)
+            try:
+                await _show_admin_comments(query, chat_id, page=0)
+            except Exception as _cex:
+                logger.error('[comments] erro ao carregar admin: %s', _cex)
+                await query.message.reply_text('\u274c Erro ao carregar moderação. Tente novamente.')
         elif action == 'adminpainel':
             conn = get_db()
             admin = is_admin_chat(conn, chat_id)
