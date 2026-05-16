@@ -1479,8 +1479,15 @@ def build_filter_menu_text(max_price: float | None, selected_airlines: dict[str,
 def removerrota_list_markup(rows) -> InlineKeyboardMarkup:
     keyboard = []
     for row in rows:
-        label = f"{row['origin']}→{row['destination']} | {format_date_br(row['outbound_date'])}"
-        if row['inbound_date']:
+        if row.get('date_type') == 'flexible' and row.get('flexible_month'):
+            from datetime import datetime
+            dt = datetime.strptime(row['flexible_month'], '%Y-%m')
+            mn = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']
+            date_label = f'{mn[dt.month-1]}/{str(dt.year)[2:]}'
+        else:
+            date_label = format_date_br(row['outbound_date'])
+        label = f"{row['origin']}→{row['destination']} | {date_label}"
+        if row.get('inbound_date'):
             label += f" | {format_date_br(row['inbound_date'])}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"removerrota:{row['id']}")])
     keyboard.append([InlineKeyboardButton('❌ Cancelar remoção', callback_data='removerrota:cancel_list')])
@@ -3852,7 +3859,7 @@ async def removerrota(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = get_user_id_by_chat(conn, chat_id)
     rows = conn.execute(
         sql('''
-        SELECT id, origin, destination, outbound_date, inbound_date
+        SELECT id, origin, destination, outbound_date, inbound_date, date_type, flexible_month
         FROM user_routes
         WHERE user_id = %s AND active = 1
         ORDER BY outbound_date, origin, destination
