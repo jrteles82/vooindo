@@ -304,7 +304,7 @@ def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, 
     page.goto(url, wait_until='domcontentloaded')
     wait_for_results(page)
     
-    return {'price': best['price'], 'outbound_date': best_date}
+    return {'price': best['price'], 'outbound_date': best_date, 'inbound_date': best_return}
 
 
 def _is_flexible_mode() -> bool:
