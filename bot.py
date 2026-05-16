@@ -5757,8 +5757,12 @@ async def comment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == 'write':
         context.user_data['comment_writing'] = True
         await query.message.reply_text(
-            '✏️ Digite seu comentário (máx. 500 caracteres).\n'
-            'Ele será analisado pelo admin antes de ficar visível para todos.',
+            '✏️ *Digite seu comentário* (máx. 500 caracteres)\n'
+            '────────────────────────\n'
+            '\u26a0\ufe0f *Seu comentário será analisado pelo administrador*\n'
+            'antes de ficar visível para todos.\n'
+            'Comentários ofensivos ou spam serão rejeitados.',
+            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton('❌ Cancelar', callback_data='comment:cancel')]
             ])
@@ -5783,8 +5787,11 @@ async def comment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('comment_writing', None)
         context.user_data.pop('comment_text', None)
         await query.message.reply_text(
-            f'✅ Comentário #{cid} enviado!\n'
-            'Ele será analisado pelo admin antes de ficar visível.',
+            f'✅ Comentário #{cid} recebido!\n'
+            '\u26a0\ufe0f *Seu comentário foi enviado para análise.*\n'
+            'Assim que o administrador aprovar, ele ficará visível para todos.\n'
+            'Você pode acompanhar o status em "Meus comentários".',
+            parse_mode='Markdown',
             reply_markup=full_menu_markup(chat_id)
         )
     elif action == 'approve':
