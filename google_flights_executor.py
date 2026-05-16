@@ -155,25 +155,39 @@ def _extract_graph_prices(page, notes: list[str]) -> list[dict] | None:
         
         result = page.evaluate("""() => {
             const bars = document.querySelectorAll("path.ZMv3u");
-            if (!bars.length) return [];
+            if (!bars.length) return {maxPrice: 3000, prices: []};
+            // Try to find the max Y-axis label
+            let maxPrice = 3000;
+            const yLabels = document.querySelectorAll(".oHo7ed text tspan");
+            const prices = [];
+            yLabels.forEach(t => {
+                const txt = t.textContent || "";
+                const m = txt.match(/R\$\\s*([\\d.]+)/);
+                if (m) prices.push(parseFloat(m[1].replace(".", "")));
+            });
+            if (prices.length) maxPrice = Math.max(...prices);
+            
             const data = [];
             bars.forEach(b => {
                 const rect = b.getBoundingClientRect();
-                const graphTop = 262, graphHeight = 294, maxPrice = 3000;
+                const graphTop = 262, graphHeight = 294;
                 const barTop = rect.y - graphTop;
                 const price = Math.round((graphHeight - barTop) / graphHeight * maxPrice);
                 data.push(Math.round(price));
             });
-            return data;
+            return {maxPrice, prices: data};
         }""")
         
-        if not result:
+        if not result or not result.get('prices'):
             notes.append('graph_no_bars_found')
             return None
         
+        max_price = result.get('maxPrice', 3000)
+        notes.append(f'graph_max_price={max_price}')
+        
         # Convert to [{day, price}]
         days = []
-        for i, price in enumerate(result):
+        for i, price in enumerate(result['prices']):
             days.append({'day': i + 1, 'price': price})
         
         notes.append(f'graph_extracted_{len(days)}_days')
@@ -249,10 +263,48 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
 
 
 def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo C: extrai grafico de precos (1 page load), escolhe o dia mais barato.
-    Mesma logica do oneway - o Google ajusta a volta automaticamente."""
-    # Mesmo funcionamento do oneway para round-trip
-    return _run_flexible_oneway(origin, destination, flexible_month, page, context, browser, notes)
+    """Modo C: extrai grafico de precos ROUND-TRIP (com volta)."""
+    from datetime import datetime, timedelta
+    
+    dt = datetime.strptime(flexible_month, '%Y-%m')
+    outbound_date = dt.strftime('%Y-%m-%d')
+    # Para round-trip, usa volta 7 dias depois (Google faz isso por padrao)
+    return_date = (dt + timedelta(days=7)).strftime('%Y-%m-%d')
+    notes.append(f'flexible_roundtrip_month={flexible_month} return={return_date}')
+    
+    # URL com ida E volta
+    url = build_url(origin, destination, outbound_date, return_date)
+    page.goto(url, wait_until='domcontentloaded')
+    wait_for_results(page)
+    time.sleep(1)
+    
+    # Extrai preços do grafico (com preço de ida+volta!)
+    days = _extract_graph_prices(page, notes)
+    if not days:
+        notes.append('flexible_rt_graph_failed_fallback_day1')
+        return {'price': None, 'outbound_date': outbound_date}
+    
+    # Filtra so os dias do mes-alvo
+    from calendar import monthrange
+    _, last_day = monthrange(dt.year, dt.month)
+    month_days = days[:last_day]
+    
+    if not month_days:
+        notes.append('flexible_rt_no_days_in_month')
+        return {'price': None, 'outbound_date': outbound_date}
+    
+    best = min(month_days, key=lambda d: d['price'])
+    best_date = dt.replace(day=best['day']).strftime('%Y-%m-%d')
+    # Ajusta return_date baseado no best_date
+    best_return = (datetime.strptime(best_date, '%Y-%m-%d') + timedelta(days=7)).strftime('%Y-%m-%d')
+    notes.append(f'flexible_rt_graph_best=day_{best["day"]} price={best["price"]}')
+    
+    # Navega para o dia mais barato (ida+volta)
+    url = build_url(origin, destination, best_date, best_return)
+    page.goto(url, wait_until='domcontentloaded')
+    wait_for_results(page)
+    
+    return {'price': best['price'], 'outbound_date': best_date}
 
 
 def _is_flexible_mode() -> bool:
