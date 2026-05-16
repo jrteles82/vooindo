@@ -254,6 +254,34 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     best_date = dt.replace(day=best['day']).strftime('%Y-%m-%d')
     notes.append(f'flexible_graph_best=day_{best["day"]} price={best["price"]}')
     
+    # Refina ±1 dia com preço real da página (gráfico tem precisão de ~R\$15/pixel)
+    from calendar import monthrange as _mr
+    _, _last = _mr(dt.year, dt.month)
+    refine_days = [d for d in range(best['day'] - 1, best['day'] + 2) 
+                   if 1 <= d <= _last and d != best['day']]
+    if refine_days:
+        for day in refine_days:
+            test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+            url_r = build_url(origin, destination, test_date)
+            try:
+                t0 = time.perf_counter()
+                page.goto(url_r, wait_until='domcontentloaded')
+                wait_for_results(page)
+                body = page.locator('body').inner_text(timeout=8000)
+                sp = extract_summary_price(body)
+                if sp is None:
+                    all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
+                    if all_p: sp = min(all_p)
+                et = round(time.perf_counter() - t0, 1)
+                if sp and sp < best['price']:
+                    best = {'day': day, 'price': sp}
+                    best_date = test_date
+                    notes.append(f'flexible_refine_day={day} price={sp} BEST')
+                else:
+                    notes.append(f'flexible_refine_day={day} price={sp} elapsed={et}s')
+            except Exception as e:
+                notes.append(f'flexible_refine_day={day} error={str(e)[:60]}')
+    
     # Navega para o dia mais barato
     url = build_url(origin, destination, best_date)
     page.goto(url, wait_until='domcontentloaded')
