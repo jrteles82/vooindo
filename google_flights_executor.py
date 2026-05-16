@@ -166,129 +166,101 @@ def _open_date_picker(page, notes: list[str]) -> bool:
 
 
 def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo B: abre date picker, extrai preços do mês, escolhe o dia mais barato."""
+    """Modo B: testa múltiplos dias do mês, escolhe o mais barato."""
     from datetime import datetime
-    # Usa o 1° dia do mês como data inicial
+    import calendar as _cal
+    
     dt = datetime.strptime(flexible_month, '%Y-%m')
-    outbound_date = dt.strftime('%Y-%m-%d')
-    notes.append(f'flexible_oneway_month={flexible_month} first_day={outbound_date}')
-
-    url = build_url(origin, destination, outbound_date)
-    page.goto(url, wait_until='domcontentloaded')
-    notes.append(f'flexible_search_nav_done')
-    wait_for_results(page)
-    try_click_result_tab(page, notes)
-    time.sleep(1)
-
-    # Abre o date picker
-    if not _open_date_picker(page, notes):
-        notes.append('flexible_date_picker_failed')
-        return None
-
-    time.sleep(2)
-    # Extrai preços do calendário
-    calendar_prices = _extract_calendar_prices(page, notes)
-    notes.append(f'flexible_calendar_days_found={len(calendar_prices)}')
-
-    if not calendar_prices:
-        notes.append('flexible_no_calendar_prices')
-        return None
-
-    # Filtra só os dias do mês-alvo
-    target_month = flexible_month  # 'YYYY-MM'
-    month_prices = {d: p for d, p in calendar_prices.items() if d.startswith(target_month)}
-    if not month_prices:
-        # Tenta usar todos os preços encontrados
-        month_prices = calendar_prices
-        notes.append('flexible_fallback_all_months')
-
-    # Encontra o dia mais barato
-    best_date = min(month_prices, key=month_prices.get)
-    best_price = month_prices[best_date]
-    notes.append(f'flexible_best_date={best_date} price={best_price}')
-    notes.append(f'flexible_top5=' + ', '.join(f'{d}={p}' for d, p in sorted(month_prices.items(), key=lambda x: x[1])[:5]))
-
-    # Clica no dia mais barato (se não for o atual)
-    if best_date != outbound_date:
-        # Procura a célula do calendário com essa data e clica
-        clicked = False
-        for sel in ['div[role="gridcell"]', '[aria-label*="de "]']:
-            try:
-                cells = page.locator(sel).all()
-                for cell in cells:
-                    try:
-                        aria = cell.get_attribute('aria-label') or ''
-                        if best_date in aria or best_date.replace('-', ' ') in aria:
-                            cell.click()
-                            time.sleep(2)
-                            notes.append(f'flexible_clicked_best_date={best_date}')
-                            clicked = True
-                            break
-                    except Exception:
-                        continue
-                if clicked:
-                    break
-            except Exception:
-                continue
-        if not clicked:
-            notes.append('flexible_click_best_date_failed')
-
-    return {"price": best_price, "outbound_date": best_date}
+    last_day = _cal.monthrange(dt.year, dt.month)[1]
+    
+    # Dias a testar: 1, 10, 20, último dia do mês
+    days_to_test = [1, 10, 20, last_day]
+    days_to_test = sorted(set(d for d in days_to_test if 1 <= d <= last_day))
+    notes.append(f'flexible_oneway_testing_days={days_to_test}')
+    
+    best_result = None
+    best_price = float('inf')
+    
+    for day in days_to_test:
+        test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+        url = build_url(origin, destination, test_date)
+        try:
+            t0 = time.perf_counter()
+            page.goto(url, wait_until='domcontentloaded')
+            wait_for_results(page)
+            
+            body = page.locator('body').inner_text(timeout=8000)
+            summary_price = extract_summary_price(body)
+            if summary_price is None:
+                all_prices = [p for p in parse_prices(body) if 100 <= p <= 50000]
+                if all_prices:
+                    summary_price = min(all_prices)
+            
+            elapsed = round(time.perf_counter() - t0, 1)
+            if summary_price and summary_price < best_price:
+                best_price = summary_price
+                best_result = {'price': summary_price, 'outbound_date': test_date}
+                notes.append(f'flexible_oneway_day={day} price={summary_price} elapsed={elapsed}s BEST')
+            else:
+                notes.append(f'flexible_oneway_day={day} price={summary_price} elapsed={elapsed}s')
+        except Exception as e:
+            notes.append(f'flexible_oneway_day={day} error={e}')
+    
+    if best_result:
+        notes.append(f'flexible_oneway_best={best_result["outbound_date"]} price={best_result["price"]}')
+        return best_result
+    
+    notes.append('flexible_oneway_all_days_failed')
+    return None
 
 
 def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo C: carrega URL flexível (sem data), extrai matriz de preços ida+volta."""
-    notes.append(f'flexible_roundtrip_month={flexible_month}')
-
-    url = build_flexible_url(origin, destination, "round-trip")
-    page.goto(url, wait_until='domcontentloaded')
-    notes.append('flexible_roundtrip_nav_done')
-    time.sleep(3)
-    wait_for_results(page)
-    time.sleep(2)
-
-    # Tenta abrir o date picker para ver a matriz
-    if not _open_date_picker(page, notes):
-        notes.append('flexible_roundtrip_date_picker_failed')
-        # Tenta extrair da página principal (pode ter gráfico de preços)
-        pass
-
-    time.sleep(2)
-    calendar_prices = _extract_calendar_prices(page, notes)
-    notes.append(f'flexible_roundtrip_calendar_days={len(calendar_prices)}')
-
-    if calendar_prices:
-        # Filtra mês-alvo
-        month_prices = {d: p for d, p in calendar_prices.items() if d.startswith(flexible_month)}
-        if not month_prices:
-            month_prices = calendar_prices
-            notes.append('flexible_roundtrip_fallback_all_months')
-
-        if month_prices:
-            best_date = min(month_prices, key=month_prices.get)
-            best_price = month_prices[best_date]
-            notes.append(f'flexible_roundtrip_best={best_date} price={best_price}')
-
-            # Clica no melhor dia
-            for sel in ['div[role="gridcell"]', '[aria-label*="de "]']:
-                try:
-                    cells = page.locator(sel).all()
-                    for cell in cells:
-                        try:
-                            aria = cell.get_attribute('aria-label') or ''
-                            if best_date in aria:
-                                cell.click()
-                                time.sleep(2)
-                                notes.append(f'flexible_roundtrip_clicked={best_date}')
-                                break
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-
-            return {"price": best_price, "outbound_date": best_date, "inbound_date": ""}
-
-    notes.append('flexible_roundtrip_no_prices_found')
+    """Modo C: testa múltiplos dias do mês, escolhe o mais barato."""
+    from datetime import datetime, timedelta
+    import calendar as _cal
+    
+    dt = datetime.strptime(flexible_month, '%Y-%m')
+    last_day = _cal.monthrange(dt.year, dt.month)[1]
+    
+    # Dias a testar: 1, 10, 20, último dia do mês
+    days_to_test = [1, 10, 20, last_day]
+    days_to_test = sorted(set(d for d in days_to_test if 1 <= d <= last_day))
+    notes.append(f'flexible_roundtrip_testing_days={days_to_test}')
+    
+    best_result = None
+    best_price = float('inf')
+    
+    for day in days_to_test:
+        test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+        url = build_url(origin, destination, test_date)
+        try:
+            t0 = time.perf_counter()
+            page.goto(url, wait_until='domcontentloaded')
+            wait_for_results(page)
+            
+            # Extrai preço resumo (rápido, sem abrir booking)
+            body = page.locator('body').inner_text(timeout=8000)
+            summary_price = extract_summary_price(body)
+            if summary_price is None:
+                all_prices = [p for p in parse_prices(body) if 100 <= p <= 50000]
+                if all_prices:
+                    summary_price = min(all_prices)
+            
+            elapsed = round(time.perf_counter() - t0, 1)
+            if summary_price and summary_price < best_price:
+                best_price = summary_price
+                best_result = {'price': summary_price, 'outbound_date': test_date}
+                notes.append(f'flexible_roundtrip_day={day} price={summary_price} elapsed={elapsed}s BEST')
+            else:
+                notes.append(f'flexible_roundtrip_day={day} price={summary_price} elapsed={elapsed}s')
+        except Exception as e:
+            notes.append(f'flexible_roundtrip_day={day} error={e}')
+    
+    if best_result:
+        notes.append(f'flexible_roundtrip_best={best_result["outbound_date"]} price={best_result["price"]}')
+        return best_result
+    
+    notes.append('flexible_roundtrip_all_days_failed')
     return None
 
 
