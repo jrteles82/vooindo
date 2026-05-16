@@ -279,6 +279,11 @@ class ChromeGuardian:
                 "--disable-default-apps",
                 "--mute-audio",
                 "--no-first-run",
+                "--disable-features=TranslateUI,ChromeWhatsNewUI,InterestFeedContentSuggestions",
+                "--disable-component-update",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
                 f"--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
             ]
             env = os.environ.copy()
