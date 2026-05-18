@@ -1316,10 +1316,14 @@ def main():
                             pay = parse_job_payload(er['payload'])
                             route = pay.get('route', {})
                             users_to_retry[uid]['routes'].add((
+                                route.get('id', 0),
                                 route.get('origin',''),
                                 route.get('destination',''),
                                 route.get('outbound_date',''),
                                 route.get('inbound_date','') or '',
+                                route.get('date_type','') or 'fixed',
+                                route.get('flexible_month','') or '',
+                                route.get('trip_type','') or 'one-way',
                             ))
                             if pay.get('dry_run'):
                                 users_to_retry[uid]['dry_run'] = True
@@ -1336,15 +1340,19 @@ def main():
                     retry_job_ids = []
                     for uid, info in users_to_retry.items():
                         group_key = f"round_{uid}_{cycle_started_iso}_retry_{retry_num}"
-                        for origin, dest, outbound, inbound in info['routes']:
+                        for route_tuple in info['routes']:
+                            route_id, origin, dest, outbound, inbound, date_type, flexible_month, trip_type = route_tuple
                             payload = build_route_job_payload(
                                 cycle_started_iso=cycle_started_iso,
                                 route={
-                                    'id': 0,
+                                    'id': route_id or 0,
                                     'origin': origin,
                                     'destination': dest,
                                     'outbound_date': outbound,
                                     'inbound_date': inbound,
+                                    'date_type': date_type or 'fixed',
+                                    'flexible_month': flexible_month or '',
+                                    'trip_type': trip_type or 'one-way',
                                 },
                                 total_routes=len(info['routes']),
                                 label=info['first_name'],
