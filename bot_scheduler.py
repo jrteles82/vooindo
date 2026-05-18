@@ -47,6 +47,52 @@ SEND_COOLDOWN_SECONDS = int(
 _METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
 _ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '2700'))
 _ROUND_REPORT_POLL_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_POLL_SECONDS', '5'))
+MAX_ROUTE_ADVANCE_DAYS = 330
+
+
+def _route_days_ahead(outbound_date: str, date_type: str = 'fixed') -> int | None:
+    if str(date_type or 'fixed') != 'fixed':
+        return None
+    outbound = str(outbound_date or '').strip()
+    if not outbound:
+        return None
+    try:
+        dt = datetime.strptime(outbound[:10], '%Y-%m-%d').date()
+    except Exception:
+        return None
+    return (dt - now_local().date()).days
+
+
+def _is_route_beyond_advance_limit(outbound_date: str, date_type: str = 'fixed') -> bool:
+    days = _route_days_ahead(outbound_date, date_type)
+    return days is not None and days > MAX_ROUTE_ADVANCE_DAYS
+
+
+def _format_skipped_route_label(origin: str, destination: str, outbound_date: str, date_type: str = 'fixed') -> str:
+    days = _route_days_ahead(outbound_date, date_type)
+    suffix = f' ({days} dias)' if days is not None else ''
+    return f'{str(origin).upper()} → {str(destination).upper()} | {outbound_date}{suffix}'
+
+
+def _notify_skipped_distant_routes(bot: Bot, loop, chat_id: str, skipped_routes: list[str]) -> None:
+    if not skipped_routes:
+        return
+    shown = skipped_routes[:8]
+    extra = len(skipped_routes) - len(shown)
+    lines = '\n'.join(f'• {item}' for item in shown)
+    if extra > 0:
+        lines += f'\n• ... e mais {extra}'
+    text = (
+        f'⚠️ Algumas rotas não entraram na consulta desta rodada porque estão a mais de {MAX_ROUTE_ADVANCE_DAYS} dias.\n\n'
+        f'{lines}\n\n'
+        'Quando a data ficar dentro da janela permitida, elas voltam a ser consultadas automaticamente.'
+    )
+    try:
+        loop.run_until_complete(_send_message(bot, chat_id, text, reply_markup=main_menu_markup()))
+    except Exception as exc:
+        logger.warning('[bot-scheduler] falha avisando rotas >%s dias para chat_id=%s: %s', MAX_ROUTE_ADVANCE_DAYS, chat_id, exc)
+
+
 def get_db():
     return connect_db()
 
@@ -1034,8 +1080,30 @@ def main():
                         cycle_stats['skipped_users'] += 1
                         continue
                     
+                    skipped_distant_routes = []
+                    queryable_route_count = 0
+                    for route in route_rows:
+                        _origin = route['origin'] if isinstance(route, dict) else route[1]
+                        _destination = route['destination'] if isinstance(route, dict) else route[2]
+                        _outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
+                        _date_type = route.get('date_type', 'fixed') if isinstance(route, dict) else (route[5] if len(route) > 5 else 'fixed')
+                        if _is_route_beyond_advance_limit(_outbound_date, _date_type):
+                            skipped_distant_routes.append(_format_skipped_route_label(_origin, _destination, _outbound_date, _date_type))
+                        else:
+                            queryable_route_count += 1
+
+                    if skipped_distant_routes:
+                        _notify_skipped_distant_routes(bot, loop, chat_id, skipped_distant_routes)
+                        cycle_stats['reasons']['rota_acima_330_dias'] = cycle_stats['reasons'].get('rota_acima_330_dias', 0) + len(skipped_distant_routes)
+                        logger.info("[bot-scheduler] %s | %s rota(s) pulada(s) por >%s dias", label, len(skipped_distant_routes), MAX_ROUTE_ADVANCE_DAYS)
+
+                    if queryable_route_count == 0:
+                        logger.info("[bot-scheduler] %s | todas as rotas estão acima de %s dias, nenhum job criado", label, MAX_ROUTE_ADVANCE_DAYS)
+                        cycle_stats['skipped_users'] += 1
+                        continue
+
                     group_key = f"round_{user_id}_{cycle_started_iso}"
-                    num_routes = len(route_rows)
+                    num_routes = queryable_route_count
                     
                     for route in route_rows:
                         route_id = route['id'] if isinstance(route, dict) else route[0]
@@ -1046,6 +1114,8 @@ def main():
                         date_type = route.get('date_type', 'fixed') if isinstance(route, dict) else (route[5] if len(route) > 5 else 'fixed')
                         trip_type = route.get('trip_type', 'one-way') if isinstance(route, dict) else (route[6] if len(route) > 6 else 'one-way')
                         flexible_month = route.get('flexible_month', '') if isinstance(route, dict) else (route[7] if len(route) > 7 else '')
+                        if _is_route_beyond_advance_limit(outbound_date, date_type):
+                            continue
                         
                         route_payload = {
                             'id': route_id,

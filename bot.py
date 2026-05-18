@@ -68,6 +68,7 @@ ASK_DATE_TYPE, ASK_TRIP_TYPE, ASK_MONTH = range(8, 11)
 setup_logging()
 logger = logging.getLogger(__name__)
 LEGACY_BROADCAST_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN_LEGACY', '').strip()
+MAX_ROUTE_ADVANCE_DAYS = 330
 
 # Active Google login sessions: chat_id -> {'proc': Process, '2fa_queue': Queue, 'done': bool}
 _login_sessions: dict[str, dict] = {}
@@ -3597,11 +3598,11 @@ async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         dt_str = normalize_date(update.message.text)
         dt_obj = datetime.strptime(dt_str, '%Y-%m-%d').date()
-        days_diff = (dt_obj - datetime.now().date()).days
+        days_diff = (dt_obj - now_local().date()).days
         
-        if days_diff > 365:
+        if days_diff > MAX_ROUTE_ADVANCE_DAYS:
             sent = await update.message.reply_text(
-                f'⚠️ *Limite de 1 ano excedido.*\n\nVocê informou uma data para daqui a {days_diff} dias.\nO sistema permite o monitoramento de passagens com no máximo *365 dias* de antecedência.\n\n✍️ Por favor, informe uma data mais próxima.',
+                f'⚠️ *Data muito distante.*\n\nVocê informou uma data para daqui a {days_diff} dias.\nAs companhias/Google Flights normalmente só liberam consulta com até *{MAX_ROUTE_ADVANCE_DAYS} dias* de antecedência.\n\n✍️ Por favor, informe uma data mais próxima.',
                 parse_mode='Markdown',
                 reply_markup=force_reply_markup('Ex.: 25/12/2026'),
             )
