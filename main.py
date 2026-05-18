@@ -1941,8 +1941,9 @@ def _should_split_result_blocks(trigger: str | None, airline_filters_json: str |
 
 
 def _merge_rows_for_combined_result_view(rows: list[dict]) -> list[dict]:
-    """Agrupa e deduplica linhas: mesmo (origin+destionation+outbound_date+inbound_date+airline+flight_number).
-    Mantém o menor preço entre duplicatas, mas prefere linhas com URL de booking."""
+    """Agrupa e deduplica linhas: mesmo (origin+destination+outbound_date+inbound_date+airline+flight_number+date_type).
+    Mantém o menor preço entre duplicatas, mas prefere linhas com URL de booking.
+    date_type evita que rota fixa e flexível com mesmo resultado sejam unificadas."""
     seen = {}
     for row in rows:
         key = (
@@ -1952,6 +1953,7 @@ def _merge_rows_for_combined_result_view(rows: list[dict]) -> list[dict]:
             str(row.get("inbound_date", "") or ""),
             str(row.get("airline", "") or "").lower().strip(),
             str(row.get("flight_number", "") or "").lower().strip(),
+            str(row.get("date_type") or "fixed"),
         )
         price = row.get("price_raw", 0) or 0
         has_url = bool(str(row.get("booking_url") or row.get("best_airline_url") or "").strip())
