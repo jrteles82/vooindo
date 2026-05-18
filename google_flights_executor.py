@@ -225,7 +225,11 @@ def _open_date_picker(page, notes: list[str]) -> bool:
 
 
 def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo B: extrai grafico de precos (1 page load), escolhe o dia mais barato."""
+    """Modo B: extrai grafico de precos (1 page load), escolhe o dia mais barato.
+    
+    Aplica filtro de qualidade para evitar "preços teaser" (ex: graph_max=7500,
+    melhor grafico=R$395, mas pagina real=R$1038 sem cia aerea vs R$6225 com cia real).
+    Dias com preco < 30% do graph_max sao tratados como teaser e ignorados."""
     from datetime import datetime
     
     dt = datetime.strptime(flexible_month, '%Y-%m')
@@ -254,15 +258,20 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     
     best = min(month_days, key=lambda d: d['price'])
     best_date = dt.replace(day=best['day']).strftime('%Y-%m-%d')
+    graph_max = max(d['price'] for d in month_days) if month_days else 5000
     notes.append(f'flexible_graph_best=day_{best["day"]} price={best["price"]}')
     
     # Refina ±1 dia com preço real da página (gráfico tem precisão de ~R\$15/pixel)
+    # Também refina o próprio best day pra pegar preço real (gráfico pode subestimar)
     from calendar import monthrange as _mr
     _, _last = _mr(dt.year, dt.month)
     refine_days = [d for d in range(best['day'] - 1, best['day'] + 2) 
                    if 1 <= d <= _last and d != best['day']]
-    if refine_days:
-        for day in refine_days:
+    # Inclui o best day no refine pra ter preço real (gráfico = pixel, impreciso)
+    all_refine_days = sorted(set(refine_days + [best['day']]))
+    refined_prices: dict[int, float] = {}  # day -> actual page price
+    if all_refine_days:
+        for day in all_refine_days:
             test_date = dt.replace(day=day).strftime('%Y-%m-%d')
             url_r = build_url(origin, destination, test_date)
             try:
@@ -275,18 +284,52 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
                     all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
                     if all_p: sp = min(all_p)
                 et = round(time.perf_counter() - t0, 1)
-                if sp is not None and (sp < best['price'] or (sp == best['price'] and day > best['day'])):
-                    best = {'day': day, 'price': sp}
-                    best_date = test_date
-                    notes.append(f'flexible_refine_day={day} price={sp} BEST')
-                elif sp == best['price']:
-                    notes.append(f'flexible_refine_day={day} price={sp} SAME')
+                if sp is not None:
+                    refined_prices[day] = sp
+                    if day == best['day']:
+                        notes.append(f'flexible_refine_best_day={day} price={sp}')
+                        best = {'day': day, 'price': sp}
+                        best_date = test_date
+                    elif sp < best['price'] or (sp == best['price'] and day > best['day']):
+                        best = {'day': day, 'price': sp}
+                        best_date = test_date
+                        notes.append(f'flexible_refine_day={day} price={sp} BEST')
+                    elif sp == best['price']:
+                        notes.append(f'flexible_refine_day={day} price={sp} SAME')
+                    else:
+                        notes.append(f'flexible_refine_day={day} price={sp} elapsed={et}s')
                 else:
-                    notes.append(f'flexible_refine_day={day} price={sp} elapsed={et}s')
+                    notes.append(f'flexible_refine_day={day} no_price elapsed={et}s')
             except Exception as e:
                 notes.append(f'flexible_refine_day={day} error={str(e)[:60]}')
     
-    # Navega para o dia mais barato
+    # ── Filtro de qualidade: evita "preço teaser" ──
+    # Preços abaixo de 30% do graph_max são tipicamente teasers de agência,
+    # não tarifas reais de companhia aérea. Ex: PVH→PTY graph_max=7500,
+    # preço real R$6225 vs teaser R$1038 (13.8% do max).
+    if refined_prices and graph_max > 0:
+        teaser_threshold = graph_max * 0.30
+        good_days = [(d, p) for d, p in refined_prices.items() if p >= teaser_threshold]
+        if good_days:
+            # Pega o mais barato entre os dias com preço real (não-teaser)
+            best_day, best_price = min(good_days, key=lambda x: x[1])
+            if best_day != best['day']:
+                notes.append(
+                    f'flexible_quality_skip=day_{best["day"]} price={best["price"]} '
+                    f'(below teaser_threshold={int(teaser_threshold)}) '
+                    f'→ day_{best_day} price={best_price}'
+                )
+                best = {'day': best_day, 'price': best_price}
+                best_date = dt.replace(day=best_day).strftime('%Y-%m-%d')
+            else:
+                notes.append(f'flexible_quality_ok=day_{best_day} price={best_price} >= teaser_threshold={int(teaser_threshold)}')
+        else:
+            notes.append(
+                f'flexible_quality_all_teasers=days={list(refined_prices.keys())} '
+                f'prices={list(refined_prices.values())} threshold={int(teaser_threshold)}'
+            )
+    
+    # Navega para o dia escolhido (com qualidade)
     url = build_url(origin, destination, best_date)
     page.goto(url, wait_until='domcontentloaded')
     wait_for_results(page)
