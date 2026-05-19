@@ -587,6 +587,41 @@ def get_valid_pending_payment(conn, chat_id: str):
 APOIO_VALUES = [10, 20, 30, 40, 50]
 
 
+def get_apoio_valores(conn) -> list[float]:
+    """Retorna lista de valores de apoio salvos no banco. Se vazio, retorna default."""
+    row = conn.execute(sql("SELECT valor FROM app_config WHERE chave = 'apoio_valores'")).fetchone()
+    if row and row['valor']:
+        try:
+            return json.loads(row['valor'])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return list(APOIO_VALUES)
+
+
+def set_apoio_valores(conn, valores: list[float]):
+    """Salva lista de valores de apoio no banco."""
+    import json as _j
+    conn.execute(
+        sql("INSERT INTO app_config (chave, valor) VALUES ('apoio_valores', %s) ON DUPLICATE KEY UPDATE valor = VALUES(valor)"),
+        (_j.dumps(valores),),
+    )
+    conn.commit()
+
+
+def apoiar_adjust_markup(conn) -> InlineKeyboardMarkup:
+    """Markup do painel admin para gerenciar valores de apoio."""
+    valores = get_apoio_valores(conn)
+    buttons = []
+    for i, v in enumerate(valores):
+        buttons.append([
+            InlineKeyboardButton(f'✏️ R$ {v:.2f}', callback_data=f'painel:apoio_edit:{i}'),
+            InlineKeyboardButton(f'🗑️ R$ {v:.2f}', callback_data=f'painel:apoio_delete:{i}'),
+        ])
+    buttons.append([InlineKeyboardButton('➕ Adicionar valor', callback_data='painel:apoio_add')])
+    buttons.append([InlineKeyboardButton('🔙 Voltar ao Painel', callback_data='painel:back')])
+    return InlineKeyboardMarkup(buttons)
+
+
 def apoiar_text() -> str:
     return (
         '🙌 *Apoie o Vooindo!*\n\n'
@@ -596,10 +631,19 @@ def apoiar_text() -> str:
     )
 
 
-def apoiar_markup() -> InlineKeyboardMarkup:
+def apoiar_markup(conn=None) -> InlineKeyboardMarkup:
+    _close_after = False
+    if conn is None:
+        conn = get_db()
+        _close_after = True
+    try:
+        valores = get_apoio_valores(conn)
+    finally:
+        if _close_after:
+            conn.close()
     rows = []
     row = []
-    for v in APOIO_VALUES:
+    for v in valores:
         row.append(InlineKeyboardButton(f'R$ {v:.2f}', callback_data=f'apoiar:{v}'))
         if len(row) >= 3:
             rows.append(row)
@@ -892,10 +936,21 @@ def confirmation_markup_for_message(msg: str | None) -> InlineKeyboardMarkup:
     return start_markup()
 
 
-def main_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🏠 Abrir menu principal', callback_data='menu:back')],
-    ])
+def main_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
+    buttons = []
+    # Botão de apoio — apenas para o usuário 11 (Teles)
+    if chat_id:
+        try:
+            _conn = get_db()
+            _row = _conn.execute(sql("SELECT user_id FROM bot_users WHERE chat_id = %s"), (chat_id,)).fetchone()
+            _uid = int(_row['user_id']) if _row else None
+            _conn.close()
+            if _uid == 11:
+                buttons.append([InlineKeyboardButton('🙌 Apoiar projeto', callback_data='menu:apoiar')])
+        except Exception:
+            pass
+    buttons.append([InlineKeyboardButton('🏠 Abrir menu principal', callback_data='menu:back')])
+    return InlineKeyboardMarkup(buttons)
 
 
 def cancel_markup(callback_data: str, label: str = '❌ Cancelar') -> InlineKeyboardMarkup:
@@ -1141,7 +1196,7 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
         try:
             _apoio_user_id = get_user_id_by_chat(_apoio_conn, str(chat_id))
             if _apoio_user_id and int(_apoio_user_id) == 11:
-                keyboard.append([InlineKeyboardButton('🙌 Apoiar projeto', callback_data='menu:apoiar')])
+                keyboard.insert(0, [InlineKeyboardButton('🙌 Apoiar projeto', callback_data='menu:apoiar')])
         finally:
             _apoio_conn.close()
     if show_payments:
@@ -2633,6 +2688,98 @@ async def painel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Use os botões abaixo para editar ou excluir cada plano cadastrado no banco."
         )
         await query.edit_message_text(texto, parse_mode='Markdown', reply_markup=plans_adjust_markup(settings))
+
+    elif action.startswith('apoio_edit:'):
+        await query.answer()
+        field = action.split(':', 1)[1]
+        if field.startswith('apoio_edit:'):
+            field = field.split(':', 1)[1]
+        try:
+            idx = int(field)
+        except ValueError:
+            return
+        valores = get_apoio_valores(conn)
+        if idx >= len(valores):
+            return
+        context.user_data['awaiting_apoio_value_edit'] = idx
+        await query.message.reply_text(
+            f"💰 Valor atual do apoio #{idx + 1}: R$ {valores[idx]:.2f}\n\n"
+            f"Envie o novo valor. Exemplo: 15 ou 15,00",
+            reply_markup=cancel_markup('painel:apoios', '❌ Cancelar edição'),
+        )
+        return ConversationHandler.END
+
+    elif action.startswith('apoio_delete:'):
+        await query.answer()
+        field = action.split(':', 1)[1]
+        if field.startswith('apoio_delete:'):
+            field = field.split(':', 1)[1]
+        try:
+            idx = int(field)
+        except ValueError:
+            return
+        valores = get_apoio_valores(conn)
+        if idx >= len(valores):
+            return
+        await query.edit_message_text(
+            f"🗑️ *Confirmar exclusão do valor R$ {valores[idx]:.2f}*\n\n"
+            f"Tem certeza que deseja remover este valor de apoio?",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ Confirmar exclusão', callback_data=f'painel:apoio_delete_confirm:{idx}')],
+                [InlineKeyboardButton('❌ Cancelar', callback_data='painel:apoios')],
+            ]),
+        )
+
+    elif action.startswith('apoio_delete_confirm:'):
+        await query.answer()
+        field = action.split(':', 1)[1]
+        if field.startswith('apoio_delete_confirm:'):
+            field = field.split(':', 1)[1]
+        try:
+            idx = int(field)
+        except ValueError:
+            return
+        valores = get_apoio_valores(conn)
+        if idx >= len(valores):
+            return
+        valores.pop(idx)
+        set_apoio_valores(conn, valores)
+        donations = list_donations(conn)
+        total = total_donations(conn)
+        texto_valores = ", ".join(f"R$ {v:.2f}" for v in valores)
+        linhas = []
+        if donations:
+            for d in donations:
+                name = d.get('first_name') or d.get('username') or d['chat_id'][:8] + '...'
+                val = float(d['amount'])
+                dt = d.get('approved_at') or d.get('created_at')
+                if dt: dt = str(dt)[:19]
+                linhas.append(f"• {name} | R$ {val:.2f} | {dt}")
+        texto_doacoes = "\n".join(linhas) if linhas else "Nenhum apoio recebido ainda."
+        texto = (
+            "🙌 *Gerenciar Apoios*\n\n"
+            "*📊 Recebido*\n"
+            f"Total: R$ {total:.2f} ({len(donations)} doações)\n\n"
+            f"{texto_doacoes}\n\n"
+            "*⚙️ Valores disponíveis*\n"
+            f"{texto_valores}\n\n"
+            "Use os botões abaixo para editar os valores de apoio."
+        )
+        await query.edit_message_text(
+            texto,
+            parse_mode='Markdown',
+            reply_markup=apoiar_adjust_markup(conn),
+        )
+
+    elif action == 'apoio_add':
+        await query.answer()
+        context.user_data['awaiting_apoio_add'] = True
+        await query.message.reply_text(
+            "💰 Envie o valor para adicionar como opção de apoio. Exemplo: 25 ou 25,00",
+            reply_markup=cancel_markup('painel:apoios', '❌ Cancelar'),
+        )
+        return ConversationHandler.END
 
     elif action == 'toggle_result_type_filters':
         current = 1 if should_show_result_type_filters(conn) else 0
@@ -5190,6 +5337,48 @@ async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_pending_input_state(context)
     if context.user_data.get('awaiting_admin_broadcast'):
         return await admin_broadcast_save(update, context)
+    if context.user_data.get('awaiting_apoio_value_edit'):
+        idx = context.user_data.get('awaiting_apoio_value_edit')
+        texto = (update.message.text or '').strip().replace('R$', '').replace('.', '').replace(',', '.')
+        try:
+            novo_valor = max(0.0, float(texto))
+        except ValueError:
+            await update.message.reply_text('Valor inválido. Envie algo como 15 ou 15,00.')
+            return ConversationHandler.END
+        conn = get_db()
+        try:
+            valores = get_apoio_valores(conn)
+            if idx is not None and 0 <= idx < len(valores):
+                valores[idx] = novo_valor
+                set_apoio_valores(conn, valores)
+                await update.message.reply_text(f'✅ Valor de apoio #{idx + 1} atualizado para R$ {format_money_br(novo_valor)}.')
+            else:
+                await update.message.reply_text('Índice inválido.')
+        finally:
+            conn.close()
+        context.user_data.pop('awaiting_apoio_value_edit', None)
+        return ConversationHandler.END
+
+    if context.user_data.pop('awaiting_apoio_add', False):
+        texto = (update.message.text or '').strip().replace('R$', '').replace('.', '').replace(',', '.')
+        try:
+            novo_valor = max(0.0, float(texto))
+        except ValueError:
+            await update.message.reply_text('Valor inválido. Envie algo como 25 ou 25,00.')
+            return ConversationHandler.END
+        if novo_valor <= 0:
+            await update.message.reply_text('O valor deve ser maior que zero.')
+            return ConversationHandler.END
+        conn = get_db()
+        try:
+            valores = get_apoio_valores(conn)
+            valores.append(novo_valor)
+            set_apoio_valores(conn, valores)
+            await update.message.reply_text(f'✅ Valor de apoio R$ {format_money_br(novo_valor)} adicionado.')
+        finally:
+            conn.close()
+        return ConversationHandler.END
+
     if context.user_data.get('awaiting_plan_price_edit'):
         field = context.user_data.get('awaiting_plan_price_edit')
         texto = (update.message.text or '').strip().replace('R$', '').replace('.', '').replace(',', '.')
@@ -5812,7 +6001,12 @@ async def apoiar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text('Valor inválido.')
         return
     
-    if amount not in [float(v) for v in APOIO_VALUES]:
+    conn = get_db()
+    try:
+        _valores_validos = get_apoio_valores(conn)
+    finally:
+        conn.close()
+    if amount not in [float(v) for v in _valores_validos]:
         await query.message.reply_text('Valor não disponível.')
         return
     
@@ -5866,12 +6060,10 @@ async def apoiar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ticket_url:
         await query.message.reply_text(f'🔗 Link do pagamento: {ticket_url}')
     
-    # Botão para verificar pagamento
     await query.message.reply_text(
-        'Obrigado pelo apoio! 🙏 Toque em "Verificar pagamento" após pagar.',
+        'Obrigado pelo apoio! 🙏',
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton('✅ Verificar pagamento', callback_data=f'apoiar:check:{mp_id}')],
-            [InlineKeyboardButton('⬅️ Voltar', callback_data='menu:back')],
+            [InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')],
         ])
     )
 

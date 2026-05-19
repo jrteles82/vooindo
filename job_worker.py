@@ -601,10 +601,22 @@ async def _send_photo(bot: Bot, chat_id: str, image_path: str):
         await bot.send_photo(chat_id=chat_id, photo=image_file)
 
 
-def main_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton('🏠 Abrir menu principal', callback_data='menu:back')],
-    ])
+def main_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
+    buttons = []
+    # Botão de apoio — apenas para o usuário 11 (Teles)
+    if chat_id:
+        try:
+            from db import connect as _db, sql as _sql
+            _conn = _db()
+            _row = _conn.execute(_sql("SELECT user_id FROM bot_users WHERE chat_id = %s"), (chat_id,)).fetchone()
+            _uid = int(_row['user_id']) if _row else None
+            _conn.close()
+            if _uid == 11:
+                buttons.append([InlineKeyboardButton('🙌 Apoiar projeto', callback_data='menu:apoiar')])
+        except Exception:
+            pass
+    buttons.append([InlineKeyboardButton('🏠 Abrir menu principal', callback_data='menu:back')])
+    return InlineKeyboardMarkup(buttons)
 
 
 def send_photo(bot: Bot, loop, chat_id: str, image_path: str):
@@ -1068,7 +1080,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             if family_dry_run:
                 logger.info('[job-worker] group_key=%s | DRY RUN sem resultados para consolidar', group_key)
             else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup(chat_id)))
             return
         
         # Aplicar filtros (mesma lógica do fluxo original)
@@ -1090,7 +1102,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             if family_dry_run:
                 logger.info('[job-worker] group_key=%s | DRY RUN sem resultados após filtros', group_key)
             else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup()))
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='⚠️ Nenhuma rota encontrada dentro dos seus filtros.', reply_markup=main_menu_markup(chat_id)))
             return
         
         # Gerar imagem e enviar
@@ -1098,7 +1110,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         if not image_path:
             fallback_msg = build_booking_links_message(filtered_merged)
             if fallback_msg and not family_dry_run:
-                _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
+                _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup(chat_id))
             elif family_dry_run:
                 logger.info('[job-worker] group_key=%s | DRY RUN sem imagem | resultados=%s | links=%s', group_key, len(filtered_merged), bool(fallback_msg))
             return
@@ -1115,9 +1127,9 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
                     for _attempt in range(1, 3):
                         try:
                             if links_msg:
-                                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup(chat_id))
                             else:
-                                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup(chat_id)))
                             return
                         except BaseException as _send_err:
                             if _attempt >= 2:
@@ -1549,7 +1561,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             mensagem = '⚠️ Nenhuma rota encontrada dentro dos seus filtros.'
             error_msg = 'Consulta sem resultados filtrados'
         if not is_dry_run:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup(chat_id)))
         if charge_now:
             conn.execute(
                 sql(f"UPDATE user_access SET free_uses = free_uses + 1, updated_at = {now_expression()} WHERE chat_id = %s"),
@@ -1568,7 +1580,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     if not _rows_have_displayable_result(filtered):
         mensagem = '⚠️ Encontramos a rota, mas sem preço ou link confiável no momento. Tente novamente em alguns minutos.'
         if not is_dry_run:
-            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup()))
+            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=mensagem, reply_markup=main_menu_markup(chat_id)))
         logger.warning('[job-worker] job_id=%s | resultados sem preço/link utilizável após filtros', job_id)
         warn_job(conn, job_id, 'Consulta sem preço ou link confiável')
         audit.scraping("scan_agendado_concluido" if str(job.get('job_type') or '').strip().lower() == 'scheduled' else "scan_manual_concluido",
@@ -1591,7 +1603,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         logger.warning('[job-worker] job_id=%s | imagem não gerada, usando fallback por texto', job_id)
         fallback_msg = build_booking_links_message(filtered)
         if fallback_msg:
-            _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup())
+            _send_links_message(bot, loop, chat_id, fallback_msg, main_menu_markup(chat_id))
             image_path = None
         else:
             raise RuntimeError('Falha ao gerar print da consulta')
@@ -1612,13 +1624,13 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
             # Links de reserva (sem IA)
             links_msg = build_booking_links_message(filtered)
             if links_msg:
-                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup(chat_id))
             else:
-                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup(chat_id)))
                 if links_msg:
-                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup())
+                    _send_links_message(bot, loop, chat_id, links_msg, main_menu_markup(chat_id))
                 else:
-                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup()))
+                    loop.run_until_complete(bot.send_message(chat_id=chat_id, text='🏠 Toque abaixo para abrir o menu novamente.', reply_markup=main_menu_markup(chat_id)))
         finally:
             if image_path:
                 try:
@@ -1807,7 +1819,7 @@ def main():
                             loop.run_until_complete(bot.send_message(
                                 chat_id=str(job['chat_id']),
                                 text='🔧 Em manutenção, aguarde um instante.',
-                                reply_markup=main_menu_markup(),
+                                reply_markup=main_menu_markup(chat_id),
                             ))
                         except Exception:
                             pass
