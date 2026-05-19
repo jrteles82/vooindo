@@ -580,6 +580,69 @@ def get_valid_pending_payment(conn, chat_id: str):
     return row
 
 
+# ═══════════════════════════════════════════════════════════════
+# Sistema de Apoio / Doações
+# ═══════════════════════════════════════════════════════════════
+
+APOIO_VALUES = [10, 20, 30, 40, 50]
+
+
+def apoiar_text() -> str:
+    return (
+        '🙌 *Apoie o Vooindo!*\n\n'
+        'Se você gostou e acha que esse bot pode ajudar você a encontrar '
+        'melhores preços e economizar, apoie o projeto com os custos de manutenções.\n\n'
+        'Escolha qualquer valor abaixo:'
+    )
+
+
+def apoiar_markup() -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for v in APOIO_VALUES:
+        row.append(InlineKeyboardButton(f'R$ {v:.2f}', callback_data=f'apoiar:{v}'))
+        if len(row) >= 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton('⬅️ Voltar ao menu', callback_data='menu:back')])
+    return InlineKeyboardMarkup(rows)
+
+
+def save_donation(conn, chat_id: str, amount: float, mp_payment_id: str, status: str):
+    conn.execute(
+        sql('''
+        INSERT INTO donations (chat_id, amount, mp_payment_id, status, created_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ON DUPLICATE KEY UPDATE status=VALUES(status), approved_at=IF(VALUES(status)='approved', NOW(), approved_at)
+        '''),
+        (chat_id, amount, mp_payment_id, status),
+    )
+    conn.commit()
+
+
+def list_donations(conn, limit: int = 20) -> list[dict]:
+    return conn.execute(
+        sql('''
+        SELECT d.*, b.first_name, b.username
+        FROM donations d
+        LEFT JOIN bot_users b ON b.chat_id = d.chat_id COLLATE utf8mb4_unicode_ci
+        WHERE d.status = 'approved'
+        ORDER BY d.approved_at DESC
+        LIMIT %s
+        '''),
+        (limit,),
+    ).fetchall()
+
+
+def total_donations(conn) -> float:
+    row = conn.execute(
+        sql("SELECT COALESCE(SUM(amount), 0) AS total FROM donations WHERE status = 'approved'")
+    ).fetchone()
+    return float(row['total'])
+
+
 def ensure_app_user(conn, first_name: str) -> int:
     row = conn.execute(
         sql("SELECT id FROM users WHERE email = %s"),
@@ -1072,6 +1135,15 @@ def full_menu_markup(chat_id: str | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton('⚙️ Filtro de consultas', callback_data='menu:limite')],
         [InlineKeyboardButton('🔔 Desativar alertas' if alerts_enabled else '🔕 Ativar alertas', callback_data='menu:togglealerts')],
     ]
+    # Botão de apoio — apenas para o usuário 11 (Teles)
+    if chat_id:
+        _apoio_conn = get_db()
+        try:
+            _apoio_user_id = get_user_id_by_chat(_apoio_conn, str(chat_id))
+            if _apoio_user_id and int(_apoio_user_id) == 11:
+                keyboard.append([InlineKeyboardButton('🙌 Apoiar projeto', callback_data='menu:apoiar')])
+        finally:
+            _apoio_conn.close()
     if show_payments:
         keyboard.append([InlineKeyboardButton('💳 Meus pagamentos', callback_data='menu:pagamentos')])
     keyboard.append([InlineKeyboardButton('ℹ️ Ajuda e instruções', callback_data='menu:manual')])
@@ -1250,6 +1322,7 @@ def admin_panel_markup(settings_row=None, maintenance_on: bool = False, show_res
          InlineKeyboardButton('🧭 Trechos', callback_data='painel:usuarios_trechos')],
         [InlineKeyboardButton('💰 Vendas', callback_data='painel:vendas'),
          InlineKeyboardButton('⚙️ Planos', callback_data='painel:planos')],
+        [InlineKeyboardButton('🙌 Apoios', callback_data='painel:apoios')],
         # Toggles
         [InlineKeyboardButton(manut_label, callback_data='painel:manutencao'),
          InlineKeyboardButton(modo_teste_label, callback_data='painel:modo_teste')],
@@ -4606,6 +4679,9 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer()
             fake_update = Update(update.update_id, message=query.message)
             await manual(fake_update, context)
+        elif action == 'apoiar':
+            await query.answer()
+            await query.message.reply_text(apoiar_text(), parse_mode='Markdown', reply_markup=apoiar_markup())
         elif action == 'pagamentos':
             await query.answer()
             conn = get_db()
@@ -5662,6 +5738,7 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(painel_callback, pattern=r'^painel:'))
     app.add_handler(CallbackQueryHandler(painel_callback, pattern=r'^userpix:'))
     app.add_handler(CallbackQueryHandler(painel_callback, pattern=r'^selectorhealth:'))
+    app.add_handler(CallbackQueryHandler(apoiar_callback, pattern=r'^apoiar:'))
     app.add_handler(CallbackQueryHandler(payment_callback, pattern=r'^payment:'))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r'^menu:'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_save), group=1)
@@ -5684,6 +5761,119 @@ async def run_bot():
             if app.running:
                 await app.stop()
             await app.shutdown()
+
+
+
+
+async def apoiar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para callbacks do sistema de apoio (apoiar:valor)."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    chat_id = str(query.message.chat.id)
+    
+    # Verificar pagamento de apoio
+    parts_check = data.split(':')
+    if len(parts_check) >= 3 and parts_check[1] == 'check':
+        mp_payment_id = parts_check[2]
+        conn = get_db()
+        try:
+            mp_data = get_mp_payment(mp_payment_id)
+            status = mp_data.get('status', 'pending')
+            approved_at = mp_data.get('date_approved')
+            
+            save_donation(conn, chat_id, 0, mp_payment_id, status)
+            
+            if status == 'approved':
+                await query.message.reply_text(f'🎉 Pagamento confirmado! Muito obrigado pelo apoio! 🙏')
+                
+                user_row = get_bot_user_by_chat(conn, chat_id)
+                user_name = (user_row['first_name'] or '—') if user_row else chat_id
+                push_admin_notif(
+                    conn,
+                    "notif_pagamento_confirmado",
+                    f"🙌 *Apoio recebido!*\n\n"
+                    f"*Usuário:* {user_name}\n"
+                    f"*Chat ID:* `{chat_id}`\n"
+                    f"*Valor:* R$ {mp_data.get('transaction_amount', 0):.2f}\n"
+                    f"*ID:* `{mp_payment_id}`\n"
+                    f"*Data:* {approved_at or '-'}",
+                )
+            else:
+                await query.message.reply_text(f'⏳ Pagamento ainda não aprovado. Status: {status}\nTente novamente em alguns instantes.')
+        finally:
+            conn.close()
+        return
+    
+    value_str = data.split(':', 1)[1]
+    try:
+        amount = float(value_str)
+    except ValueError:
+        await query.message.reply_text('Valor inválido.')
+        return
+    
+    if amount not in [float(v) for v in APOIO_VALUES]:
+        await query.message.reply_text('Valor não disponível.')
+        return
+    
+    conn = get_db()
+    try:
+        payment = create_mp_pix_payment(chat_id, f'Apoio R$ {amount:.2f}', amount)
+        mp_id = str(payment.get('id'))
+        qr_code = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code', '')
+        qr_base64 = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('qr_code_base64', '')
+        ticket_url = payment.get('point_of_interaction', {}).get('transaction_data', {}).get('ticket_url', '')
+        
+        save_donation(conn, chat_id, amount, mp_id, payment.get('status', 'pending'))
+        
+        user_row = get_bot_user_by_chat(conn, chat_id)
+        user_name = (user_row['first_name'] or '—') if user_row else chat_id
+        
+        push_admin_notif(
+            conn,
+            "notif_pix_gerado",
+            f"🙌 *Apoio gerado*\n\n"
+            f"*Usuário:* {user_name}\n"
+            f"*Chat ID:* `{chat_id}`\n"
+            f"*Valor:* R$ {amount:.2f}\n"
+            f"*ID:* `{mp_id}`",
+        )
+    finally:
+        conn.close()
+    
+    await query.edit_message_text(
+        f"🙌 *Apoio gerado com sucesso!*\n\n"
+        f"*Valor:* R$ {amount:.2f}\n"
+        f"*ID:* `{mp_id}`\n\n"
+        f"Seu apoio ajuda a manter o Vooindo funcionando. Obrigado! 🙏",
+        parse_mode='Markdown'
+    )
+    
+    if qr_code:
+        await query.message.reply_text(
+            f'📱 *Código Pix para pagar*\n\n' + '`' + qr_code + '`\n\nCopie e cole no seu banco.',
+            parse_mode='Markdown'
+        )
+    
+    if qr_base64:
+        try:
+            import io as _io
+            qr_bytes = base64.b64decode(qr_base64)
+            await context.bot.send_photo(chat_id=chat_id, photo=_io.BytesIO(qr_bytes), caption='📱 Escaneie o QR Code:')
+        except Exception as exc:
+            logger.warning('apoiar: falha ao enviar QR imagem | erro=%s', exc)
+    
+    if ticket_url:
+        await query.message.reply_text(f'🔗 Link do pagamento: {ticket_url}')
+    
+    # Botão para verificar pagamento
+    await query.message.reply_text(
+        'Obrigado pelo apoio! 🙏 Toque em "Verificar pagamento" após pagar.',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ Verificar pagamento', callback_data=f'apoiar:check:{mp_id}')],
+            [InlineKeyboardButton('⬅️ Voltar', callback_data='menu:back')],
+        ])
+    )
 
 
 def main():
