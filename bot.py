@@ -3600,6 +3600,15 @@ async def addrota_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dt_obj = datetime.strptime(dt_str, '%Y-%m-%d').date()
         days_diff = (dt_obj - now_local().date()).days
         
+        if days_diff <= 0:
+            sent = await update.message.reply_text(
+                f'⚠️ *Data no passado.*\n\nVocê informou {dt_str}.\nO Google Flights não mostra resultados para datas passadas ou de hoje.\n\n✍️ Por favor, informe uma data futura.',
+                parse_mode='Markdown',
+                reply_markup=force_reply_markup('Ex.: 25/12/2026'),
+            )
+            context.user_data.setdefault('bot_msg_ids', []).append(sent.message_id)
+            return ASK_OUTBOUND
+            
         if days_diff > MAX_ROUTE_ADVANCE_DAYS:
             sent = await update.message.reply_text(
                 f'⚠️ *Data muito distante.*\n\nVocê informou uma data para daqui a {days_diff} dias.\nAs companhias/Google Flights normalmente só liberam consulta com até *{MAX_ROUTE_ADVANCE_DAYS} dias* de antecedência.\n\n✍️ Por favor, informe uma data mais próxima.',

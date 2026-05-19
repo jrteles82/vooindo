@@ -68,6 +68,13 @@ def _is_route_beyond_advance_limit(outbound_date: str, date_type: str = 'fixed')
     return days is not None and days > MAX_ROUTE_ADVANCE_DAYS
 
 
+def _is_route_in_past(outbound_date: str, date_type: str = 'fixed') -> bool:
+    if str(date_type or 'fixed') != 'fixed':
+        return False
+    days = _route_days_ahead(outbound_date, date_type)
+    return days is not None and days <= 0  # data <= hoje não tem resultado no Google Flights
+
+
 def _format_skipped_route_label(origin: str, destination: str, outbound_date: str, date_type: str = 'fixed') -> str:
     days = _route_days_ahead(outbound_date, date_type)
     suffix = f' ({days} dias)' if days is not None else ''
@@ -1081,17 +1088,36 @@ def main():
                         continue
                     
                     skipped_distant_routes = []
+                    expired_route_ids = []
+                    expired_route_labels = []
                     queryable_route_count = 0
                     for route in route_rows:
                         _origin = route['origin'] if isinstance(route, dict) else route[1]
                         _destination = route['destination'] if isinstance(route, dict) else route[2]
                         _outbound_date = route['outbound_date'] if isinstance(route, dict) else route[3]
                         _date_type = route.get('date_type', 'fixed') if isinstance(route, dict) else (route[5] if len(route) > 5 else 'fixed')
-                        if _is_route_beyond_advance_limit(_outbound_date, _date_type):
+                        if _is_route_in_past(_outbound_date, _date_type):
+                            _route_id = route['id'] if isinstance(route, dict) else route[0]
+                            expired_route_ids.append(_route_id)
+                            expired_route_labels.append(_format_skipped_route_label(_origin, _destination, _outbound_date, _date_type))
+                        elif _is_route_beyond_advance_limit(_outbound_date, _date_type):
                             skipped_distant_routes.append(_format_skipped_route_label(_origin, _destination, _outbound_date, _date_type))
                         else:
                             queryable_route_count += 1
 
+                    if expired_route_ids:
+                        # Desativa as rotas vencidas
+                        conn.execute(sql(f"UPDATE user_routes SET active = 0 WHERE id IN ({','.join(['%s']*len(expired_route_ids))})"), tuple(expired_route_ids))
+                        conn.commit()
+                        # Notifica o usuário
+                        _expired_lines = '\n'.join(f'  ❌ {l}' for l in expired_route_labels)
+                        _msg = f'🗑️ *Rotas removidas por data vencida:*\n{_expired_lines}\n\nEssas datas já passaram e não há resultados no Google Flights.'
+                        try:
+                            loop.run_until_complete(bot.send_message(chat_id=chat_id, text=_msg, parse_mode='Markdown'))
+                        except Exception:
+                            pass
+                        cycle_stats['reasons']['rota_data_vencida'] = cycle_stats['reasons'].get('rota_data_vencida', 0) + len(expired_route_ids)
+                        logger.info("[bot-scheduler] %s | %s rota(s) vencida(s) removidas", label, len(expired_route_ids))
                     if skipped_distant_routes:
                         _notify_skipped_distant_routes(bot, loop, chat_id, skipped_distant_routes)
                         cycle_stats['reasons']['rota_acima_330_dias'] = cycle_stats['reasons'].get('rota_acima_330_dias', 0) + len(skipped_distant_routes)
@@ -1114,6 +1140,8 @@ def main():
                         date_type = route.get('date_type', 'fixed') if isinstance(route, dict) else (route[5] if len(route) > 5 else 'fixed')
                         trip_type = route.get('trip_type', 'one-way') if isinstance(route, dict) else (route[6] if len(route) > 6 else 'one-way')
                         flexible_month = route.get('flexible_month', '') if isinstance(route, dict) else (route[7] if len(route) > 7 else '')
+                        if _is_route_in_past(outbound_date, date_type):
+                            continue
                         if _is_route_beyond_advance_limit(outbound_date, date_type):
                             continue
                         

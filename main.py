@@ -850,8 +850,10 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 if r.inbound_date:
                     cmd.append(r.inbound_date)
                 
-                # Timeout: 250s nacionais, 200s internacionais (com retry +60s em caso de timeout)
-                intl_timeout = 400 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 480
+                # Timeout: 400s internacionais, 480s nacionais + 180s extra para flexível (gráfico + refine dias)
+                base_timeout = 400 if (r.origin not in _BR_CODES or r.destination not in _BR_CODES) else 480
+                flexible_extra = 180 if getattr(r, 'date_type', '') == 'flexible' else 0
+                intl_timeout = base_timeout + flexible_extra
                 
                 # Semáforo: espera até 300s por um slot Chrome
                 slot_got = ChromeSemaphore.acquire(timeout=480.0)
@@ -2021,17 +2023,27 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
         # converte para /booking?tfs= — abre direto o voo e resolve booking.
         if url and "/travel/flights/search?tfs=" in url:
             url = url.replace("/search?tfs=", "/booking?tfs=", 1)
-        # Fallback: se só tem URL de busca do Google Flights, usa o melhor link possível.
-        # /search?tfs= costuma abrir direto o voo; tentamos converter para /booking.
-        # /search?q= não é conversível com segurança, mas ainda é melhor que "link indisponível".
+        # Sanitiza URLs com flex:YYYY-MM:trip_type (fallback de executor crashado)
+        if url and 'flex%3A' in url:
+            import re as _re
+            _m = _re.search(r'flex%3A(\d{4}-\d{2})', url)
+            if _m:
+                url = url.replace(f'flex%3A{_m.group(1)}%3Aone-way%20', f'{_m.group(1)}-01%20')
+                url = url.replace(f'flex%3A{_m.group(1)}%3Aoneway%20', f'{_m.group(1)}-01%20')
         search_url = str(row.get("url") or "").strip()
         if url:
             return url
         if "/travel/flights/search?tfs=" in search_url:
             return search_url.replace("/search?tfs=", "/booking?tfs=", 1)
         if "/travel/flights/search?q=" in search_url:
+            # Sanitiza flex: nas search_url tambem
+            if 'flex%3A' in search_url:
+                import re as _re2
+                _m2 = _re2.search(r'flex%3A(\d{4}-\d{2})', search_url)
+                if _m2:
+                    search_url = search_url.replace(f'flex%3A{_m2.group(1)}%3Aone-way%20', f'{_m2.group(1)}-01%20')
+                    search_url = search_url.replace(f'flex%3A{_m2.group(1)}%3Aoneway%20', f'{_m2.group(1)}-01%20')
             return search_url
-        # Último fallback seguro: reconstrói a busca da própria rota/data.
         return _route_search_url(row)
 
     def _build_lines(block_rows: list[dict]) -> list[str]:

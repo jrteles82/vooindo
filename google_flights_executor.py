@@ -225,111 +225,70 @@ def _open_date_picker(page, notes: list[str]) -> bool:
 
 
 def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
-    """Modo B: extrai grafico de precos (1 page load), escolhe o dia mais barato.
-    
-    Aplica filtro de qualidade para evitar "preços teaser" (ex: graph_max=7500,
-    melhor grafico=R$395, mas pagina real=R$1038 sem cia aerea vs R$6225 com cia real).
-    Dias com preco < 30% do graph_max sao tratados como teaser e ignorados."""
+    """Percorre dias 1->N, usa expand_results nos teasers pra achar preco real."""
     from datetime import datetime
-    
     dt = datetime.strptime(flexible_month, '%Y-%m')
     outbound_date = dt.strftime('%Y-%m-%d')
     notes.append(f'flexible_oneway_month={flexible_month}')
     
+    from calendar import monthrange
+    _, last_day = monthrange(dt.year, dt.month)
+    
+    # Grafico: 1 page load, extrai threshold de teaser
     url = build_url(origin, destination, outbound_date)
     page.goto(url, wait_until='domcontentloaded')
     wait_for_results(page)
     time.sleep(1)
-    
-    # Extrai precos do grafico (1 page load = mes inteiro!)
     days = _extract_graph_prices(page, notes)
-    if not days:
-        notes.append('flexible_graph_failed_fallback_day1')
-        return {'price': None, 'outbound_date': outbound_date}
+    graph_max = max(d['price'] for d in days) if days else 5000
+    teaser_threshold = graph_max * 0.30
+    notes.append(f'flexible_graph_max={graph_max} threshold={int(teaser_threshold)}')
     
-    # Filtra so os dias do mes-alvo (primeiros 30-31 dias)
-    from calendar import monthrange
-    _, last_day = monthrange(dt.year, dt.month)
-    month_days = days[:last_day]
-    
-    if not month_days:
-        notes.append('flexible_no_days_in_month')
-        return {'price': None, 'outbound_date': outbound_date}
-    
-    best = min(month_days, key=lambda d: d['price'])
-    best_date = dt.replace(day=best['day']).strftime('%Y-%m-%d')
-    graph_max = max(d['price'] for d in month_days) if month_days else 5000
-    notes.append(f'flexible_graph_best=day_{best["day"]} price={best["price"]}')
-    
-    # Refina ±1 dia com preço real da página (gráfico tem precisão de ~R\$15/pixel)
-    # Também refina o próprio best day pra pegar preço real (gráfico pode subestimar)
-    from calendar import monthrange as _mr
-    _, _last = _mr(dt.year, dt.month)
-    refine_days = [d for d in range(best['day'] - 1, best['day'] + 2) 
-                   if 1 <= d <= _last and d != best['day']]
-    # Inclui o best day no refine pra ter preço real (gráfico = pixel, impreciso)
-    all_refine_days = sorted(set(refine_days + [best['day']]))
-    refined_prices: dict[int, float] = {}  # day -> actual page price
-    if all_refine_days:
-        for day in all_refine_days:
-            test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+    for day in range(1, last_day + 1):
+        test_date = dt.replace(day=day).strftime('%Y-%m-%d')
+        try:
             url_r = build_url(origin, destination, test_date)
-            try:
-                t0 = time.perf_counter()
-                page.goto(url_r, wait_until='domcontentloaded')
-                wait_for_results(page)
-                body = page.locator('body').inner_text(timeout=8000)
-                sp = extract_summary_price(body)
-                if sp is None:
-                    all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
-                    if all_p: sp = min(all_p)
-                et = round(time.perf_counter() - t0, 1)
-                if sp is not None:
-                    refined_prices[day] = sp
-                    if day == best['day']:
-                        notes.append(f'flexible_refine_best_day={day} price={sp}')
-                        best = {'day': day, 'price': sp}
-                        best_date = test_date
-                    elif sp < best['price'] or (sp == best['price'] and day > best['day']):
-                        best = {'day': day, 'price': sp}
-                        best_date = test_date
-                        notes.append(f'flexible_refine_day={day} price={sp} BEST')
-                    elif sp == best['price']:
-                        notes.append(f'flexible_refine_day={day} price={sp} SAME')
-                    else:
-                        notes.append(f'flexible_refine_day={day} price={sp} elapsed={et}s')
+            page.goto(url_r, wait_until='domcontentloaded')
+            wait_for_results(page)
+            body = page.locator('body').inner_text(timeout=8000)
+            sp = extract_summary_price(body)
+            if sp is None:
+                all_p = [p for p in parse_prices(body) if 100 <= p <= 50000]
+                if all_p: sp = min(all_p)
+            
+            if sp is not None and sp >= teaser_threshold:
+                notes.append(f'flexible_chosen_day_{day}=price_{sp}')
+                return {'price': sp, 'outbound_date': test_date}
+            
+            # Teaser ou sem preco: expande "mostrar mais voos" e re-escaneia
+            if sp is None or sp < teaser_threshold:
+                expand_results(page, notes, is_international=is_international_route(origin, destination))
+                try:
+                    body_expanded = page.locator('body').inner_text(timeout=6000)
+                except Exception:
+                    body_expanded = body
+                all_prices = sorted([p for p in parse_prices(body_expanded) if 300 <= p <= 50000])
+                n_total = len(all_prices)
+                if all_prices:
+                    sp_max = max(all_prices)  # preco maximo pode ser cia aerea real
+                    sp_min = min(all_prices)
+                    notes.append(f'flexible_day_{day}_expanded={n_total}p min={sp_min} max={sp_max}')
+                    # Se TEM algum preco real (>= threshold) na pagina expandida, usa este dia
+                    real_prices = [p for p in all_prices if p >= teaser_threshold]
+                    if real_prices:
+                        sp_best = min(real_prices)
+                        notes.append(f'flexible_chosen_day_{day}=expanded_real_price={sp_best}')
+                        return {'price': sp_best, 'outbound_date': test_date}
+                    notes.append(f'flexible_day_{day}_teaser_expanded')
+                elif sp is not None:
+                    notes.append(f'flexible_day_{day}_teaser')
                 else:
-                    notes.append(f'flexible_refine_day={day} no_price elapsed={et}s')
-            except Exception as e:
-                notes.append(f'flexible_refine_day={day} error={str(e)[:60]}')
+                    notes.append(f'flexible_day_{day}_no_price')
+        except Exception as e:
+            notes.append(f'flexible_day_{day}_error={str(e)[:40]}')
     
-    # ── Filtro de qualidade: evita "preço teaser" ──
-    # Preços abaixo de 30% do graph_max são tipicamente teasers de agência,
-    # não tarifas reais de companhia aérea. Ex: PVH→PTY graph_max=7500,
-    # preço real R$6225 vs teaser R$1038 (13.8% do max).
-    if refined_prices and graph_max > 0:
-        teaser_threshold = graph_max * 0.30
-        good_days = [(d, p) for d, p in refined_prices.items() if p >= teaser_threshold]
-        if good_days:
-            # Pega o mais barato entre os dias com preço real (não-teaser)
-            best_day, best_price = min(good_days, key=lambda x: x[1])
-            if best_day != best['day']:
-                notes.append(
-                    f'flexible_quality_skip=day_{best["day"]} price={best["price"]} '
-                    f'(below teaser_threshold={int(teaser_threshold)}) '
-                    f'→ day_{best_day} price={best_price}'
-                )
-                best = {'day': best_day, 'price': best_price}
-                best_date = dt.replace(day=best_day).strftime('%Y-%m-%d')
-            else:
-                notes.append(f'flexible_quality_ok=day_{best_day} price={best_price} >= teaser_threshold={int(teaser_threshold)}')
-        else:
-            notes.append(
-                f'flexible_quality_all_teasers=days={list(refined_prices.keys())} '
-                f'prices={list(refined_prices.values())} threshold={int(teaser_threshold)}'
-            )
-    
-    # Navega para o dia escolhido (com qualidade)
+    notes.append('flexible_no_valid_day_fallback_day1')
+    return {'price': None, 'outbound_date': outbound_date}    # Navega para o dia escolhido (com qualidade)
     url = build_url(origin, destination, best_date)
     page.goto(url, wait_until='domcontentloaded')
     wait_for_results(page)
@@ -1447,7 +1406,23 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
         page.set_default_timeout(TIMEOUT_MS)
         try:
             nav_started = time.perf_counter()
-            page.goto("https://www.google.com/", wait_until="domcontentloaded")
+            # Retry da navegacao inicial (guardian pode fechar pagina durante healthcheck)
+            for _pg_setup in range(3):
+                try:
+                    page.goto("https://www.google.com/", wait_until="domcontentloaded")
+                    break
+                except Exception as _pe:
+                    if _pg_setup < 2 and 'closed' in str(_pe).lower():
+                        notes.append(f'page_goto_retry_{_pg_setup+1}')
+                        time.sleep(4)
+                        try: context.close()
+                        except: pass
+                        context = browser.new_context()
+                        page = context.new_page()
+                        Stealth().apply_stealth_sync(page)
+                        page.set_default_timeout(TIMEOUT_MS)
+                    else:
+                        raise
             notes.append(f"home_nav_s={round(time.perf_counter() - nav_started, 3)}")
             human_pause(1.0, 1.8)
             health = check_session_health(page)
@@ -1539,6 +1514,18 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             notes.append(f'cards_body_len={len(cards_body)}')
             _debug = cards_body[:500].replace('\n', '\\n')
             notes.append(f'cards_body_preview={_debug}')
+            # Se data está no passado, aborta imediatamente (sem retry)
+            if any(kw in cards_body for kw in ['estão no passado', 'no passado', 'in the past', 'dates are in the past']):
+                notes.append('past_date_abort')
+                return {
+                    "ok": False, "error": "past_date", "message": "Data no passado",
+                    "notes": notes, "origin": origin, "destination": destination,
+                    "outbound_date": outbound_date, "inbound_date": inbound_date,
+                    "price": None, "url": page.url, "booking_url": "",
+                    "best_vendor": "", "best_vendor_price": None,
+                    "best_airline_vendor": None, "best_airline_price": None,
+                    "best_airline_url": None, "booking_options": [], "price_insight": "",
+                }
             # Se nao tem resultados, tenta reload e re-extração até 2x
             if 'Nenhum resultado encontrado' in cards_body or 'Algo deu errado' in cards_body:
                 _no_results_retry = 0
@@ -1779,11 +1766,13 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
             if best_vendor_price is not None and best_vendor:
                 final_price = best_vendor_price
                 notes.append('final_price_source=booking_validated')
-            elif summary_price is not None:
+            elif summary_price is not None and (ALLOW_AGENCIES or best_airline):
                 final_price = summary_price
                 if best_vendor_price is None:
                     best_vendor_price = summary_price
                 notes.append('final_price_source=booking_agency_fallback')
+            elif summary_price is not None and not ALLOW_AGENCIES and not best_airline:
+                notes.append('final_price_rejected_agency_only_summary_no_airline')
             else:
                 notes.append('final_price_rejected_no_validated_booking_price')
             notes.append(f"run_total_s={round(time.perf_counter() - nav_started, 3)}")
@@ -1926,17 +1915,17 @@ def main(argv: list[str]) -> int:
     inbound_date = argv[4] if len(argv) > 4 else ""
     profile_dir = os.environ.get('GOOGLE_PERSISTENT_PROFILE_DIR', '/opt/vooindo/google_session')
     
-    max_retries = 0  # sem retry — cada scan é rápido o suficiente
+    max_retries = 1  # retry em caso de TargetClosedError do guardian
     last_result = None
     renewed = False
     for attempt in range(1 + max_retries):
         try:
-            # Timeout global de 480s por tentativa (matching main.py subprocess timeout)
+            # Timeout: 300s por tentativa (2x = 600s total < 660s subprocess)
             import signal as _sig
             def _timeout_handler(_signum, _frame):
-                raise TimeoutError('scan_timeout_480s')
+                raise TimeoutError('scan_timeout_300s')
             _sig.signal(_sig.SIGALRM, _timeout_handler)
-            _sig.alarm(480)
+            _sig.alarm(300)
             try:
                 result = run(origin, destination, outbound_date, inbound_date)
             finally:
