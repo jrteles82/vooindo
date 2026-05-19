@@ -1272,7 +1272,7 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         _jid = _wd_job_id[0]
         _start = _t.time()
         # Timeout progressivo: começa em 120s, estende até 480s em saltos de 60s
-        _checkpoints = [150, 210, 270, 330, 390, 450]
+        _checkpoints = [90, 150, 210, 270, 330, 390, 450]
         for _cp in _checkpoints:
             _wait = _cp - (_t.time() - _start)
             if _wait > 0:

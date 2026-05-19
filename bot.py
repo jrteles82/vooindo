@@ -5554,6 +5554,11 @@ async def run_bot():
         write_timeout=60.0,
     )
     app = ApplicationBuilder().token(TOKEN).request(request).post_init(post_init).build()
+
+    async def _global_error_handler(update, context):
+        logger.error('[telegram-error] update=%s error=%s',
+                    update, context.error if context else 'None', exc_info=context.error if context else None)
+    app.add_error_handler(_global_error_handler)
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('menu', menu))
     app.add_handler(CommandHandler('manual', manual))
