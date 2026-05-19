@@ -606,7 +606,7 @@ _CHROME_MAX_CONCURRENT = 3  # 3 Chromes simultâneos — 4 trava OOM no Guardian
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
-    'AJU','BEL','BHZ','BSB','BVB','CGB','CGH','CGR','CNF','CWB',
+    'AJU','BEL','BHZ','BSB','BVB','BYO','CGB','CGH','CGR','CNF','CWB',
     'FLN','FOR','GIG','GRU','IGU','IOS','JOI','JPA','LDB','MAO',
     'MCZ','MGF','NAT','NVT','PET','POA','PVH','RAO','REC','SDU',
     'SJP','SLZ','SSA','STM','THE','UDI','VIX'
@@ -2021,6 +2021,10 @@ def build_booking_links_message(rows: list[dict], result_type: str | None = None
             url = ""
         # Se o scraper devolveu URL de busca (/search?tfs=) em vez de booking,
         # converte para /booking?tfs= — abre direto o voo e resolve booking.
+        # Google Flights redireciona algumas rotas para /travel/search?ts= (ex: PVH→PTY).
+        # Converte para /travel/flights/booking?tfs= — abre o booking real.
+        if url and "/travel/search?ts=" in url:
+            url = url.replace("/travel/search?ts=", "/travel/flights/booking?tfs=", 1)
         if url and "/travel/flights/search?tfs=" in url:
             url = url.replace("/search?tfs=", "/booking?tfs=", 1)
         # Sanitiza URLs com flex:YYYY-MM:trip_type (fallback de executor crashado)

@@ -37,7 +37,7 @@ TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_TIMEOUT_MS", os.getenv("GOOG
 if os.getenv("GOOGLE_FLIGHTS_SHORT_TIMEOUT"):
     TIMEOUT_MS = min(TIMEOUT_MS, 60000)
 SLOW_MO = int(os.getenv("GOOGLE_FLIGHTS_EXECUTOR_SLOW_MO_MS", "125"))
-BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "15000"))
+BOOKING_CONTENT_TIMEOUT_MS = int(os.getenv("GOOGLE_FLIGHTS_BOOKING_CONTENT_TIMEOUT_MS", "25000"))
 ALLOW_AGENCIES = os.getenv("GOOGLE_FLIGHTS_ALLOW_AGENCIES", "1").strip().lower() in {"1", "true", "yes", "on"}
 SKIP_BOOKING = os.getenv("GOOGLE_FLIGHTS_SKIP_BOOKING", "0").strip().lower() in {"1", "true", "yes", "on"}
 MAX_CARDS = int(os.getenv("GOOGLE_FLIGHTS_MAX_CARDS", "2"))
@@ -585,6 +585,10 @@ def wait_for_booking_options_stable(page, settle_timeout_ms: int = 3000) -> None
 
 def wait_for_booking(page) -> bool:
     if "/travel/flights/booking" in (page.url or ""):
+        return wait_for_booking_content(page)
+    # Google Flights redireciona algumas rotas para /travel/search?ts= (ex: PVH→PTY).
+    # Trata como navegação válida de booking.
+    if "/travel/search?ts=" in (page.url or ""):
         return wait_for_booking_content(page)
     # Painel lateral: verifica body por texto específico
     try:
@@ -1239,7 +1243,11 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                     target.click(timeout=3000, force=True)
                     human_pause(0.3, 0.6)
                     current_url = page.url or ""
-                    if "/travel/flights/booking" in current_url:
+                    # Google Flights agora redireciona para /travel/search?ts= em vez de
+                    # /travel/flights/booking para certas rotas (ex: PVH→PTY).
+                    # Trata /travel/search?ts= como navegação válida e tenta extrair booking.
+                    _is_travel_search = "/travel/search?ts=" in current_url
+                    if "/travel/flights/booking" in current_url or _is_travel_search:
                         if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                             wait_for_booking_options_stable(page)
                             _extract_booking_with_two_step(idx, price, page_booking_url=current_url)
@@ -1301,7 +1309,8 @@ def maybe_open_booking(page, summary_price: float | None, notes: list[str], allo
                                 rt.click(timeout=3000, force=True)
                                 human_pause(0.3, 0.6)
                                 cu = page.url or ""
-                                if "/travel/flights/booking" in cu:
+                                _is_ts = "/travel/search?ts=" in cu
+                                if "/travel/flights/booking" in cu or _is_ts:
                                     if wait_for_booking_content(page, timeout_ms=booking_timeout_ms):
                                         wait_for_booking_options_stable(page)
                                         _extract_booking_with_two_step(idx, price, page_booking_url=cu)
@@ -1728,8 +1737,29 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                                         page.set_default_timeout(TIMEOUT_MS)
                                         notes.append('booking_retry_new_context')
                                     except Exception as _ce:
-                                        notes.append(f'booking_retry_new_context_failed={_ce}')
-                                        break
+                                        # Se o browser inteiro caiu (guardian restart), tenta reconectar ao CDP
+                                        if 'TargetClosed' in str(_ce) or 'closed' in str(_ce).lower() or 'Connection' in str(_ce):
+                                            try:
+                                                browser.close()
+                                            except Exception:
+                                                pass
+                                            for _cdp_retry in range(15):
+                                                try:
+                                                    browser = p.chromium.connect_over_cdp('http://127.0.0.1:9222')
+                                                    context = browser.contexts[0]
+                                                    page = context.new_page()
+                                                    Stealth().apply_stealth_sync(page)
+                                                    page.set_default_timeout(TIMEOUT_MS)
+                                                    notes.append('booking_retry_reconnect_cdp')
+                                                    break
+                                                except Exception:
+                                                    time.sleep(2)
+                                            else:
+                                                notes.append(f'booking_retry_new_context_failed={_ce}')
+                                                break
+                                        else:
+                                            notes.append(f'booking_retry_new_context_failed={_ce}')
+                                            break
                                 try:
                                     page.goto(url, wait_until='domcontentloaded')
                                     wait_for_results(page)
