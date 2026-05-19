@@ -404,8 +404,8 @@ def is_job_cancelled(conn, job_id: int) -> bool:
         return True
     status = str(row['status'] if isinstance(row, dict) else row[0] or '')
     error_message = str(row['error_message'] if isinstance(row, dict) else row[1] or '')
-    # watchdog que marcou job_timeout_300s não é cancelamento real — scan pode ter completado
-    if 'job_timeout_300s' in error_message:
+    # watchdog que marcou timeout não é cancelamento real — scan pode ter completado
+    if 'job_timeout' in error_message:
         return False
     return status != 'running' or error_message == 'cancelled_by_new_request'
 
@@ -1269,39 +1269,40 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     _wd_scan_done = [False]  # thread-safe flag: setada quando o scan retorna dados
     def _job_watchdog():
         import time as _t
-        _t.sleep(_JOB_TIMEOUT)
         _jid = _wd_job_id[0]
-        # Se o scan já retornou dados, NÃO faz nada — o Chrome já foi liberado.
-        # NÃO matar chrome aqui: isso mata o Chrome de jobs ATUAIS de outros workers.
-        # O _purge_stale_chrome() no início do próximo process_job limpa orphans.
-        if _wd_scan_done[0]:
-            logger.info('[job-worker][watchdog] job_id=%s | scan já completou, watchdog ocioso', _jid)
-            return
-        # Só age se o job AINDA estiver running (não foi finalizado naturalmente)
-        try:
-            from db import connect as _db, sql as _sql
-            _c = _db()
-            _row = _c.cursor().execute(_sql("SELECT status FROM scan_jobs WHERE id = %s"), (_jid,)).fetchone()
-            _status = _row['status'] if isinstance(_row, dict) else _row[0] if _row else 'done'
-            _c.close()
-            if _status not in ('pending', 'running'):
-                return  # Já foi finalizado, watchdog não precisa agir
-        except:
-            pass
+        _start = _t.time()
+        # Timeout progressivo: começa em 120s, estende até 480s em saltos de 60s
+        _checkpoints = [150, 210, 270, 330, 390, 450]
+        for _cp in _checkpoints:
+            _wait = _cp - (_t.time() - _start)
+            if _wait > 0:
+                _t.sleep(_wait)
+            if _wd_scan_done[0]:
+                logger.info('[job-worker][watchdog] job_id=%s | scan completou (checkpoint=%ss, elapsed=%.0fs)', _jid, _cp, _t.time()-_start)
+                return
+            try:
+                from db import connect as _db, sql as _sql
+                _c = _db()
+                _row = _c.cursor().execute(_sql("SELECT status FROM scan_jobs WHERE id = %s"), (_jid,)).fetchone()
+                _status = _row['status'] if isinstance(_row, dict) else _row[0] if _row else 'done'
+                _c.close()
+                if _status not in ('pending', 'running'):
+                    return
+            except:
+                pass
+            logger.info('[job-worker][watchdog] job_id=%s | ainda rodando apos %ss, estendendo timeout...', _jid, int(_t.time()-_start))
+        # Max timeout (450s) atingido: marca como erro
+        _elapsed = int(_t.time() - _start)
         _wd_fired[0] = True
-        # NUNCA mata o Chrome aqui — workers compartilham o guardian via CDP.
-        # Matar o Chrome quebra todos os outros workers simultaneos.
-        # O _purge_stale_chrome() no inicio do proximo process_job limpa orphans.
-        # Marca job como erro
         try:
             from db import connect as _db, sql as _sql
             _c = _db()
-            _c.cursor().execute(_sql("UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'job_timeout_300s' WHERE id = %s AND status IN ('pending', 'running')"), (_jid,))
+            _c.cursor().execute(_sql(f"UPDATE scan_jobs SET status = 'error', finished_at = NOW(), error_message = 'job_timeout_{_elapsed}s' WHERE id = %s AND status IN ('pending', 'running')"), (_jid,))
             _c.commit()
             _c.close()
         except:
             pass
-        logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss | marcado como erro (Chrome preservado)', _jid, _JOB_TIMEOUT)
+        logger.warning('[job-worker][watchdog] job_id=%s | TIMEOUT %ss | marcado como erro (Chrome preservado)', _jid, _elapsed)
     import threading as _th
     _tw = _th.Thread(target=_job_watchdog, daemon=True)
     _tw.start()
@@ -1754,7 +1755,7 @@ def main():
                     'timeout_expired (retry)',
                     'Consulta sem preço ou link confiável',
                     'cancelled_by_new_request',  # scan pode ter dados, vale retry
-                    'job_timeout_300s',  # watchdog matou, mas scan pode ter completado
+                    'job_timeout',  # watchdog matou, mas scan pode ter completado
                     '143',  # SIGTERM (restart/sistema matou o worker) — sempre retentar
                 }
                 # 'Consulta sem resultados filtrados' só retenta se parsed > 0 (crashou no filtro)
