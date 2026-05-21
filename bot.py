@@ -65,7 +65,6 @@ from cmd_status import cmd_status
 ASK_ORIGIN, ASK_DESTINATION, ASK_OUTBOUND, ASK_LIMIT, ASK_SUPPORT_MESSAGE, ASK_ADMIN_SUPPORT_MESSAGE = range(6)
 ASK_GOOGLE_PASSWORD, ASK_GOOGLE_2FA = range(6, 8)
 ASK_DATE_TYPE, ASK_TRIP_TYPE, ASK_MONTH = range(8, 11)
-ASK_INTERVAL = 12
 setup_logging()
 logger = logging.getLogger(__name__)
 LEGACY_BROADCAST_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN_LEGACY', '').strip()
@@ -4517,67 +4516,6 @@ async def limite_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ─── Intervalo customizado ──────────────────────────────────────────────
-
-async def intervalo_custom_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Usuário clicou em 'Customizar' no menu de intervalos."""
-    query = update.callback_query
-    await query.answer()
-    chat_id = str(query.message.chat.id)
-    conn = get_db()
-    row = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
-    admin_min = int(row['scan_interval_minutes'] or 60) if row else 60
-    conn.close()
-    context.user_data['awaiting_interval_input'] = True
-    await query.message.reply_text(
-        f'Digite o intervalo desejado em minutos (m\u00ednimo {admin_min} min, m\u00e1ximo 1440 min = 24h):',
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton('\u274c Cancelar', callback_data='menu:intervalo_cancel')
-        ]]),
-    )
-    return ASK_INTERVAL
-
-
-async def intervalo_custom_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Salva o valor personalizado digitado pelo usu\u00e1rio."""
-    if not context.user_data.get('awaiting_interval_input'):
-        return ConversationHandler.END
-    
-    chat_id = str(update.effective_chat.id)
-    texto = update.message.text.strip()
-    
-    try:
-        valor = int(texto)
-    except ValueError:
-        await update.message.reply_text(
-            'Valor inv\u00e1lido. Envie um n\u00famero inteiro de minutos, ex: 180 (para 3 horas).'
-        )
-        return ASK_INTERVAL
-    
-    conn = get_db()
-    user_id = get_user_id_by_chat(conn, chat_id)
-    msg = set_user_scan_interval(conn, user_id, valor)
-    
-    if msg.startswith('\u274c'):
-        await update.message.reply_text(msg)
-        conn.close()
-        return ASK_INTERVAL
-    
-    conn.close()
-    context.user_data.pop('awaiting_interval_input', None)
-    await update.message.reply_text(msg, reply_markup=full_menu_markup(chat_id))
-    return ConversationHandler.END
-
-
-async def intervalo_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancela a entrada customizada de intervalo."""
-    query = update.callback_query
-    await query.answer()
-    context.user_data.pop('awaiting_interval_input', None)
-    await query.message.delete()
-    return ConversationHandler.END
-
-
 async def filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -4940,29 +4878,21 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'\n\nIntervalo atual: *{user_interval} minutos*'
                 f'\nIntervalo padr\u00e3o: {admin_min} minutos'
                 '\n\nEscolha com que frequ\u00eancia deseja receber as notifica\u00e7\u00f5es:'
-                '\nIntervalo m\u00ednimo: *{admin_min} minutos*'
-                '\n\nVoc\u00ea tamb\u00e9m pode digitar um valor personalizado (em minutos).'
             )
-            presets = [120, 180, 240, 360, 480, 720, 1440]
-            # Filtra presets < admin_min
+            presets = list(range(120, 1441, 60))  # 2h a 24h, de hora em hora
             presets = [p for p in presets if p >= admin_min]
             keyboard = []
             row_btns = []
             for opt in presets:
                 hours = opt // 60
                 chk = '\u2705 ' if opt == user_interval else ''
-                if opt % 60 == 0:
-                    lbl = f'{chk}{hours}h'
-                else:
-                    lbl = f'{chk}{opt} min'
+                lbl = f'{chk}{hours}h'
                 row_btns.append(InlineKeyboardButton(lbl, callback_data=f'menu:intervalo_set:{opt}'))
                 if len(row_btns) == 3:
                     keyboard.append(row_btns)
                     row_btns = []
             if row_btns:
                 keyboard.append(row_btns)
-            # Botão para customizar
-            keyboard.append([InlineKeyboardButton('\u270f\ufe0f Customizar', callback_data='menu:intervalo_custom')])
             keyboard.append([InlineKeyboardButton('\U0001f519 Voltar', callback_data='menu:back')])
             await query.edit_message_text(texto, parse_mode='Markdown',
                                           reply_markup=InlineKeyboardMarkup(keyboard))
@@ -4989,24 +4919,20 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'\nIntervalo padr\u00e3o: {admin_min} minutos'
                 '\n\nEscolha com que frequ\u00eancia deseja receber as notifica\u00e7\u00f5es:'
             )
-            presets = [120, 180, 240, 360, 480, 720, 1440]
+            presets = list(range(120, 1441, 60))  # 2h a 24h, de hora em hora
             presets = [p for p in presets if p >= admin_min]
             keyboard = []
             row_btns = []
             for opt in presets:
                 hours = opt // 60
                 chk = '\u2705 ' if opt == user_interval else ''
-                if opt % 60 == 0:
-                    lbl = f'{chk}{hours}h'
-                else:
-                    lbl = f'{chk}{opt} min'
+                lbl = f'{chk}{hours}h'
                 row_btns.append(InlineKeyboardButton(lbl, callback_data=f'menu:intervalo_set:{opt}'))
                 if len(row_btns) == 3:
                     keyboard.append(row_btns)
                     row_btns = []
             if row_btns:
                 keyboard.append(row_btns)
-            keyboard.append([InlineKeyboardButton('\u270f\ufe0f Customizar', callback_data='menu:intervalo_custom')])
             keyboard.append([InlineKeyboardButton('\U0001f519 Voltar', callback_data='menu:back')])
             await query.edit_message_text(texto, parse_mode='Markdown',
                                           reply_markup=InlineKeyboardMarkup(keyboard))
@@ -6068,18 +5994,6 @@ async def run_bot():
         },
         fallbacks=[CommandHandler('cancelar', cancel)],
     )
-    intervalo_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(intervalo_custom_callback, pattern=r'^menu:intervalo_custom$'),
-        ],
-        states={
-            ASK_INTERVAL: [
-                CallbackQueryHandler(intervalo_cancel_callback, pattern=r'^menu:intervalo_cancel$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, intervalo_custom_save),
-            ],
-        },
-        fallbacks=[CommandHandler('cancelar', cancel)],
-    )
     support_conv = ConversationHandler(
         entry_points=[CommandHandler('suporte', support_message_start), CallbackQueryHandler(support_callback, pattern=r'^support:')],
         states={
@@ -6100,7 +6014,6 @@ async def run_bot():
     app.add_handler(CallbackQueryHandler(alerts_callback, pattern=r'^menu:(togglealerts|confirmalerts:)'))
     app.add_handler(conv)
     app.add_handler(limite_conv)
-    app.add_handler(intervalo_conv)
     app.add_handler(support_conv)
     app.add_handler(CallbackQueryHandler(comment_callback, pattern=r'^comment:'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, comment_message_handler))
