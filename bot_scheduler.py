@@ -1036,22 +1036,24 @@ def main():
                         cycle_stats['reasons']['cooldown'] = cycle_stats['reasons'].get('cooldown', 0) + 1
                         logger.info("[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s", label, user['last_sent_at'])
                         continue
-                    # Per-user interval check: se usuário definiu intervalo personalizado,
-                    # só processa se já passou tempo suficiente desde o último envio agendado
+                    # Per-user interval check: usuário com intervalo personalizado
+                    # só é processado se já passou tempo suficiente desde o último agendamento.
                     admin_interval_seconds = interval_seconds
                     user_interval_min = user.get('scan_interval_minutes')
                     if user_interval_min is not None:
-                        user_interval_seconds = max(admin_interval_seconds, int(user_interval_min) * 60)
+                        user_interval_s = max(admin_interval_seconds, int(user_interval_min) * 60)
                         last_sched = str(user.get('last_scheduled_sent_at') or '')
-                        if last_sched and not was_sent_recently(last_sched, window_seconds=user_interval_seconds - 60):
-                            # Já passou tempo suficiente desde o último envio? A função was_sent_recently retorna True se DENTRO da janela.
-                            # Usamos lógica inversa: só pula se AINDA está dentro da janela
-                            pass
-                        if last_sched and was_sent_recently(last_sched, window_seconds=user_interval_seconds):
-                            cycle_stats['skipped_users'] += 1
-                            cycle_stats['reasons']['intervalo_personalizado'] = cycle_stats['reasons'].get('intervalo_personalizado', 0) + 1
-                            logger.info("[bot-scheduler] %s | ignorado | intervalo=%s min | ultimo_envio=%s", label, user_interval_min, last_sched)
-                            continue
+                        if last_sched:
+                            try:
+                                dt = datetime.fromisoformat(last_sched.replace(' ', 'T'))
+                                delta = (now_local() - dt).total_seconds()
+                            except Exception:
+                                delta = user_interval_s + 1  # força processar se data inválida
+                            if delta < user_interval_s:
+                                cycle_stats['skipped_users'] += 1
+                                cycle_stats['reasons']['intervalo_personalizado'] = cycle_stats['reasons'].get('intervalo_personalizado', 0) + 1
+                                logger.info("[bot-scheduler] %s | ignorado | intervalo=%s min | delta=%.0f min | ultimo=%s", label, user_interval_min, delta/60, last_sched[:16])
+                                continue
                     eligible_users.append(user)
                 except Exception:
                     pass
