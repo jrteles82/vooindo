@@ -1091,6 +1091,8 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         show_result_type_filters = should_show_result_type_filters(conn)
         
         expanded = expand_rows_by_result_type(all_rows, airline_filters_json, show_result_type_filters=show_result_type_filters)
+        # Remove linhas sem preço antes de qualquer filtro — resultado sem preço não serve
+        expanded = [r for r in expanded if isinstance(r.get('price'), (int, float))]
         max_price_val = normalize_max_price(settings.get('max_price'))
         filtered_price = filter_rows_by_max_price(expanded, max_price_val)
         filtered_norm = normalize_rows_for_airline_priority(filtered_price, airline_filters_json)
