@@ -871,12 +871,16 @@ def run_scan_for_routes(routes: list[RouteQuery], on_row=None, sources: dict | N
                 finally:
                     # Mata APENAS Chrome orphan REAL (pai não existe mais)
                     # NÃO mata Chrome de outros workers ativos
+                    # NÃO mata o Chrome do Guardian (--remote-debugging-port=9222)
                     import psutil as _psutil, os as _os
                     try:
                         for _proc in _psutil.process_iter(['pid', 'name', 'ppid', 'cmdline']):
                             _name = (_proc.info.get('name') or '').lower()
                             _cmd = ' '.join(_proc.info.get('cmdline') or [])
                             if 'chrome' not in _name and 'chrom' not in _cmd:
+                                continue
+                            # Pula Chrome do Guardian (gerenciado externamente)
+                            if '--remote-debugging-port' in _cmd or '--remote-debugging-address' in _cmd:
                                 continue
                             _pp = _proc.info['ppid']
                             if _pp <= 1:
