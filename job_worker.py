@@ -645,14 +645,20 @@ def _send_links_message(bot: Bot, loop, chat_id: str, links_msg: str, reply_mark
             raise
 
 
-def mark_sent(conn, user_id: int):
-    """Atualiza last_sent_at usando conexão autocommit separada para evitar conflito com scheduler."""
+def mark_sent(conn, user_id: int, send_type: str = 'scheduled'):
+    """Atualiza timestamps de envio usando conexão autocommit separada."""
     _cap = _make_cap_conn()
     try:
-        _cap.cursor().execute(
-            f"UPDATE bot_settings SET last_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
-            (user_id,),
-        )
+        if send_type == 'manual':
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_manual_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
+        else:
+            _cap.cursor().execute(
+                f"UPDATE bot_settings SET last_sent_at = {now_expression()}, last_scheduled_sent_at = {now_expression()}, updated_at = {now_expression()} WHERE user_id = %s",
+                (user_id,),
+            )
     finally:
         _cap.close()
 
