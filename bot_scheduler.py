@@ -448,15 +448,16 @@ def _check_google_session_and_notify():
     score_file = base_dir / 'check_google_session.py'
 
     def _session_score() -> int:
-        """Retorna 0-3. 3 = válida."""
-        r = subprocess.run([sys.executable, str(score_file)], capture_output=True, text=True, timeout=30)
-        for line in r.stdout.strip().split('\n'):
-            if 'Score:' in line:
-                try:
-                    return int(line.split(':')[1].strip().split('/')[0])
-                except:
-                    return 0
-        return 0
+        """Retorna score via guardian (sem abrir Chrome próprio, evitando conflito de profile)."""
+        try:
+            import urllib.request, json as _json
+            _req = urllib.request.urlopen('http://127.0.0.1:9230/status', timeout=5)
+            _status = _json.loads(_req.read().decode())
+            if bool(_status.get('session_ok', False)):
+                return 3
+            return 0
+        except Exception:
+            return 0
 
     def _renew_session() -> bool:
         """Tenta renovar a sessão Google via app password.
@@ -505,14 +506,15 @@ def _check_google_session_and_notify():
         else:
             logger.warning('[bot-scheduler] renovação automática falhou')
 
-        # Sempre notifica se ainda inválida
-        score = _session_score()
-        if score < 3:
-            notify_result = subprocess.run(
-                [sys.executable, str(score_file), '--notify'],
-                capture_output=True, text=True, timeout=30
-            )
-            logger.info('[bot-scheduler] notificação: %s', notify_result.stdout.strip()[:200])
+        # Notifica admin se sessão inválida
+        try:
+            from bot import send_message_sync
+            send_message_sync('1748352987',
+                '⚠️ *Sessão Google expirada - renovação automática falhou*\n\n'
+                'O bot tentou renovar automaticamente mas não conseguiu.\n'
+                'Renove manualmente com o comando /renovar_sessao')
+        except Exception:
+            pass
     except Exception as exc:
         logger.warning('[bot-scheduler] erro ao verificar/renovar sessão Google: %s', exc)
 
