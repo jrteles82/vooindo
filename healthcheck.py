@@ -242,56 +242,19 @@ def check_stale_jobs(hours: int = 2) -> dict:
 
 
 def check_google_session() -> dict:
-    """Verifica se a sessão Google ainda está válida."""
+    """Verifica sessão Google via Guardian (sem abrir Chrome próprio, evitando conflito de profile lock)."""
     result = {'ok': True, 'score': 3, 'message': ''}
     try:
-        os.environ.setdefault('USE_SYSTEM_CHROME', '1')
-        import sys as _sys
-        _sys.path.insert(0, str(BASE_DIR))
-        from playwright.sync_api import sync_playwright
-        from google_flights_executor import check_session_health
-        for f in Path(str(BASE_DIR / 'google_session')).glob('Singleton*'):
-            try: f.unlink()
-            except: pass
-        with sync_playwright() as _pw:
-            _ctx = _pw.chromium.launch_persistent_context(
-                str(BASE_DIR / 'google_session'), headless=True, channel='chrome',
-                args=['--no-sandbox'], timeout=20000
-            )
-            _page = _ctx.pages[0] if _ctx.pages else _ctx.new_page()
-            _page.goto('https://www.google.com/', wait_until='domcontentloaded', timeout=20000)
-            _health = check_session_health(_page)
-            _score = _health.get('score', 0)
-            _ctx.close()
-        result['score'] = _score
-        if _score < 2:
+        import urllib.request as _req
+        _resp = _req.urlopen('http://127.0.0.1:9230/status', timeout=5)
+        import json as _json
+        _status = _json.loads(_resp.read().decode())
+        if _status.get('session_ok', False):
+            result['score'] = 3
+        else:
             result['ok'] = False
-            result['message'] = f'Sessão Google expirada (score {_score}/3)'
-            # Tenta renovar automaticamente (Firefox primeiro, Chrome fallback)
-            _renewed = False
-            for _name, _script in [
-                ('Firefox', BASE_DIR / 'google_login_firefox_stdin.py'),
-                ('Chrome',  BASE_DIR / 'google_login_stdin.py'),
-            ]:
-                if not _script.exists():
-                    continue
-                try:
-                    _proc = subprocess.run(
-                        [_sys.executable, str(_script), '--email', 'vooindo.bot@gmail.com'],
-                        input='Vooindo#8212\n',
-                        capture_output=True, text=True, timeout=180,
-                    )
-                    if 'AUTH_SCORE:1' in _proc.stdout or 'AUTH_SCORE:2' in _proc.stdout:
-                        result['ok'] = True
-                        result['message'] = f'Sessão Google renovada via {_name} (era {_score}/3)'
-                        result['score'] = 3
-                        print(f'[HEALTHCHECK] Sessão Google renovada via {_name} ✅')
-                        _renewed = True
-                        break
-                except Exception as _renew_err:
-                    print(f'[HEALTHCHECK] Renovação {_name} falhou: {_renew_err}')
-            if not _renewed:
-                result['message'] = f'Sessão Google ainda inválida após renovação ({_score}/3)'
+            result['score'] = 0
+            result['message'] = 'Guardian reporta session_ok=false'
     except Exception as e:
         result['ok'] = True  # Se falhou ao verificar, não alarmar
         result['message'] = f'Verificação de sessão falhou: {e}'
