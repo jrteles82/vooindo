@@ -868,6 +868,12 @@ def set_user_scan_interval(conn, user_id: int, minutes: int) -> str:
         return '❌ O intervalo mínimo é 60 minutos.'
     if minutes > 1440:
         return '❌ O intervalo máximo é 24 horas (1440 minutos).'
+    if minutes % admin_min != 0:
+        # Arredonda para o múltiplo mais próximo do intervalo padrão
+        lower = (minutes // admin_min) * admin_min
+        upper = lower + admin_min
+        suggested = upper if upper <= 1440 else lower
+        return f'❌ O intervalo deve ser múltiplo de {admin_min} min (ex: {suggested} min).'
     conn.execute(
         sql('UPDATE bot_settings SET scan_interval_minutes = %s, updated_at = NOW() WHERE user_id = %s'),
         (minutes, user_id),
@@ -3186,18 +3192,26 @@ LIMIT 15
             sql("UPDATE app_settings SET scan_interval_minutes = %s, updated_at = NOW() WHERE id = 1"),
             (novo_valor,),
         )
-        # Enforce: ajusta usuarios com intervalo menor que o novo padrao
-        aff = conn.execute(
+        # Enforce: ajusta usuarios com intervalo menor ou não-múltiplo do novo padrão
+        # Passo 1: abaixo do mínimo → sobe pro mínimo
+        aff1 = conn.execute(
             sql("UPDATE bot_settings SET scan_interval_minutes = %s, updated_at = NOW() "
                 "WHERE scan_interval_minutes IS NOT NULL AND scan_interval_minutes < %s"),
             (novo_valor, novo_valor),
         )
-        adjusted = getattr(aff, 'rowcount', 0) if hasattr(aff, 'rowcount') else 0
+        below = getattr(aff1, 'rowcount', 0) if hasattr(aff1, 'rowcount') else 0
+        # Passo 2: não-múltiplos → arredonda pro próximo múltiplo
+        aff2 = conn.execute(
+            sql(f"UPDATE bot_settings SET scan_interval_minutes = {novo_valor} * CEIL(scan_interval_minutes / {novo_valor}), updated_at = NOW() "
+                f"WHERE scan_interval_minutes IS NOT NULL AND scan_interval_minutes >= {novo_valor} AND scan_interval_minutes % {novo_valor} != 0"),
+        )
+        non_mult = getattr(aff2, 'rowcount', 0) if hasattr(aff2, 'rowcount') else 0
+        adjusted = below + non_mult
         conn.commit()
         audit.admin('scan_interval_alterado', chat_id=chat_id, payload={'novo_valor': novo_valor, 'usuarios_ajustados': adjusted})
         row = conn.execute(sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
         current = int(row['scan_interval_minutes'] or 60) if row else 60
-        ajuste_msg = f'\n\n*{adjusted} usuario(s) com intervalo menor foram ajustados para {novo_valor} min.' if adjusted else ''
+        ajuste_msg = f'\n\n*{adjusted} usuario(s) com intervalo ajustado para alinhar com {novo_valor} min.' if adjusted else ''
         texto = (
             '\u2705 *Intervalo entre rodadas*'
             '\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
@@ -4879,14 +4893,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'\nIntervalo padr\u00e3o: {admin_min} minutos'
                 '\n\nEscolha com que frequ\u00eancia deseja receber as notifica\u00e7\u00f5es:'
             )
-            presets = list(range(120, 1441, 60))  # 2h a 24h, de hora em hora
+            # Gera múltiplos do intervalo padrão para alinhar com as rodadas
+            max_mult = 1440 // admin_min
+            presets = [admin_min * m for m in range(1, max_mult + 1)]
             presets = [p for p in presets if p >= admin_min]
             keyboard = []
             row_btns = []
             for opt in presets:
                 hours = opt // 60
+                rem = opt % 60
                 chk = '\u2705 ' if opt == user_interval else ''
-                lbl = f'{chk}{hours}h'
+                lbl = f'{chk}{hours}h{rem}m' if rem else f'{chk}{hours}h'
                 row_btns.append(InlineKeyboardButton(lbl, callback_data=f'menu:intervalo_set:{opt}'))
                 if len(row_btns) == 3:
                     keyboard.append(row_btns)
@@ -4919,14 +4936,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'\nIntervalo padr\u00e3o: {admin_min} minutos'
                 '\n\nEscolha com que frequ\u00eancia deseja receber as notifica\u00e7\u00f5es:'
             )
-            presets = list(range(120, 1441, 60))  # 2h a 24h, de hora em hora
+            # Gera múltiplos do intervalo padrão para alinhar com as rodadas
+            max_mult = 1440 // admin_min
+            presets = [admin_min * m for m in range(1, max_mult + 1)]
             presets = [p for p in presets if p >= admin_min]
             keyboard = []
             row_btns = []
             for opt in presets:
                 hours = opt // 60
+                rem = opt % 60
                 chk = '\u2705 ' if opt == user_interval else ''
-                lbl = f'{chk}{hours}h'
+                lbl = f'{chk}{hours}h{rem}m' if rem else f'{chk}{hours}h'
                 row_btns.append(InlineKeyboardButton(lbl, callback_data=f'menu:intervalo_set:{opt}'))
                 if len(row_btns) == 3:
                     keyboard.append(row_btns)
