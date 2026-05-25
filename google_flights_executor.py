@@ -244,7 +244,20 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
     teaser_threshold = graph_max * 0.30
     notes.append(f'flexible_graph_max={graph_max} threshold={int(teaser_threshold)}')
     
-    for day in range(1, last_day + 1):
+    # Não varrer datas passadas em mês flexível. Isso é especialmente caro no
+    # mês corrente: cada dia passado pode carregar uma página inválida/lenta,
+    # e rotas muito populares (ex: BSB->GRU) acabam estourando o watchdog antes
+    # de chegar nos dias realmente pesquisáveis.
+    today = datetime.now().date()
+    start_day = 1
+    if dt.year == today.year and dt.month == today.month:
+        start_day = max(1, today.day)
+        notes.append(f'flexible_skip_past_days_before={start_day}')
+    elif (dt.year, dt.month) < (today.year, today.month):
+        notes.append('flexible_month_in_past')
+        return {'price': None, 'outbound_date': outbound_date}
+
+    for day in range(start_day, last_day + 1):
         test_date = dt.replace(day=day).strftime('%Y-%m-%d')
         try:
             url_r = build_url(origin, destination, test_date)
@@ -287,13 +300,9 @@ def _run_flexible_oneway(origin: str, destination: str, flexible_month: str, pag
         except Exception as e:
             notes.append(f'flexible_day_{day}_error={str(e)[:40]}')
     
-    notes.append('flexible_no_valid_day_fallback_day1')
-    return {'price': None, 'outbound_date': outbound_date}    # Navega para o dia escolhido (com qualidade)
-    url = build_url(origin, destination, best_date)
-    page.goto(url, wait_until='domcontentloaded')
-    wait_for_results(page)
-    
-    return {'price': best['price'], 'outbound_date': best_date}
+    notes.append(f'flexible_no_valid_day_fallback_day{start_day}')
+    fallback_date = dt.replace(day=start_day).strftime('%Y-%m-%d')
+    return {'price': None, 'outbound_date': fallback_date}
 
 
 def _run_flexible_roundtrip(origin: str, destination: str, flexible_month: str, page, context, browser, notes: list[str]) -> dict | None:
