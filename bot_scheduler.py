@@ -1039,22 +1039,47 @@ def main():
                         logger.info("[bot-scheduler] %s | ignorado | cooldown ativo | last_sent_at=%s", label, user['last_sent_at'])
                         continue
                     # Per-user interval check: usuário com intervalo personalizado
-                    # só é processado se já passou tempo suficiente desde o último agendamento.
+                    # deve ser baseado na última RODADA CRIADA/enfileirada, não na
+                    # hora da mensagem enviada. Se usar last_scheduled_sent_at, um
+                    # usuário de 180 min numa grade global de 90 min acaba entrando
+                    # só a cada ~270 min, porque a mensagem chega depois do slot.
                     admin_interval_seconds = interval_seconds
                     user_interval_min = user.get('scan_interval_minutes')
                     if user_interval_min is not None:
                         user_interval_s = max(admin_interval_seconds, int(user_interval_min) * 60)
-                        last_sched = str(user.get('last_scheduled_sent_at') or '')
-                        if last_sched:
+                        last_round = ''
+                        try:
+                            _last_round_row = conn.execute(
+                                sql("""
+                                    SELECT MAX(created_at) AS last_round_at
+                                    FROM scan_jobs
+                                    WHERE user_id = %s
+                                      AND job_type = 'scheduled'
+                                      AND group_key LIKE %s
+                                      AND group_key NOT LIKE '%%_retry_%%'
+                                """),
+                                (int(user['user_id']), f"round_{int(user['user_id'])}_%"),
+                            ).fetchone()
+                            if _last_round_row:
+                                last_round = str((_last_round_row.get('last_round_at') if isinstance(_last_round_row, dict) else _last_round_row[0]) or '')
+                        except Exception as _last_round_err:
+                            logger.warning("[bot-scheduler] %s | falha ao ler última rodada criada: %s", label, _last_round_err)
+
+                        # Fallback só para usuários sem histórico de jobs.
+                        last_sched_ref = last_round or str(user.get('last_scheduled_sent_at') or '')
+                        if last_sched_ref:
                             try:
-                                dt = datetime.fromisoformat(last_sched.replace(' ', 'T'))
+                                dt = datetime.fromisoformat(last_sched_ref.replace(' ', 'T'))
                                 delta = (now_local() - dt).total_seconds()
                             except Exception:
                                 delta = user_interval_s + 1  # força processar se data inválida
                             if delta < user_interval_s:
                                 cycle_stats['skipped_users'] += 1
                                 cycle_stats['reasons']['intervalo_personalizado'] = cycle_stats['reasons'].get('intervalo_personalizado', 0) + 1
-                                logger.info("[bot-scheduler] %s | ignorado | intervalo=%s min | delta=%.0f min | ultimo=%s", label, user_interval_min, delta/60, last_sched[:16])
+                                logger.info(
+                                    "[bot-scheduler] %s | ignorado | intervalo=%s min | delta=%.0f min | ultima_rodada=%s | ultimo_envio=%s",
+                                    label, user_interval_min, delta/60, last_round[:16], str(user.get('last_scheduled_sent_at') or '')[:16]
+                                )
                                 continue
                     eligible_users.append(user)
                 except Exception:
