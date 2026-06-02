@@ -174,8 +174,13 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int = 18, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
-    # Primeiro: jobs running há muito tempo -> retry em vez de error
+def recover_stale_jobs(conn, running_timeout_minutes: int | None = None, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+    # Primeiro: jobs running há muito tempo -> retry em vez de error.
+    # Importante: os jobs usam timeout adaptativo e podem rodar até ~3600s.
+    # O recovery antigo de 18min re-enfileirava jobs legítimos ainda em execução,
+    # causando processamento duplicado e relatório 102/103 por timeout.
+    if running_timeout_minutes is None:
+        running_timeout_minutes = int(os.getenv("JOB_WORKER_STALE_RUNNING_MINUTES", "75"))
     stale_running = conn.execute(
         sql(
             f"""
@@ -1273,6 +1278,10 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
     _payload_route_info = _wp.get('route', {}) if isinstance(_wp, dict) else {}
     if _et:
         _JOB_TIMEOUT = _adaptive_route_timeout_seconds(_payload_route_info, int(_et), _payload_retry)
+        # main.py pode fazer: espera por slot + execução + retry de timeout + 3 retries rc1 + minimal_scraper.
+        # Se o watchdog marcar erro antes dessa cadeia terminar, o scheduler abre retry duplicado
+        # e o relatório mostra falso job_timeout mesmo quando o worker salva resultado depois.
+        _JOB_TIMEOUT = max(_JOB_TIMEOUT, 3600)
         logger.info('[job-worker] job_id=%s | timeout adaptativo do payload: %ss (base=%s)', job.get('id'), _JOB_TIMEOUT, _et)
     elif _pr_count > 0:
         _route_count = _pr_count
@@ -1291,8 +1300,10 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         import time as _t
         _jid = _wd_job_id[0]
         _start = _t.time()
-        # Timeout progressivo: começa em 120s, estende até 480s em saltos de 60s
-        _checkpoints = [90, 150, 210, 270, 330, 390, 450]
+        # Timeout progressivo até o timeout calculado acima. Antes estava fixo em 450s,
+        # ignorando _JOB_TIMEOUT e gerando falsos job_timeout_450s enquanto main.py ainda rodava.
+        _base_checkpoints = [90, 150, 210, 270, 330, 390, 450]
+        _checkpoints = [cp for cp in _base_checkpoints if cp < _JOB_TIMEOUT] + [_JOB_TIMEOUT]
         for _cp in _checkpoints:
             _wait = _cp - (_t.time() - _start)
             if _wait > 0:
