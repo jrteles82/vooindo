@@ -670,6 +670,30 @@ def _wait_for_round_completion(job_ids: list[int], timeout_seconds: int = _ROUND
         time.sleep(max(1, poll_seconds))
 
 
+def _actual_round_elapsed_seconds(conn, job_ids: list[int], fallback_seconds: float | int = 0) -> int:
+    """Tempo real entre criação da rodada e último job finalizado.
+
+    Usado no relatório admin quando a rodada termina depois do timeout inicial:
+    evita mostrar o tempo do timeout antigo e remove alerta falso de timeout.
+    """
+    if not job_ids:
+        return int(fallback_seconds or 0)
+    try:
+        placeholders = ', '.join(['%s'] * len(job_ids))
+        row = conn.execute(sql(f"""
+            SELECT TIMESTAMPDIFF(SECOND, MIN(created_at), MAX(finished_at)) AS elapsed_s
+            FROM scan_jobs
+            WHERE id IN ({placeholders})
+              AND finished_at IS NOT NULL
+        """), tuple(job_ids)).fetchone()
+        val = (row['elapsed_s'] if isinstance(row, dict) else row[0]) if row else None
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return int(fallback_seconds or 0)
+
+
 def _build_round_report(cycle_started_iso: str, cycle_duration_ms: int, cycle_stats: dict, job_ids: list[int], wait_result: dict | None = None) -> str:
     if not job_ids:
         reasons = cycle_stats.get('reasons', {}) or {}
@@ -1345,123 +1369,150 @@ def main():
                 if extra_wait.get('complete', False):
                     wait_result = extra_wait
 
+            original_jobs_open = (
+                not wait_result.get('complete', True)
+                and (
+                    wait_result.get('counts', {}).get('running', 0) > 0
+                    or wait_result.get('counts', {}).get('pending', 0) > 0
+                )
+            )
+            if original_jobs_open:
+                logger.info(
+                    '[bot-scheduler] rodada %s | retry adiado: ainda há jobs originais abertos | running=%s | pending=%s',
+                    cycle_started_iso[:16],
+                    wait_result.get('counts', {}).get('running', 0),
+                    wait_result.get('counts', {}).get('pending', 0),
+                )
+
             # --- RETRY: jobs com erro na rodada principal ---
             MAX_RETRIES = 3
             current_ids = list(created_job_ids)
             conn_retry = get_db()
             try:
-                for retry_num in range(1, MAX_RETRIES + 1):
-                    # Buscar jobs com erro (done + error_message)
-                    placeholders = ', '.join(['%s'] * len(current_ids)) if current_ids else 'NULL'
-                    if not current_ids:
-                        break
-                    errored = conn_retry.execute(sql(f'''
-                        SELECT j.id, j.user_id, j.chat_id, j.payload, bu.first_name
-                        FROM scan_jobs j
-                        JOIN bot_users bu ON bu.user_id = j.user_id
-                        WHERE j.id IN ({placeholders})
-                          AND j.status IN ('done', 'error')
-                          AND (j.error_message IS NOT NULL AND j.error_message != '')
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM scan_job_route_results rr
-                              WHERE rr.job_id = j.id
-                                AND rr.num_results > 0
-                                AND rr.result_data REGEXP '"price"[[:space:]]*:[[:space:]]*[0-9]'
-                          )
-                    '''), tuple(current_ids)).fetchall()
+                if original_jobs_open:
+                    logger.info('[bot-scheduler] rodada %s | retry pulado até a rodada original fechar', cycle_started_iso[:16])
+                else:
+                    for retry_num in range(1, MAX_RETRIES + 1):
+                        # Buscar jobs com erro (done + error_message)
+                        placeholders = ', '.join(['%s'] * len(current_ids)) if current_ids else 'NULL'
+                        if not current_ids:
+                            break
+                        errored = conn_retry.execute(sql(f'''
+                            SELECT j.id, j.user_id, j.chat_id, j.payload, bu.first_name
+                            FROM scan_jobs j
+                            JOIN bot_users bu ON bu.user_id = j.user_id
+                            WHERE j.id IN ({placeholders})
+                              AND j.status IN ('done', 'error')
+                              AND (j.error_message IS NOT NULL AND j.error_message != '')
+                              AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM scan_job_route_results rr
+                                  WHERE rr.job_id = j.id
+                                    AND rr.num_results > 0
+                                    AND rr.result_data REGEXP '"price"[[:space:]]*:[[:space:]]*[0-9]'
+                              )
+                        '''), tuple(current_ids)).fetchall()
                     
-                    if not errored:
-                        logger.info('[bot-scheduler] rodada %s | sem erros p/ retry', cycle_started_iso[:16])
-                        break
+                        if not errored:
+                            logger.info('[bot-scheduler] rodada %s | sem erros p/ retry', cycle_started_iso[:16])
+                            break
                     
-                    # Agrupar por user_id
-                    users_to_retry = {}
-                    for er in errored:
-                        uid = int(er['user_id'])
-                        if uid not in users_to_retry:
-                            users_to_retry[uid] = {
-                                'chat_id': str(er['chat_id']),
-                                'first_name': er['first_name'],
-                                'routes': set(),
-                            }
-                        # Extrair rota do payload
-                        try:
-                            pay = parse_job_payload(er['payload'])
-                            route = pay.get('route', {})
-                            users_to_retry[uid]['routes'].add((
-                                route.get('id', 0),
-                                route.get('origin',''),
-                                route.get('destination',''),
-                                route.get('outbound_date',''),
-                                route.get('inbound_date','') or '',
-                                route.get('date_type','') or 'fixed',
-                                route.get('flexible_month','') or '',
-                                route.get('trip_type','') or 'one-way',
-                            ))
-                            if pay.get('dry_run'):
-                                users_to_retry[uid]['dry_run'] = True
-                        except Exception:
-                            pass
+                        # Agrupar por user_id
+                        users_to_retry = {}
+                        for er in errored:
+                            uid = int(er['user_id'])
+                            if uid not in users_to_retry:
+                                users_to_retry[uid] = {
+                                    'chat_id': str(er['chat_id']),
+                                    'first_name': er['first_name'],
+                                    'routes': set(),
+                                }
+                            # Extrair rota do payload
+                            try:
+                                pay = parse_job_payload(er['payload'])
+                                route = pay.get('route', {})
+                                users_to_retry[uid]['routes'].add((
+                                    route.get('id', 0),
+                                    route.get('origin',''),
+                                    route.get('destination',''),
+                                    route.get('outbound_date',''),
+                                    route.get('inbound_date','') or '',
+                                    route.get('date_type','') or 'fixed',
+                                    route.get('flexible_month','') or '',
+                                    route.get('trip_type','') or 'one-way',
+                                ))
+                                if pay.get('dry_run'):
+                                    users_to_retry[uid]['dry_run'] = True
+                            except Exception:
+                                pass
                     
-                    logger.info(
-                        '[bot-scheduler] rodada %s | retry #%s: %s usuários | %s rotas',
-                        cycle_started_iso[:16], retry_num, len(users_to_retry),
-                        sum(len(u['routes']) for u in users_to_retry.values()),
-                    )
+                        logger.info(
+                            '[bot-scheduler] rodada %s | retry #%s: %s usuários | %s rotas',
+                            cycle_started_iso[:16], retry_num, len(users_to_retry),
+                            sum(len(u['routes']) for u in users_to_retry.values()),
+                        )
                     
-                    # Criar jobs de retry
-                    retry_job_ids = []
-                    for uid, info in users_to_retry.items():
-                        group_key = f"round_{uid}_{cycle_started_iso}_retry_{retry_num}"
-                        for route_tuple in info['routes']:
-                            route_id, origin, dest, outbound, inbound, date_type, flexible_month, trip_type = route_tuple
-                            payload = build_route_job_payload(
-                                cycle_started_iso=cycle_started_iso,
-                                route={
-                                    'id': route_id or 0,
-                                    'origin': origin,
-                                    'destination': dest,
-                                    'outbound_date': outbound,
-                                    'inbound_date': inbound,
-                                    'date_type': date_type or 'fixed',
-                                    'flexible_month': flexible_month or '',
-                                    'trip_type': trip_type or 'one-way',
-                                },
-                                total_routes=len(info['routes']),
-                                label=info['first_name'],
-                                executor_timeout=480,
-                                retry=retry_num,
-                                dry_run=bool(info.get('dry_run')),
-                            )
-                            insert_result = conn_retry.execute(
-                                sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
-                                (uid, info['chat_id'], payload, 1, group_key),
-                            )
-                            conn_retry.commit()
-                            jid = int(getattr(insert_result, 'lastrowid', 0) or 0)
-                            if jid:
-                                retry_job_ids.append(jid)
+                        # Criar jobs de retry
+                        retry_job_ids = []
+                        for uid, info in users_to_retry.items():
+                            group_key = f"round_{uid}_{cycle_started_iso}_retry_{retry_num}"
+                            for route_tuple in info['routes']:
+                                route_id, origin, dest, outbound, inbound, date_type, flexible_month, trip_type = route_tuple
+                                payload = build_route_job_payload(
+                                    cycle_started_iso=cycle_started_iso,
+                                    route={
+                                        'id': route_id or 0,
+                                        'origin': origin,
+                                        'destination': dest,
+                                        'outbound_date': outbound,
+                                        'inbound_date': inbound,
+                                        'date_type': date_type or 'fixed',
+                                        'flexible_month': flexible_month or '',
+                                        'trip_type': trip_type or 'one-way',
+                                    },
+                                    total_routes=len(info['routes']),
+                                    label=info['first_name'],
+                                    executor_timeout=480,
+                                    retry=retry_num,
+                                    dry_run=bool(info.get('dry_run')),
+                                )
+                                insert_result = conn_retry.execute(
+                                    sql("INSERT INTO scan_jobs (user_id, chat_id, job_type, status, payload, cost_score, group_key) VALUES (%s, %s, 'scheduled', 'pending', %s, %s, %s)"),
+                                    (uid, info['chat_id'], payload, 1, group_key),
+                                )
+                                conn_retry.commit()
+                                jid = int(getattr(insert_result, 'lastrowid', 0) or 0)
+                                if jid:
+                                    retry_job_ids.append(jid)
                     
-                    if not retry_job_ids:
-                        break
+                        if not retry_job_ids:
+                            break
                     
-                    # Aguardar retry
-                    retry_result = _wait_for_round_completion(retry_job_ids, timeout_seconds=600)
-                    logger.info(
-                        '[bot-scheduler] rodada %s | retry #%s finalizado | done=%s | error=%s | total_s=%s',
-                        cycle_started_iso[:16], retry_num,
-                        retry_result.get('counts', {}).get('done', 0),
-                        retry_result.get('counts', {}).get('error', 0),
-                        retry_result.get('elapsed_seconds', 0),
-                    )
-                    current_ids = retry_job_ids
+                        # Aguardar retry
+                        retry_result = _wait_for_round_completion(retry_job_ids, timeout_seconds=600)
+                        logger.info(
+                            '[bot-scheduler] rodada %s | retry #%s finalizado | done=%s | error=%s | total_s=%s',
+                            cycle_started_iso[:16], retry_num,
+                            retry_result.get('counts', {}).get('done', 0),
+                            retry_result.get('counts', {}).get('error', 0),
+                            retry_result.get('elapsed_seconds', 0),
+                        )
+                        current_ids = retry_job_ids
             finally:
                 try:
                     conn_retry.close()
                 except Exception:
                     pass
             
+            # Reconsulta o status imediatamente antes do relatório. Se a rodada fechou
+            # enquanto retries/esperas internas rodavam, remove o alerta falso de timeout.
+            final_wait_result = _wait_for_round_completion(created_job_ids, timeout_seconds=1, poll_seconds=1)
+            if final_wait_result.get('complete', False):
+                final_wait_result['elapsed_seconds'] = _actual_round_elapsed_seconds(
+                    conn, created_job_ids, wait_result.get('elapsed_seconds', 0)
+                )
+                wait_result = final_wait_result
+
             admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
             if admin_chat_id:
                 report_text = _build_round_report(cycle_started_iso, cycle_duration_ms, cycle_stats, created_job_ids, wait_result)
