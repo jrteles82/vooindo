@@ -1755,11 +1755,15 @@ def run(origin: str, destination: str, outbound_date: str, inbound_date: str = "
                                             for _cdp_retry in range(15):
                                                 try:
                                                     browser = p.chromium.connect_over_cdp('http://127.0.0.1:9222')
-                                                    context = browser.contexts[0]
+                                                    # Nunca reutilizar browser.contexts[0] aqui: é o contexto
+                                                    # persistente do Chrome Guardian. Este executor fecha
+                                                    # `context` no finally, então precisa ser sempre um
+                                                    # contexto efêmero próprio do job.
+                                                    context = browser.new_context()
                                                     page = context.new_page()
                                                     Stealth().apply_stealth_sync(page)
                                                     page.set_default_timeout(TIMEOUT_MS)
-                                                    notes.append('booking_retry_reconnect_cdp')
+                                                    notes.append('booking_retry_reconnect_cdp_new_context')
                                                     break
                                                 except Exception:
                                                     time.sleep(2)
