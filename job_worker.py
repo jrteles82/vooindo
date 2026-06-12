@@ -676,13 +676,15 @@ def _base_group_key(group_key: str) -> str:
 
 
 def _family_group_like_pattern(base_group_key: str) -> str:
+    # Use ! as LIKE escape char. MariaDB can misparse ESCAPE '\\' as an
+    # unterminated string after PyMySQL renders it, breaking consolidation.
     escaped = (
         str(base_group_key or '')
-        .replace('\\', '\\\\')
-        .replace('%', '\\%')
-        .replace('_', '\\_')
+        .replace('!', '!!')
+        .replace('%', '!%')
+        .replace('_', '!_')
     )
-    return escaped + '\\_retry\\_%'
+    return escaped + '!_retry!_%'
 
 
 def _load_group_family_route_results(conn, group_key: str) -> tuple[str, list[dict]]:
@@ -702,7 +704,7 @@ def _load_group_family_route_results(conn, group_key: str) -> tuple[str, list[di
         FROM scan_job_route_results rr
         JOIN scan_jobs j ON j.id = rr.job_id
         WHERE rr.group_key = %s
-           OR rr.group_key LIKE %s ESCAPE '\\'
+           OR rr.group_key LIKE %s ESCAPE '!'
         ORDER BY rr.id
     """), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
 
@@ -746,7 +748,7 @@ def _expected_family_route_count(conn, group_key: str) -> tuple[str, int]:
         SELECT COALESCE(JSON_EXTRACT(payload, '$.group_info.total_routes'), 0) AS total_routes
         FROM scan_jobs
         WHERE group_key = %s
-           OR group_key LIKE %s ESCAPE '\\'
+           OR group_key LIKE %s ESCAPE '!'
     """), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
     totals = []
     for row in rows:
@@ -1028,7 +1030,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
         dry_run_rows = conn.execute(sql(r'''
             SELECT payload
             FROM scan_jobs
-            WHERE group_key = %s OR group_key LIKE %s ESCAPE '\\'
+            WHERE group_key = %s OR group_key LIKE %s ESCAPE '!'
         '''), (base_group_key, _family_group_like_pattern(base_group_key))).fetchall()
         family_dry_run = bool(dry_run_rows) and all(
             is_dry_run_payload((row.get('payload') if isinstance(row, dict) else row[0]))
@@ -1044,7 +1046,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             # Se sim, consolida mesmo sem resultados (evita bloqueio infinito)
             _all_done = conn.execute(sql('''
                 SELECT COUNT(*) = 0 AS any_pending FROM scan_jobs 
-                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '\\')
+                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '!')
                 AND status IN ('pending','running')
             '''), (group_key, _family_group_like_pattern(group_key))).fetchone()
             _all_done = _all_done['any_pending'] if isinstance(_all_done, dict) else _all_done[0] if _all_done else False
@@ -1057,7 +1059,7 @@ def _try_consolidate_group(conn, bot: Bot, loop, user_id: int, chat_id: str, gro
             # Verifica se os jobs restantes ja terminaram (rotas sem resultado)
             _still_pending = conn.execute(sql('''
                 SELECT COUNT(*) AS c FROM scan_jobs 
-                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '\\')
+                WHERE (group_key = %s OR group_key LIKE %s ESCAPE '!')
                 AND status IN ('pending','running')
             '''), (group_key, _family_group_like_pattern(group_key))).fetchone()
             _still_pending = _still_pending['c'] if isinstance(_still_pending, dict) else _still_pending[0] if _still_pending else 0
