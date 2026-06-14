@@ -244,16 +244,20 @@ def recover_stale_jobs(conn, running_timeout_minutes: int | None = None, pending
 
 
 def recover_stale_job_groups(conn):
-    """Recupera grupos de jobs onde o último job está stale (running >5min
-    mas sem Chrome ativo). Marca como error e retorna group_keys afetados
-    para que a consolidação seja forçada."""
-    stale = conn.execute(sql('''
+    """Recupera grupos de jobs realmente stale.
+
+    Os jobs usam timeout adaptativo e podem rodar até ~3600s. O limite antigo
+    fixo de 20min marcava rotas lentas legítimas como `stale_group_recovered`,
+    gerando falso erro no relatório administrativo.
+    """
+    group_timeout_minutes = int(os.getenv("JOB_WORKER_STALE_GROUP_MINUTES", "75"))
+    stale = conn.execute(sql(f'''
         SELECT j.group_key, COUNT(*) AS total,
                SUM(CASE WHEN j.status = 'done' THEN 1 ELSE 0 END) AS done
         FROM scan_jobs j
         WHERE j.group_key IS NOT NULL AND j.group_key != ''
           AND j.status IN ('running', 'done')
-          AND j.started_at < NOW() - INTERVAL 20 MINUTE
+          AND j.started_at < NOW() - INTERVAL {group_timeout_minutes} MINUTE
           AND j.group_key NOT LIKE ?
         GROUP BY j.group_key
         HAVING done > 0 AND done < total
@@ -261,12 +265,12 @@ def recover_stale_job_groups(conn):
     recovered = []
     for r in stale:
         gk = r['group_key']
-        # Marca os running jobs do grupo como stale
-        affected = conn.execute(sql('''
+        # Marca os running jobs do grupo como stale só depois do limite adaptativo.
+        affected = conn.execute(sql(f'''
             UPDATE scan_jobs SET status = 'error', error_message = 'stale_group_recovered',
                 finished_at = NOW()
             WHERE group_key = %s AND status = 'running'
-              AND started_at < NOW() - INTERVAL 20 MINUTE
+              AND started_at < NOW() - INTERVAL {group_timeout_minutes} MINUTE
         '''), (gk,))
         if affected:
             conn.commit()
