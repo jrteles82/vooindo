@@ -45,7 +45,7 @@ SEND_COOLDOWN_SECONDS = int(
     os.getenv("SCHEDULER_SEND_COOLDOWN_SECONDS", str(_DEFAULT_SEND_COOLDOWN_SECONDS))
 )
 _METRICS_PATH = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
-_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '2700'))
+_ROUND_REPORT_TIMEOUT_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_TIMEOUT_SECONDS', '18000'))
 _ROUND_REPORT_POLL_SECONDS = int(os.getenv('SCHEDULER_ROUND_REPORT_POLL_SECONDS', '5'))
 MAX_ROUTE_ADVANCE_DAYS = 330
 
@@ -321,7 +321,7 @@ def run_for_user(conn, bot: Bot, loop, user_id: int, chat_id: str, max_price: fl
     return True, 'enviado', sent_count
 
 
-_LAST_REPORT_PATH = Path('/tmp/vooindo_last_reported_round.txt')
+_LAST_REPORT_PATH = Path(__file__).resolve().parent / 'logs' / 'last_round_reported.txt'
 
 
 def _last_reported_round() -> str | None:
@@ -339,57 +339,56 @@ def _mark_round_reported(label: str):
 
 
 def _recover_missed_report(conn, bot, loop):
-    """Na inicialização, verifica se há jobs de rodada completa sem relatório enviado."""
-    now = now_local()
-    interval = get_scan_interval_seconds(conn)
-    
-    # Pega a última rodada completa (todos os jobs done/error) nas últimas 3h
-    for h in range(1, 4):
-        round_start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=h)
-        round_end = round_start + timedelta(seconds=interval)
-        
-        jobs = conn.execute(sql("""
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
-                   SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-                   SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
-            FROM scan_jobs
-            WHERE job_type = 'scheduled'
-              AND created_at >= %s AND created_at < %s
-        """), (round_start.strftime('%Y-%m-%d %H:%M:%S'), round_end.strftime('%Y-%m-%d %H:%M:%S'))).fetchone()
-        
-        if not jobs or jobs['total'] == 0:
-            continue
-        if jobs['running'] > 0 or jobs['pending'] > 0:
-            continue  # Ainda não completou
-        
-        # Rodada completa! Gerar e enviar relatório
-        round_label = round_start.strftime('%H:%M')
-        if _last_reported_round() == round_label:
-            continue  # Já reportamos (persistido)
-        
-        logger.info('[bot-scheduler][recovery] recuperando relatório perdido para rodada %s', round_label)
-        
-        # Buscar job_ids da rodada
+    """Envia relatório de rodada completa que ficou sem envio após restart.
+
+    O scheduler normalmente espera a rodada terminar e manda o relatório. Se o
+    serviço reinicia durante essa espera, ninguém fica responsável por mandar o
+    relatório quando os workers terminam. Esta recuperação varre rodadas recentes
+    completas e envia a mais nova ainda não marcada.
+    """
+    last_reported = _last_reported_round()
+    rows = conn.execute(sql("""
+        SELECT
+          created_at,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS erro,
+          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending
+        FROM scan_jobs
+        WHERE job_type = 'scheduled'
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 12 HOUR)
+        GROUP BY created_at
+        HAVING total > 0 AND running = 0 AND pending = 0
+        ORDER BY created_at DESC
+        LIMIT 6
+    """)).fetchall()
+
+    for jobs in rows:
+        round_start = jobs['created_at'] if isinstance(jobs, dict) else jobs[0]
+        if not isinstance(round_start, datetime):
+            round_start = datetime.fromisoformat(str(round_start))
+        round_key = round_start.strftime('%Y-%m-%dT%H:%M')
+        legacy_label = round_start.strftime('%H:%M')
+        if last_reported in {round_key, legacy_label}:
+            break
+
+        logger.info('[bot-scheduler][recovery] recuperando relatório perdido para rodada %s', round_key)
         job_rows = conn.execute(sql("""
             SELECT id FROM scan_jobs
-            WHERE job_type = 'scheduled'
-              AND created_at >= %s AND created_at < %s
+            WHERE job_type = 'scheduled' AND created_at = %s
             ORDER BY id
-        """), (round_start.strftime('%Y-%m-%d %H:%M:%S'), round_end.strftime('%Y-%m-%d %H:%M:%S'))).fetchall()
-        job_ids = [int(r['id']) for r in job_rows]
-        
+        """), (round_start.strftime('%Y-%m-%d %H:%M:%S'),)).fetchall()
+        job_ids = [int(r['id'] if isinstance(r, dict) else r[0]) for r in job_rows]
         if not job_ids:
             continue
-        
-        # Sincroniza stats
+
         wait_result = {
             'complete': True,
-            'elapsed_seconds': 0,
+            'elapsed_seconds': _actual_round_elapsed_seconds(conn, job_ids, 0),
             'counts': {
-                'done': int(jobs['done']),
-                'error': int(jobs['erro']),
+                'done': int((jobs['done'] if isinstance(jobs, dict) else jobs[2]) or 0),
+                'error': int((jobs['erro'] if isinstance(jobs, dict) else jobs[3]) or 0),
                 'running': 0,
                 'pending': 0,
             }
@@ -401,18 +400,31 @@ def _recover_missed_report(conn, bot, loop):
             'errors': 0,
             'reasons': {},
         }
-        
-        report_text = _build_round_report(round_start.isoformat(), 0, cycle_stats, job_ids, wait_result)
+        try:
+            metrics_path = Path(__file__).resolve().parent / 'logs' / 'scheduler_cycle_metrics.jsonl'
+            if metrics_path.exists():
+                for line in metrics_path.read_text().splitlines():
+                    try:
+                        metric = json.loads(line)
+                    except Exception:
+                        continue
+                    if str(metric.get('cycle_started_at', '')).startswith(round_key):
+                        cycle_stats = metric
+        except Exception as exc:
+            logger.warning('[bot-scheduler][recovery] falha ao carregar métricas da rodada %s: %s', round_key, exc)
+
         admin_chat_id = os.getenv('TELEGRAM_ADMIN_CHAT_ID', '').strip()
+        report_text = _build_round_report(round_start.isoformat(), int(cycle_stats.get('duration_ms') or 0), cycle_stats, job_ids, wait_result)
         if admin_chat_id and report_text:
             try:
-                loop.run_until_complete(_send_message(bot, admin_chat_id, report_text))
-                logger.info('[bot-scheduler][recovery] relatório rodada %s enviado ✅', round_label)
+                loop.run_until_complete(_send_message(bot, admin_chat_id, '📌 Relatório recuperado após restart:\n\n' + report_text))
+                logger.info('[bot-scheduler][recovery] relatório rodada %s enviado ✅', round_key)
             except Exception as exc:
                 logger.warning('[bot-scheduler][recovery] erro ao enviar relatório: %s', exc)
-        
-        _mark_round_reported(round_label)
-        break  # Só envia o mais recente
+                return
+
+        _mark_round_reported(round_key)
+        break  # só envia o mais recente por ciclo
 
 
 def sleep_until_next_slot(interval_seconds: int, check_session: bool = False):
@@ -592,15 +604,24 @@ def _dynamic_round_timeout_seconds(conn, job_ids: list[int]) -> int:
         total_jobs = len(job_ids)
         unique_routes = len(job_ids)
 
-    # Workers scheduled ativos. Fallback conservador: 6.
-    scheduled_workers = 6
+    # Workers scheduled ativos. Fallback conservador: 2 (run_all sobe 2 workers scheduled).
+    # Não usar `pgrep -fc`: ele conta o próprio shell/comando de inspeção e superestima
+    # a capacidade, encurtando o timeout do relatório (ex.: rodada 07:00 fechou parcial).
+    scheduled_workers = 2
     try:
         import subprocess as _subprocess
         ps = _subprocess.run(
-            ['pgrep', '-fc', r'/opt/vooindo/job_worker.py --pool scheduled'],
+            ['pgrep', '-af', r'/opt/vooindo/job_worker.py'],
             capture_output=True, text=True, timeout=5,
         )
-        scheduled_workers = max(1, int((ps.stdout or '').strip() or '6'))
+        active = 0
+        for line in (ps.stdout or '').splitlines():
+            if 'job_worker.py' in line and '--pool scheduled' in line:
+                if 'pgrep' in line or '/bin/sh' in line or '/bin/bash' in line:
+                    continue
+                active += 1
+        if active > 0:
+            scheduled_workers = active
     except Exception:
         pass
 
@@ -619,15 +640,22 @@ def _dynamic_round_timeout_seconds(conn, job_ids: list[int]) -> int:
         """)).fetchone()
         val = (row['avg_s'] if isinstance(row, dict) else row[0]) if row else None
         if val:
-            avg_job_s = max(90.0, min(420.0, float(val)))
+            # Não cortar agressivamente: com booking obrigatório, rotas reais têm passado
+            # de 8min. Cap baixo faz a rodada reportar timeout falso e acumular fila.
+            avg_job_s = max(90.0, min(900.0, float(val)))
     except Exception:
         pass
 
     waves = max(1, (max(1, unique_routes) + scheduled_workers - 1) // scheduled_workers)
     # Estimativa = ondas * média recente + margem para rotas metropolitanas/retries internos.
     estimate = int(waves * avg_job_s + 900)
-    # Piso 30min, teto 70min; normalmente 54 rotas/6 workers*~220s => ~48min.
-    return max(1800, min(4200, estimate))
+    # Piso por onda: mesmo quando a média recente parece baixa, cada onda real pode ocupar
+    # vários minutos por causa de Google/booking/retries. Sem esse piso a rodada 07:00 de
+    # 2026-06-28 fechou relatório em 86/109 enquanto 23 jobs legítimos ainda processavam.
+    queue_floor = int(waves * 300 + 900)
+    # Piso 30min, teto configurável (default 5h). Com 2 workers scheduled e booking
+    # obrigatório, rodadas grandes podem passar de 4h sem falha real.
+    return max(1800, min(_ROUND_REPORT_TIMEOUT_SECONDS, max(estimate, queue_floor)))
 
 
 def _wait_for_round_completion(job_ids: list[int], timeout_seconds: int = _ROUND_REPORT_TIMEOUT_SECONDS, poll_seconds: int = _ROUND_REPORT_POLL_SECONDS) -> dict:
@@ -860,6 +888,31 @@ async def _send_admin_alert(bot: Bot, message: str):
         logger.warning('[ALERT_ADMIN][SCHEDULER] Falha ao enviar alerta admin do scheduler | erro=%s', exc)
 
 
+def _scheduled_backlog_counts(conn) -> dict:
+    """Jobs agendados ainda abertos de rodadas anteriores.
+
+    Se houver pending/running quando um novo slot começa, criar outra rodada só
+    aumenta o congestionamento e faz jobs antigos expirarem sem nunca rodar.
+    """
+    try:
+        row = conn.execute(sql("""
+            SELECT
+              SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+              SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+              MIN(created_at) AS oldest_created_at
+            FROM scan_jobs
+            WHERE job_type = 'scheduled'
+              AND status IN ('pending', 'running')
+        """)).fetchone()
+        pending = int((row['pending_count'] if isinstance(row, dict) else row[0]) or 0) if row else 0
+        running = int((row['running_count'] if isinstance(row, dict) else row[1]) or 0) if row else 0
+        oldest = (row['oldest_created_at'] if isinstance(row, dict) else row[2]) if row else None
+        return {'pending': pending, 'running': running, 'total': pending + running, 'oldest_created_at': str(oldest or '')}
+    except Exception as exc:
+        logger.warning('[bot-scheduler] falha ao calcular backlog agendado: %s', exc)
+        return {'pending': 0, 'running': 0, 'total': 0, 'oldest_created_at': ''}
+
+
 def main():
     import asyncio
 
@@ -927,9 +980,8 @@ def main():
                         stuck_count,
                     )
 
-                # Recuperar relatório de rodada perdida — DESLIGADO: tracking em /tmp/ não persiste restart
-                # e causa reenvio de relatórios antigos.
-                # _recover_missed_report(conn, bot, loop)
+                # Recuperar relatório de rodada perdida após restart do scheduler.
+                _recover_missed_report(conn, bot, loop)
 
                 # Verificar se há jobs pendentes órfãos
                 orphan_count = conn.execute(
@@ -981,7 +1033,8 @@ def main():
                     cycle_stats['reasons']['sessao_invalida'] = 1
                     record_cycle_end(cycle_metrics)
                     _append_cycle_metrics(cycle_stats)
-                    break
+                    sleep_until_next_slot(interval_seconds, check_session=True)
+                    continue
                 logger.info('[bot-scheduler] sessão Google OK, iniciando rodada')
             except Exception as _e:
                 logger.warning('[bot-scheduler] erro ao verificar sessão guardian: %s. Pulando rodada.', _e)
@@ -989,7 +1042,51 @@ def main():
                 cycle_stats['reasons']['sessao_indisponivel'] = 1
                 record_cycle_end(cycle_metrics)
                 _append_cycle_metrics(cycle_stats)
-                break
+                sleep_until_next_slot(interval_seconds, check_session=True)
+                continue
+
+            backlog = _scheduled_backlog_counts(conn)
+            if backlog.get('total', 0) > 0:
+                logger.warning(
+                    '[bot-scheduler] rodada %s pulada por backlog anterior | pending=%s running=%s oldest=%s',
+                    cycle_started_iso[:16],
+                    backlog.get('pending', 0),
+                    backlog.get('running', 0),
+                    backlog.get('oldest_created_at', ''),
+                )
+                cycle_stats['skipped_users'] += 1
+                cycle_stats['reasons']['backlog_rodada_anterior'] = int(backlog.get('total', 0) or 0)
+                record_cycle_end(cycle_metrics, scan_results={
+                    'duration_seconds': round(time.perf_counter() - cycle_started, 1),
+                    'eligible_users': 0,
+                    'sent_users': 0,
+                    'skipped_users': 1,
+                    'errors': 0,
+                    'reasons': cycle_stats['reasons'],
+                })
+                _append_cycle_metrics({
+                    'cycle_started_at': cycle_started_iso,
+                    'cycle_finished_at': now_local_iso(sep='T'),
+                    'duration_ms': round((time.perf_counter() - cycle_started) * 1000),
+                    'eligible_users': 0,
+                    'sent_users': 0,
+                    'sent_results': 0,
+                    'no_send_users': 0,
+                    'skipped_users': 1,
+                    'errors': 0,
+                    'reasons': cycle_stats['reasons'],
+                })
+                try:
+                    loop.run_until_complete(_send_admin_alert(
+                        bot,
+                        '⏸ Rodada pulada por backlog anterior\n\n'
+                        f"Ainda há {backlog.get('running', 0)} running e {backlog.get('pending', 0)} pending. "
+                        'Vou deixar os workers esvaziarem a fila antes de criar novos jobs.'
+                    ))
+                except Exception:
+                    pass
+                sleep_until_next_slot(interval_seconds, check_session=True)
+                continue
 
             maintenance_on = is_maintenance_mode(conn)
             users = list(iter_users(conn))
@@ -1355,7 +1452,11 @@ def main():
                 wait_result.get('counts', {}).get('running', 0) > 0
                 or wait_result.get('counts', {}).get('pending', 0) > 0
             ):
-                extra_wait = _wait_for_round_completion(created_job_ids, timeout_seconds=900)
+                # Se ainda existem jobs originais vivos, continuar esperando até o teto
+                # absoluto do relatório, em vez de fechar parcial após só +15min.
+                # Isso evita relatório admin 86/109 enquanto a fila legítima termina depois.
+                remaining_wait = max(0, _ROUND_REPORT_TIMEOUT_SECONDS - int(wait_result.get('elapsed_seconds', 0) or 0))
+                extra_wait = _wait_for_round_completion(created_job_ids, timeout_seconds=remaining_wait)
                 logger.info(
                     '[bot-scheduler] rodada %s | espera extra após timeout | complete=%s | done=%s | error=%s | running=%s | pending=%s | wait_s=%s',
                     cycle_started_iso[:16],
@@ -1517,7 +1618,7 @@ def main():
             if admin_chat_id:
                 report_text = _build_round_report(cycle_started_iso, cycle_duration_ms, cycle_stats, created_job_ids, wait_result)
                 loop.run_until_complete(_send_message(bot, admin_chat_id, report_text))
-                _mark_round_reported(cycle_started_iso[11:16])
+                _mark_round_reported(cycle_started_iso[:16])
         except Exception as exc:
             logger.warning('[bot-scheduler] erro ao enviar relatorio admin: %s', exc)
 
