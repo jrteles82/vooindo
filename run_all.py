@@ -185,15 +185,12 @@ def main():
     children = [
         {'cmd': [py, str(BASE_DIR / 'bot.py')]},
         {'cmd': [py, str(BASE_DIR / 'bot_scheduler.py')]},
-        # Workers de job — cada um com perfil DEDICADO para não conflitar
-        # Scheduled: perfis 1, 2, 5, 6, 7, 8
+        # Workers de job.
+        # Scheduled: 2 workers. O executor usa guardian/CDP único; 3+ workers estouravam
+        # memória do Chrome/Guardian em rodadas grandes, causando SIGKILL e stales.
         # Manual: perfis 3, 4
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(1)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(2)},
-        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(5)},
-        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(6)},
-        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(7)},
-        {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'scheduled'], 'env': _worker_env(8)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(3)},
         {'cmd': [py, str(BASE_DIR / 'job_worker.py'), '--pool', 'manual'], 'env': _worker_env(4)},
         # Workers de integração e suporte
@@ -270,10 +267,10 @@ def main():
             label = ' '.join(cmd) + (f' [profile={env.get("GOOGLE_PERSISTENT_PROFILE_DIR", "")}]' if env else '')
             logger.error('[PROCESS_EXIT] Processo finalizou com código %s após %.1fs: %s', code, lifetime, label)
             if code == 0:
-                _send_admin_alert_sync("✅ Serviço reiniciado com sucesso. O bot já está de volta e pronto para uso.")
+                logger.info('[PROCESS_EXIT] Processo finalizou normalmente; reiniciando sem notificar admin: %s', label)
             else:
                 _send_admin_alert_sync(f"🚨 Processo do bot finalizou\n\nCódigo: {code}\nTempo: {lifetime:.1f}s\nProcesso: {label}")
-            if lifetime < RESTART_GRACE_SECONDS:
+            if code != 0 and lifetime < RESTART_GRACE_SECONDS:
                 logger.error('[PROCESS_EXIT] Processo muito curto (%.1fs < %.0fs), encerrando stack para evitar loop', lifetime, RESTART_GRACE_SECONDS)
                 _send_admin_alert_sync(f"🚨 Processo morreu cedo demais\n\nTempo: {lifetime:.1f}s\nLimite: {RESTART_GRACE_SECONDS:.0f}s\nProcesso: {label}")
                 shutdown()

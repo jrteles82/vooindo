@@ -688,17 +688,23 @@ def total_donations(conn) -> float:
     return float(row['total'])
 
 
-def ensure_app_user(conn, first_name: str) -> int:
+def ensure_app_user(conn, first_name: str, chat_id: str | None = None) -> int:
+    # Use the Telegram chat_id as the stable unique identity for bot-created
+    # app users. The old first-name-only email (telegram:victor@local) caused
+    # collisions when two Telegram users shared the same first name, making
+    # /start fail before the confirmation/menu message was sent.
+    identity = str(chat_id).strip() if chat_id else first_name.lower()
+    email = f"telegram:{identity}@local"
     row = conn.execute(
         sql("SELECT id FROM users WHERE email = %s"),
-        (f"telegram:{first_name.lower()}@local",),
+        (email,),
     ).fetchone()
     if row:
         return int(row['id'])
 
     cur = conn.execute(
         sql("INSERT INTO users (email, password_hash, created_at) VALUES (%s, %s, NOW())"),
-        (f"telegram:{first_name.lower()}@local", 'telegram-bot'),
+        (email, 'telegram-bot'),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -1842,7 +1848,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = get_db()
     row = get_bot_user_by_chat(conn, chat_id)
     if row is None:
-        user_id = ensure_app_user(conn, first_name)
+        user_id = ensure_app_user(conn, first_name, chat_id)
         conn.execute(
             sql('''
             INSERT INTO bot_users (user_id, chat_id, username, first_name, confirmed)
@@ -3202,8 +3208,12 @@ LIMIT 15
         below = getattr(aff1, 'rowcount', 0) if hasattr(aff1, 'rowcount') else 0
         # Passo 2: não-múltiplos → arredonda pro próximo múltiplo
         aff2 = conn.execute(
-            sql(f"UPDATE bot_settings SET scan_interval_minutes = {novo_valor} * CEIL(scan_interval_minutes / {novo_valor}), updated_at = NOW() "
-                f"WHERE scan_interval_minutes IS NOT NULL AND scan_interval_minutes >= {novo_valor} AND scan_interval_minutes % {novo_valor} != 0"),
+            sql("UPDATE bot_settings "
+                "SET scan_interval_minutes = %s * CEIL(scan_interval_minutes / %s), updated_at = NOW() "
+                "WHERE scan_interval_minutes IS NOT NULL "
+                "AND scan_interval_minutes >= %s "
+                "AND MOD(scan_interval_minutes, %s) != 0"),
+            (novo_valor, novo_valor, novo_valor, novo_valor),
         )
         non_mult = getattr(aff2, 'rowcount', 0) if hasattr(aff2, 'rowcount') else 0
         adjusted = below + non_mult

@@ -174,13 +174,22 @@ def ensure_job_tables(conn):
         pass
 
 
-def recover_stale_jobs(conn, running_timeout_minutes: int | None = None, pending_timeout_minutes: int = 120) -> tuple[list[int], list[int]]:
+def recover_stale_jobs(conn, running_timeout_minutes: int | None = None, pending_timeout_minutes: int | None = None) -> tuple[list[int], list[int]]:
     # Primeiro: jobs running há muito tempo -> retry em vez de error.
     # Importante: os jobs usam timeout adaptativo e podem rodar até ~3600s.
     # O recovery antigo de 18min re-enfileirava jobs legítimos ainda em execução,
     # causando processamento duplicado e relatório 102/103 por timeout.
     if running_timeout_minutes is None:
         running_timeout_minutes = int(os.getenv("JOB_WORKER_STALE_RUNNING_MINUTES", "75"))
+    if pending_timeout_minutes is None:
+        env_pending = os.getenv("JOB_WORKER_STALE_PENDING_MINUTES", "").strip()
+        if env_pending:
+            pending_timeout_minutes = int(env_pending)
+        else:
+            # Pending é fila, não execução travada. Com 2 workers scheduled e booking
+            # obrigatório, uma rodada grande pode levar 4–5h para esvaziar. Expirar
+            # pending cedo transforma backlog legítimo em falso erro/"sem resultado".
+            pending_timeout_minutes = 720
     stale_running = conn.execute(
         sql(
             f"""
@@ -1361,10 +1370,20 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         raise RuntimeError('sessao_google_invalida_aguardando_renovacao')
 
     settings = get_user_settings(conn, user_id)
-    routes = _build_user_routes(conn, user_id)
+    _payload_str = str(job.get('payload') or '{}')
+    _payload_data = parse_job_payload(_payload_str)
+    _route_info = _payload_data.get('route') if isinstance(_payload_data, dict) else None
+    _group_key = str(job.get('group_key') or '')
+
+    # Jobs agendados são por rota e carregam a rota no payload. Se o usuário
+    # removeu todas as rotas depois que a rodada foi criada, ainda precisamos
+    # entrar no fluxo PER-ROUTE para marcar a rota como ignorada/done, em vez
+    # de gerar erro técnico + AutoRepair infinito.
+    routes = [] if (_route_info and _group_key) else _build_user_routes(conn, user_id)
     logger.info('[job-worker] job_id=%s | rotas=%s', job_id, len(routes))
     if not routes:
-        raise RuntimeError('Usuário sem rotas ativas')
+        if not (_route_info and _group_key):
+            raise RuntimeError('Usuário sem rotas ativas')
 
     access = ensure_user_access(conn, chat_id)
     # Usuário free não tem bloqueio por quantidade de acessos ou pagamento vencido.
@@ -1391,15 +1410,25 @@ def process_job(conn, bot: Bot, loop, job, pool='scheduled'):
         logger.info('[job-worker] job_id=%s | DRY RUN — executando scan sem envio', job_id)
     
     # --- PER-ROUTE JOB: processar rota individual e consolidar grupo ---
-    _payload_str = str(job.get('payload') or '{}')
-    _payload_data = parse_job_payload(_payload_str)
-    _route_info = _payload_data.get('route') if isinstance(_payload_data, dict) else None
-    _group_key = str(job.get('group_key') or '')
-    
     # Debug: por que alguns jobs não pegam PER-ROUTE?
     if _route_info and _group_key:
         logger.info('[job-worker] job_id=%s | PER-ROUTE: %s->%s group=%s',
                      job_id, _route_info.get('origin','?'), _route_info.get('destination','?'), _group_key)
+        _route_id = _route_info.get('id')
+        if _route_id:
+            _active_row = conn.execute(
+                sql('SELECT active FROM user_routes WHERE id = %s AND user_id = %s'),
+                (_route_id, user_id),
+            ).fetchone()
+            _is_active = bool(_active_row and int((_active_row['active'] if isinstance(_active_row, dict) else _active_row[0]) or 0) == 1)
+            if not _is_active:
+                logger.info('[job-worker] job_id=%s | rota %s removida/inativa; marcando como done sem scan', job_id, _route_id)
+                warn_job(conn, job_id, 'rota_inativa_ou_removida')
+                try:
+                    _try_consolidate_group(conn, bot, loop, user_id, chat_id, _group_key, settings, pool, charge_now, _t)
+                except Exception as _skip_consolidate_err:
+                    logger.warning('[job-worker] job_id=%s | falha ao consolidar rota removida: %s', job_id, _skip_consolidate_err)
+                return
         # Delay escalonado: cada worker aguarda um tempo aleatório antes
         # de iniciar o Chrome, evitando que múltiplas instâncias do
         # headless-shell v1217 subam no mesmo segundo (causa trap int3).

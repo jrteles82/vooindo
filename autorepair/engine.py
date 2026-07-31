@@ -35,6 +35,8 @@ def get_failed_jobs(conn, since_minutes: int = 30) -> list:
           AND error_message IS NOT NULL
           AND error_message NOT LIKE '%%cancelled%%'
           AND error_message NOT LIKE '%%bloqueado%%'
+          AND error_message NOT LIKE '%%sem rotas ativas%%'
+          AND error_message NOT LIKE '%%rota_inativa_ou_removida%%'
           AND retry_count < 3
         ORDER BY id DESC
         LIMIT 10

@@ -210,7 +210,11 @@ def classify_error(error_message: str) -> list:
         categories.append('cancelled_by_new_request')
     if 'bloqueado' in error_lower:
         categories.append('usuario_bloqueado')
+    if 'sem rotas ativas' in error_lower:
+        categories.append('usuario_sem_rotas_ativas')
     if error_message.strip() in ('143',):
+        categories.append('process_killed')
+    if 'sigterm' in error_lower or 'db_connection_lost_during_sigterm' in error_lower:
         categories.append('process_killed')
     if 'sem preço' in error_lower or 'sem_preco' in error_lower or 'sem preco' in error_lower or 'sem pre' in error_lower:
         categories.append('usuario_bloqueado')  # trata como não-técnico
@@ -228,7 +232,7 @@ def run_repair(job_id: int, error_message: str) -> dict:
         return {'repaired': False, 'action': 'unknown_error', 'notify': True}
     
     # Se só tem erros não-técnicos, não repara
-    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'stale_running_recovered', 'stale_group_recovered', 'job_timeout_300s', 'process_killed'}
+    nonttechnical = {'cancelled_by_new_request', 'usuario_bloqueado', 'usuario_sem_rotas_ativas', 'stale_running_recovered', 'stale_group_recovered', 'job_timeout_300s', 'process_killed'}
     if all(c in nonttechnical for c in categories):
         return {'repaired': False, 'action': 'not_technical', 'notify': False}
     

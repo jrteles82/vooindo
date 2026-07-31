@@ -3,6 +3,7 @@ import os
 import time
 from datetime import datetime, timedelta
 
+import pymysql
 import requests
 from telegram import Bot
 from telegram.request import HTTPXRequest
@@ -135,6 +136,15 @@ def pending_payments(conn):
     ).fetchall()
 
 
+def _close_conn(conn):
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
 def main():
     if not TOKEN or not MP_ACCESS_TOKEN:
         raise SystemExit('Defina TELEGRAM_BOT_TOKEN e MP_ACCESS_TOKEN no .env')
@@ -157,9 +167,11 @@ def main():
                         from telegram import InlineKeyboardMarkup, InlineKeyboardButton
                         from db import sql as _sql
                         conn2 = get_db()
-                        row = conn2.execute(_sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
-                        interval_min = int(row['scan_interval_minutes'] or 60) if row else 60
-                        conn2.close()
+                        try:
+                            row = conn2.execute(_sql('SELECT scan_interval_minutes FROM app_settings WHERE id = 1')).fetchone()
+                            interval_min = int(row['scan_interval_minutes'] or 60) if row else 60
+                        finally:
+                            conn2.close()
                         asyncio.run(bot.send_message(chat_id=chat_id, text=f'🎉 Pagamento aprovado automaticamente! Acesso liberado até {info}.'))
                         asyncio.run(bot.send_message(
                             chat_id=chat_id,
@@ -181,7 +193,15 @@ def main():
         except DatabaseRateLimitError as exc:
             audit.error("payment_monitor_db_limit", error_msg=str(exc), status="blocked")
             logger.warning('[payment-monitor] limite de conexão MySQL por hora atingido: %s', exc)
+            _close_conn(conn)
+            conn = None
             time.sleep(1800)
+            continue
+        except (pymysql.err.OperationalError, pymysql.err.InterfaceError, ConnectionError, OSError) as exc:
+            logger.warning('[payment-monitor] conexão MySQL indisponível/perdida; reconectando no próximo ciclo: %s', exc)
+            _close_conn(conn)
+            conn = None
+            time.sleep(min(60, CHECK_INTERVAL_SECONDS * 3))
             continue
 
         time.sleep(CHECK_INTERVAL_SECONDS)

@@ -602,7 +602,7 @@ def _split_routes(routes: list[RouteQuery], chunks: int) -> list[list[RouteQuery
 
 
 _CHROME_SEMAPHORE_PATH = "/tmp/vooindo_chrome_semaphore"
-_CHROME_MAX_CONCURRENT = 3  # 3 Chromes simultâneos — 4 trava OOM no Guardian
+_CHROME_MAX_CONCURRENT = 2  # 2 Chromes simultâneos — 3 estoura memória do Guardian em rodadas grandes
 
 # Conjunto de aeroportos brasileiros para timeout dinâmico
 _BR_CODES: set[str] = {
@@ -739,6 +739,7 @@ class ChromeSemaphore:
             while time.monotonic() < end:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 try:
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
                     content = os.read(lock_fd, 32).decode().strip()
                     current = int(content) if content else 0
                     if current < _CHROME_MAX_CONCURRENT:
@@ -762,6 +763,7 @@ class ChromeSemaphore:
             lock_fd = os.open(cls._lock_path, os.O_CREAT | os.O_RDWR, 0o666)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             try:
+                os.lseek(lock_fd, 0, os.SEEK_SET)
                 content = os.read(lock_fd, 32).decode().strip()
                 current = max(0, (int(content) if content else 0) - 1)
                 os.lseek(lock_fd, 0, os.SEEK_SET)

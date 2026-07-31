@@ -106,3 +106,18 @@
 ### fix: converter `/search?tfs=` mesmo quando está em `booking_url`
 - `main.py`: `_best_link()` agora converte `/travel/flights/search?tfs=` para `/booking?tfs=` também quando a URL vem de `booking_url` ou `best_airline_url`, não só do fallback `url`.
 - Caso real: usuário 11 recebeu uma rota `PVH→NAT 05/06/26` com link `/search?tfs=` porque o scraper retornou a URL de busca como `booking_url`.
+
+## [round-stability-and-user-identity] — 2026-07-31
+
+### fix: reduzir stales falsos, loops de AutoRepair e crashes em rodada grande
+- `run_all.py` / `main.py`: scheduled workers voltam para 2 e semáforo Chrome para 2 concorrentes; 3+ Chromes estouravam memória do Guardian em rodadas grandes.
+- `healthcheck.py`: Guardian só reinicia após 3 falhas consecutivas, sem jobs `running` ativos e respeitando cooldown; pending/backlog não bloqueia recuperação, mas scan ativo não é interrompido.
+- `job_worker.py`: `pending` agora expira em 12h por padrão (`JOB_WORKER_STALE_PENDING_MINUTES` opcional), evitando marcar backlog legítimo como erro.
+- `job_worker.py`: jobs per-route de rotas removidas/inativas são marcados como `done` com aviso (`rota_inativa_ou_removida`) e consolidam o grupo sem scan, evitando AutoRepair infinito.
+- `autorepair/*`: ignora/categoriza erros não técnicos como usuário sem rotas, rota removida, SIGTERM e conexão perdida durante SIGTERM.
+
+### fix: robustez operacional do bot e pagamentos
+- `bot.py`: usuários Telegram criados pelo bot passam a usar `chat_id` como identidade estável (`telegram:<chat_id>@local`), evitando colisão por primeiro nome.
+- `bot.py`: ajuste do intervalo mínimo usa parâmetros SQL e `MOD()` em vez de interpolação direta.
+- `payment_monitor.py`: fecha conexões em erro de rate limit/conexão perdida e reconecta no próximo ciclo.
+- `run_all.py`: saída normal (`code=0`) de processo filho reinicia sem alertar admin nem derrubar a stack.

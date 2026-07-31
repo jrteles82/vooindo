@@ -217,6 +217,32 @@ def try_guardian_fix() -> bool:
         return False
 
 
+def count_active_scan_jobs() -> int:
+    """Conta só jobs realmente em execução para evitar matar Chrome no meio de scan.
+
+    Jobs pending/waiting_route_dedupe são backlog de fila; se o Guardian está ruim,
+    eles não devem impedir a recuperação automática, senão a fila inteira fica presa.
+    """
+    try:
+        sys.path.insert(0, str(BASE_DIR))
+        from db import connect as db_connect, sql
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute(sql("""
+            SELECT COUNT(*) AS cnt
+            FROM scan_jobs
+            WHERE status = 'running'
+              AND started_at >= NOW() - INTERVAL 3 HOUR
+        """))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return int((row or {}).get('cnt') or 0)
+    except Exception:
+        # Na dúvida, seja conservador: não reinicie o guardian agressivamente.
+        return 1
+
+
 def check_stale_jobs(hours: int = 2) -> dict:
     """Verifica quantos stale_running_recovered nas últimas N horas."""
     result = {'stale_count': 0, 'message': ''}
@@ -339,6 +365,7 @@ def main():
 
     health = check_service()
     guardian = check_guardian()
+    state = load_state()
     fixed = False
     guardian_fixed = False
     
@@ -353,17 +380,41 @@ def main():
         send_alert(stales['message'], {})
     
     # Auto-fix: guardian
-    if not guardian['healthy']:
-        print(f"[HEALTHCHECK] Guardian: {guardian['message']} — tentando restart...")
-        if try_guardian_fix():
-            guardian = check_guardian()
-            if guardian['healthy']:
-                guardian_fixed = True
-                print(f"[HEALTHCHECK] Guardian reiniciado com sucesso ✅")
+    # Evita falso positivo durante rodada: reiniciar o Guardian mata o Chrome/CDP
+    # usado pelos workers e transforma lentidão transitória em timeouts em cascata.
+    if guardian['healthy']:
+        if state.get('guardian_consecutive_failures'):
+            state['guardian_consecutive_failures'] = 0
+            save_state(state)
+    else:
+        state['guardian_consecutive_failures'] = int(state.get('guardian_consecutive_failures', 0)) + 1
+        active_jobs = count_active_scan_jobs()
+        last_guardian_restart = int(state.get('last_guardian_restart', 0))
+        can_restart = (
+            state['guardian_consecutive_failures'] >= 3
+            and active_jobs == 0
+            and now_ts() - last_guardian_restart >= RESTART_COOLDOWN_SECONDS
+        )
+        if can_restart:
+            print(f"[HEALTHCHECK] Guardian: {guardian['message']} — tentando restart após {state['guardian_consecutive_failures']} falhas consecutivas...")
+            state['last_guardian_restart'] = now_ts()
+            save_state(state)
+            if try_guardian_fix():
+                guardian = check_guardian()
+                if guardian['healthy']:
+                    guardian_fixed = True
+                    state['guardian_consecutive_failures'] = 0
+                    save_state(state)
+                    print(f"[HEALTHCHECK] Guardian reiniciado com sucesso ✅")
+        else:
+            print(
+                f"[HEALTHCHECK] Guardian: {guardian['message']} — restart adiado "
+                f"(falhas={state['guardian_consecutive_failures']}, active_jobs={active_jobs})"
+            )
+            save_state(state)
     
     # Auto-fix: vooindo
     if not health['healthy']:
-        state = load_state()
         if try_auto_fix(health, state):
             fixed = True
             time.sleep(3)
